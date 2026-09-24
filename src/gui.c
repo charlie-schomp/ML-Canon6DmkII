@@ -63,12 +63,36 @@
 
 struct semaphore * gui_sem;
 
-// return 0 if you want to block this event
-static int handle_buttons(struct event * event)
-{
-    ASSERT(event->type == 0)
+/* Last button events and whether ML blocked them, with the ISO at the time -
+ * for bug reports about keys ML might be eating (dumped by d7probe). */
+#define GUI_EV_LOG_SIZE 128
+static struct { int t, param, arg, raw_iso, blocked; } gui_ev_log[GUI_EV_LOG_SIZE];
+static int gui_ev_log_count = 0;
 
-    if (event->type != 0) return 1; // only handle events with type=0 (buttons)
+static void gui_ev_log_add(struct event * event, int blocked)
+{
+    int i = gui_ev_log_count % GUI_EV_LOG_SIZE;
+    gui_ev_log[i].t = get_ms_clock();
+    gui_ev_log[i].param = event->param;
+    gui_ev_log[i].arg = event->arg;
+    gui_ev_log[i].raw_iso = lens_info.raw_iso;
+    gui_ev_log[i].blocked = blocked;
+    gui_ev_log_count++;
+}
+
+/* i = 0 is the oldest kept event; returns 0 past the end */
+int gui_event_log_get(int i, int * t, int * param, int * arg, int * raw_iso, int * blocked)
+{
+    int kept = MIN(gui_ev_log_count, GUI_EV_LOG_SIZE);
+    if (i < 0 || i >= kept) return 0;
+    int k = (gui_ev_log_count - kept + i) % GUI_EV_LOG_SIZE;
+    *t = gui_ev_log[k].t; *param = gui_ev_log[k].param; *arg = gui_ev_log[k].arg;
+    *raw_iso = gui_ev_log[k].raw_iso; *blocked = gui_ev_log[k].blocked;
+    return 1;
+}
+
+static int handle_buttons_inner(struct event * event)
+{
     if (handle_common_events_startup(event) == 0) return 0;
     extern int ml_started;
     if (!ml_started) return 1;
@@ -78,6 +102,17 @@ static int handle_buttons(struct event * event)
     if (handle_common_events_by_feature(event) == 0) return 0;
 
     return 1;
+}
+
+// return 0 if you want to block this event
+static int handle_buttons(struct event * event)
+{
+    ASSERT(event->type == 0)
+
+    if (event->type != 0) return 1; // only handle events with type=0 (buttons)
+    int ret = handle_buttons_inner(event);
+    gui_ev_log_add(event, ret == 0);
+    return ret;
 }
 
 /** TODO: rename stuff in this structure, don't use camera names maybe?

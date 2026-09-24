@@ -21,7 +21,7 @@ boot, so a new binary does nothing until you do.
 | RAW video | Movie → RAW video (enable the `mlv_lite` module first). **Data format** 14 / 12 / 10-bit — 12-bit is lossless in practice and the default to use |
 | Crop mode | Movie → RAW video → **Crop mode** — holds Canon's 5x zoom: a 1:1 sensor window, 3164×926, always 29.97 fps |
 | Video dual ISO | enable `dual_iso`, turn on Dual ISO, use Crop mode (it does nothing in the binned 1080p readout). MLV App: Dual ISO **On**, pattern low-low-HIGH-HIGH |
-| Scratch audio | Movie → Scratch audio (WAV) — `OFF / Manual / Auto with RAW`; submenu: **Input** Auto (jack) / Internal / External, **Gain** Factory / Manual with **Left / Right level** 0–63 and **Link L/R** |
+| Scratch audio | Movie → Scratch audio (WAV) — `OFF / Manual / Auto with RAW`; submenu (Q): **Input** Auto (jack) / Internal / External, **Gain** Factory / Manual, **Left level** (shown in dB), **Right channel** Same as left / Own level / Safety −6…−24 dB, **Level meter**. Files go to `DCIM/AUDIO/` |
 | Focus peaking | Overlay → Focus Peak — **Edge density: Dots / Lines**, **Noise rejection: OFF / Steady / Steady + Wide** |
 | Frame guides | Overlay → Cropmarks = **OFF / Recorded area** (shades outside what's recorded) + **Framing guide** inside it. Bitmap cropmarks are not in this build. |
 | Aspect ratio | Movie → RAW video → Aspect ratio; **If too tall = Shrink width** (default) keeps the ratio. Presets stop at 1920 wide. |
@@ -68,8 +68,11 @@ rejection `Steady + Wide`.
 | 1920×1080 | 87 MB/s | 74.6 | 62.2 |
 | 1920×960 | 77.3 | 66.3 | 55.2 |
 | 1920×804 (2.39:1) | 64.8 | 55.5 | 46.3 |
+| 2048×858 (2.39:1) | 73.7 | 63.2 | 52.7 |
+| 2048×1080 (1.90:1 DCI) | 92.8 | 79.5 | 66.3 |
 
-Crop mode runs at 29.97, so multiply by 1.25. A card that really writes ~90 MB/s (Extreme PRO
+1080p offers up to 2048 wide since v64 (the usable readout is 2080). Crop mode runs at 29.97, so
+multiply by 1.25. A card that really writes ~90 MB/s (Extreme PRO
 class) makes 1080p 12-bit continuous.
 
 **Clips from before v62** carry a wrong black level on lit scenes (shadows crushed in MLV App). Run

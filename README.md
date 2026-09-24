@@ -17,8 +17,10 @@ README is in [README.upstream.md](README.upstream.md).
 - **Video dual ISO** in crop mode; photo dual ISO
 - Focus peaking, zebras, false colour (YUV + raw), waveform, vectorscope, histograms, magic zoom,
   cropmarks / framing guides, clean HDMI, shutter angle
-- **Scratch audio** to WAV via Canon's factory recorder, auto-named after the clip, with input
-  select and per-channel gain (new in v63, untested on hardware)
+- **Scratch audio** to WAV via Canon's factory recorder, filed in `DCIM/AUDIO` and named after the
+  clip; input select, gain in dB per channel (with a safety-track mode for clip-proof takes) and a
+  LiveView level meter (v64, meter and per-channel gain untested on hardware)
+- **2048-wide 1080p** (DCI 2K, 2048x1080 / 2048x858) since v64
 
 What does not (yet), and why, is in [6D2/DEVLOG.md](6D2/DEVLOG.md).
 
@@ -29,7 +31,8 @@ What does not (yet), and why, is in [6D2/DEVLOG.md](6D2/DEVLOG.md).
 | `6D2/README.md` | user guide: install, where things are, card-speed table |
 | `6D2/DEVLOG.md` | technical write-up: findings, ROM addresses, change history, roadmap |
 | `6D2/builds/` | ready-to-copy zips for 1.1.1 and 1.2.0 (`autoexec.bin` + `ML/`, checksums) |
-| `6D2/tools/` | `fix_mlv_black.py` (repairs pre-v62 black levels), `mlvwalk.py`, `blackcheck.py` |
+| `6D2/TESTING-v64.md` | step-by-step hardware test for the current build |
+| `6D2/tools/` | `fix_mlv_black.py` (repairs pre-v62 black levels), `wav_dualgain.py` (safety-track WAV -> 32-bit float), `rawframe.py` (reads d7probe raw dumps), `mlvwalk.py`, `blackcheck.py` |
 | `platform/6D2.111`, `platform/6D2.120` | camera ports |
 | `modules/dev_tools/d7probe` | read-only DIGIC 7 research probe |
 

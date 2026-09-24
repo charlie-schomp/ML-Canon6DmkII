@@ -123,12 +123,15 @@ static int cam_5d3_123 = 0;
  * use roughly 10% increments
  **/
 
-static const int resolution_presets_x[] = {  640,  960,  1280,  1600,  1920,  2240,  2560,  2880,  3072,  3520,  4096,  5796 };
-#define  RESOLUTION_CHOICES_X CHOICES("640","960","1280","1600","1920","2240","2560","2880","3072","3520","4096","5796")
+static const int resolution_presets_x[] = {  640,  960,  1280,  1600,  1920,  2048,  2240,  2560,  2880,  3072,  3520,  4096,  5796 };
+#define  RESOLUTION_CHOICES_X CHOICES("640","960","1280","1600","1920","2048","2240","2560","2880","3072","3520","4096","5796")
 
-static const int aspect_ratio_presets_num[]      = {   5,    4,    3,       8,      25,     239,     235,      22,    2,     185,     16,    5,    3,    4,    12,    1175,    1,    1 };
-static const int aspect_ratio_presets_den[]      = {   1,    1,    1,       3,      10,     100,     100,      10,    1,     100,      9,    3,    2,    3,    10,    1000,    1,    2 };
-static const char * aspect_ratio_choices[] =       {"5:1","4:1","3:1","2.67:1","2.50:1","2.39:1","2.35:1","2.20:1","2:1","1.85:1", "16:9","5:3","3:2","4:3","1.2:1","1.175:1","1:1","1:2"};
+/* "1.90:1 (DCI)" = 256:135, i.e. 2048x1080 / 4096x2160.  Appended at the end
+ * rather than sorted in: the saved setting is an index, and inserting would
+ * silently change every saved choice after it. */
+static const int aspect_ratio_presets_num[]      = {   5,    4,    3,       8,      25,     239,     235,      22,    2,     185,     16,    5,    3,    4,    12,    1175,    1,    1,   256 };
+static const int aspect_ratio_presets_den[]      = {   1,    1,    1,       3,      10,     100,     100,      10,    1,     100,      9,    3,    2,    3,    10,    1000,    1,    2,   135 };
+static const char * aspect_ratio_choices[] =       {"5:1","4:1","3:1","2.67:1","2.50:1","2.39:1","2.35:1","2.20:1","2:1","1.85:1", "16:9","5:3","3:2","4:3","1.2:1","1.175:1","1:1","1:2","1.90:1 (DCI)"};
 
 /* config variables */
 
@@ -1129,7 +1132,7 @@ void refresh_raw_settings(int force)
     static int aux2 = INT_MIN;
     if (force || should_run_polling_action(250, &aux))
     {
-        if (raw_update_params())
+        if (raw_update_params_any_bpp())
         {
             update_resolution_params();
             setup_buffers();
@@ -1223,9 +1226,11 @@ static MENU_UPDATE_FUNC(resolution_update)
          * the 2028-wide 1080p modes, wider in the 3164-wide 5x/10x zoom */
         int mx = 0;
         while (mx + 1 < (int)COUNT(resolution_presets_x) && resolution_presets_x[mx + 1] <= max_res_x) mx++;
-        mx = MAX(mx, 4);
+        mx = MAX(mx, 5);
         res_menu_entry->max = mx;
-        if (resolution_index_x > mx) resolution_index_x = mx;
+        /* no clamp of the saved pick: opening this menu in 1080p used to
+         * throw away a crop-mode choice (2240+); a wider preset simply
+         * records at this readout's maximum width (see update_resolution_params) */
     }
 
     /* Show the aspect the clip will deliver, not just the pixel count. With
@@ -3719,7 +3724,7 @@ void raw_video_rec_task(uint32_t card_index)
         {
             if (attempt) msleep(100);
             raw_set_dirty();
-            raw_ok = raw_update_params();
+            raw_ok = raw_update_params_any_bpp();
         }
         if (!raw_ok)
         {
@@ -4989,11 +4994,14 @@ static unsigned int raw_rec_init()
 
     if (is_camera("6D2", "*"))
     {
-        /* start with the 1080p cap (2028-wide readout: nothing above 1920);
-         * resolution_update() raises it in the 3164-wide crop readout */
+        /* start with the 1080p cap (2080-wide readout since v64: up to 2048);
+         * resolution_update() raises it in the 3164-wide crop readout.  The
+         * saved choice is NOT clamped here any more: that reset crop-mode
+         * picks (2240 / 2560 / 3072) to 1920 on every boot.  A preset wider
+         * than the readout just records at the readout's maximum width. */
         res_menu_entry = raw_video_submenu_entry(&resolution_index_x);
-        if (res_menu_entry) res_menu_entry->max = 4;
-        resolution_index_x = MIN(resolution_index_x, 4);
+        if (res_menu_entry) res_menu_entry->max = 5;
+        resolution_index_x = COERCE(resolution_index_x, 0, (int)COUNT(resolution_presets_x) - 1);
 
         /* 14/12/10-bit uncompressed: raw.c switches the depth through Canon's
          * own raw-tap driver (CONFIG_LV_BPP_MEM1_PATCH); lossless stays hidden */

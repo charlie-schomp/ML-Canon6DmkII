@@ -195,3 +195,21 @@ extern int winsys_bmp_dirty_bit_neg;
  * not touch Canon's saved sound settings. */
 #define SOUNDDEV_STATE_PTR_ADDR     0x5300
 #define SOUNDDEV_SET_VOLUME_IN      0xe0646d17   /* thumb; 1.2.0 (1.1.1 0xe0646c2e + 0xe8) */
+
+/* Audio input gain + peak meter (DIGIC 7 audio block at 0xd8000000).
+ * Canon's driver (SoundDevice.c 0xe06469d2 -> 0xe02e74e0 -> 0xe01a7480)
+ * writes the digital input gain to AUDIO_GAIN_REG_L / _R as a signed value in
+ * 0.375 dB steps, looked up from a 64-entry table per input (level 0 = mute,
+ * 0xffff0000).  It always writes table[LEFT level] to BOTH registers - the
+ * right level it stores is never used - so ML writes R itself.
+ * AUDIO_PEAK_REG: low half = left peak, high half = right peak (read by
+ * 0xe04b576e for Canon's level meter; plain read, no side effect).
+ * Tables: _INT / _EXT, and the _ATT variants used when Canon's attenuator is
+ * on (SoundDevice +0x30): internal -12 dB, external -20.25 dB. */
+#define AUDIO_GAIN_REG_L            0xd8000550
+#define AUDIO_GAIN_REG_R            0xd8000554
+#define AUDIO_PEAK_REG              0xd8000190
+#define AUDIO_GAIN_TABLE_INT        0xe08e7dc4
+#define AUDIO_GAIN_TABLE_INT_ATT    0xe08e7bc4
+#define AUDIO_GAIN_TABLE_EXT        0xe08e7ec4
+#define AUDIO_GAIN_TABLE_EXT_ATT    0xe08e7cc4

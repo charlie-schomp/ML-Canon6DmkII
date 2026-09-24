@@ -239,7 +239,52 @@ static void d7probe_dump(void)
                   "[sdclk] 0xe0292568 to SDCON regs 0xd2090600 618 61c 620 62c 630 624 628 638 604 60c (slot offset added)\n");
     dump_words(f, "[sdtbl]", (uint32_t *)0x110c0, (0x11600 - 0x110c0) / 4, 0x110c0);
 
+    /* button events (ISO key investigation): what reached ML, whether ML
+     * blocked it, and the ISO at that moment (raw units: 72=100, 80=200 ..) */
+    {
+        extern int gui_event_log_get(int i, int * t, int * param, int * arg, int * raw_iso, int * blocked);
+        int t, param, arg, iso, blocked;
+        my_fprintf(f, "\n[keys] t(ms) param arg raw_iso blocked-by-ML\n");
+        for (int i = 0; gui_event_log_get(i, &t, &param, &arg, &iso, &blocked); i++)
+            my_fprintf(f, "[keys] %8d %4x %8x %3d %s\n", t, param, arg, iso, blocked ? "BLOCKED" : "-");
+    }
+
+    /* audio: SoundDevice state (*(0x5300+8)), gain + peak registers, and the
+     * AudioLevel meter struct (*(0x7a44+4)) */
+    {
+        uint8_t * st = *(uint8_t **)(0x5300 + 8);
+        my_fprintf(f, "\n[audio] sounddev=%08x", (uint32_t)st);
+        if ((uint32_t)st > 0x1000 && (uint32_t)st < 0x80000000)
+        {
+            my_fprintf(f, "  extmic(+28)=%d att(+30)=%d alc(+3c)=%d factory(+3e)=%d L(+3f)=%d R(+40)=%d active(+44)=%d mic(+4c)=%d fmic(+88)=%d",
+                       st[0x28], MEM(st + 0x30), st[0x3c], st[0x3e], st[0x3f], st[0x40], MEM(st + 0x44), MEM(st + 0x4c), MEM(st + 0x88));
+        }
+        my_fprintf(f, "\n[audio] gainL(d8000550)=%08x gainR(d8000554)=%08x peak(d8000190)=%08x\n",
+                   MEM(0xd8000550), MEM(0xd8000554), MEM(0xd8000190));
+        uint8_t * al = *(uint8_t **)(0x7a44 + 4);
+        if ((uint32_t)al > 0x1000 && (uint32_t)al < 0x80000000)
+            my_fprintf(f, "[audio] audiolevel=%08x peakL(+44)=%d peakR(+48)=%d peakLR(+4c)=%d idx(+50)=%d\n",
+                       (uint32_t)al, MEM(al + 0x44), MEM(al + 0x48), MEM(al + 0x4c), al[0x50]);
+    }
+
+    /* raw geometry, and the frame itself (RAWFRAME.BIN) - to find where the
+     * optical black really ends in each readout */
+    my_fprintf(f, "\n[rawgeom] %dx%d pitch=%d bpp=%d active x %d..%d y %d..%d dispsize=%d\n",
+               raw_info.width, raw_info.height, raw_info.pitch, raw_info.bits_per_pixel,
+               raw_info.active_area.x1, raw_info.active_area.x2, raw_info.active_area.y1, raw_info.active_area.y2, lv_dispsize);
+
     FIO_CloseFile(f);
+
+    if (lv && raw_info.buffer && raw_info.pitch > 0 && raw_info.height > 0
+        && raw_info.pitch * raw_info.height < 16*1024*1024)
+    {
+        f = FIO_CreateFile("ML/LOGS/RAWFRAME.BIN");
+        if (f)
+        {
+            FIO_WriteFile(f, raw_info.buffer, raw_info.pitch * raw_info.height);
+            FIO_CloseFile(f);
+        }
+    }
 
     /* low RAM: DryOS data + the RAM-resident code (engio helpers ~0x30900,
      * SD tables 0x113xx, shadow base ptr 0x1faa4) for offline disassembly */
@@ -251,7 +296,7 @@ static void d7probe_dump(void)
         FIO_CloseFile(f);
     }
 
-    NotifyBox(3000, "%s + LOWRAM.BIN written", fn);
+    NotifyBox(3000, "%s + LOWRAM.BIN + RAWFRAME.BIN written", fn);
 }
 
 static MENU_SELECT_FUNC(d7probe_dump_select)

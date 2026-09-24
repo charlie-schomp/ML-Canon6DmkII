@@ -2,7 +2,7 @@
 
 Raw video, focus peaking and the rest of the monitoring overlays, working on a DIGIC 7 body.
 
-    Build:     v63, 2026-09-24
+    Build:     v64, 2026-09-24
     Base:      magiclantern_simplified @ 40c0a133b
     Platforms: 6D2.111 (primary, tested on hardware over four weeks)
                6D2.120 (parallel build, boot-tested in qemu only)
@@ -10,6 +10,10 @@ Raw video, focus peaking and the rest of the monitoring overlays, working on a D
 v41-v63 in one line: **12- and 10-bit raw video, video dual ISO (in the 1:1 crop readout), a held
 5x crop mode, correct per-mode frame rates, a black-level fix that affects every clip, and input
 selection + per-channel gain for the scratch WAV.** Details in *v41-v63* below.
+
+v64: **12/10-bit recording fixed ("Raw detect error"), 2048-wide 1080p (DCI 2K), scratch-WAV gain
+calibrated in dB and truly per-channel (with a safety-track mode), a LiveView audio meter, and WAVs
+filed in `DCIM/AUDIO`.** See *v64*.
 
 The short version: **overlays never worked on any `FEATURE_VRAM_RGBA` camera because ML was
 drawing them into a buffer nothing ever composited.** Fixing that turned on focus peaking, zebras,
@@ -334,6 +338,66 @@ shows where the levers are:
 
 ---
 
+## v64
+
+### "Raw detect error" at 12/10-bit
+
+`raw_update_params()` ends with an upstream hack - `if (bits_per_pixel != 14) return 0;` - so the
+14-bit-only overlays switch themselves off. mlv_lite's record-start check calls the same function.
+Up to v60 that never mattered: the depth was switched *after* the check. v61 holds 12/10-bit between
+clips (confirmed on hardware: probe `raw_info ... bpp=10` at idle), so every start failed five
+retries and gave up. New `raw_update_params_any_bpp()` for recorders; overlays keep the old
+behaviour. mlv_lite's 4x/s resolution refresh used the same call and had silently stopped at 12/10.
+
+### 2048-wide 1080p
+
+`skip_left = 100` came from the full-resolution CR2 border (darktable: OB x=2..117). The 1080p raw
+is the whole 6384-column readout binned 3x across (2128 = 6384/3), so the optical black is ~40
+columns, not 100. v64: 1080p active area x = 44..2124 (2080 px), zoom unchanged (100/0, validated).
+The raw->screen mapping stays on the old, hardware-aligned reference, so overlays do not move. New
+presets: resolution **2048**, aspect **1.90:1 (DCI)** = 2048x1080 (appended to the list, not
+inserted: the saved aspect is an index). The boot-time clamp that reset crop-mode resolutions to 1920
+on every start is gone. d7probe now dumps the raw frame (`RAWFRAME.BIN`), analysed by
+`6D2/tools/rawframe.py`, to confirm the OB edge from a real frame.
+
+### Scratch audio: calibrated, per-channel, metered, filed
+
+Six test WAVs (internal mic at 0/20/40/63, external at 20/40) plus ROM:
+
+- **Level 0 is mute** (the take was digital silence).
+- **The 0..63 level is a table index.** The driver (`SoundDevice.c 0xe06469d2` -> `0xe02e74e0` ->
+  `0xe01a7480`) looks the level up in a 64-entry table per input and writes the entry to the audio
+  block's digital input-gain registers `0xd8000550` (L) / `0xd8000554` (R), a signed value in
+  **0.375 dB** steps (`0xffff0000` = mute). Tables (1.1.1): internal `0xe08e7cdc` (-11.6..+40.5 dB),
+  external `0xe08e7ddc` (-9.0..+43.1 dB), attenuator variants `0xe08e7adc` (-12 dB) / `0xe08e7bdc`
+  (-20.25 dB); 1.2.0 +0xe8. Steps are ~0.875 dB up to level 48, 0.75 dB above.
+- **Measured against the table:** internal 20->40 = 47 steps = 17.6 dB (stationary-noise bands:
+  17.3..18.3), 40->63 = 48 steps = 18.0 dB (18.0..18.6). The menu now shows dB from the table.
+- **v63's per-channel gain did nothing:** Canon's driver writes `table[LEFT]` to *both* registers;
+  the right level it stores (`+0x40`) is only ever printed. ML now writes R itself. Right channel =
+  Same as left / Own level / **Safety -6/-12/-18/-24 dB** (same source, lower gain, for recovering
+  clipped peaks: `6D2/tools/wav_dualgain.py` merges L+R into a 32-bit float WAV; tested on a
+  synthetic take clipped on 17% of samples - reconstruction error 2e-4 FS). A watchdog restores the
+  registers if Canon re-applies its left-only value. The external-mic takes were mono (L==R,
+  correlation 0.998-1.0) and clipped at levels 20 and 40 - exactly the case the safety track covers.
+- **Meter:** Canon's level meter reads `0xd8000190` (low half L peak, high half R; `0xe04b576e`,
+  plain read). Its own display quantises against a 1 dB dBFS table (`0xe091a204`, 0..-40). ML reads
+  the register while the recorder is live and draws L/R bars (-48..0 dBFS, 1.5 s peak hold, CLIP)
+  top-left in LiveView, and `L .. R .. dBFS` in the menu.
+- **WAVs go to `DCIM/AUDIO/`**: `<clip>.WAV` with RAW, `W<day>-<hhmm>.WAV` for manual takes and for
+  RAW takes that never wrote a file (those used to be orphaned in the root). Not a DCF folder name,
+  so Canon ignores it. The move is copy+delete (`CONFIG_FIO_RENAMEFILE_WORKS` is not set on this
+  body) and runs in its own task for manual stops.
+
+### ISO button
+
+Nothing in ML's key chain consumes the main dial or unknown keys outside the ML menu (checked:
+magic zoom, module handlers incl. mlv_lite, flexinfo, held-button tracker), and ML cannot write
+`PROP_ISO` anyway. To settle it from the camera, `gui.c` now keeps the last 128 button events with
+ML's verdict and the ISO at the time; d7probe dumps them (`[keys]`).
+
+---
+
 ## Measured: ISO response in video mode
 
 Read noise from lens-cap dark frames, 1920×720 14-bit, black 2047 / white 16200. Dark mean landed
@@ -468,10 +532,14 @@ cells are left empty rather than filled with a flattering number. ISO 12800 was 
   `ASSERT(!RECORDING_H264); movie_start();` — if Canon's recorder has not returned to idle after the
   previous take, the next one asserts and aborts. Never tested at length here, and with scratch WAV
   working there is little reason to.
-- **Scratch WAV is Canon's factory recorder, not an audio driver.** v63 adds input select and
-  per-channel level (see *v41-v63*); both are untested on hardware, and the 0..63 level scale is
-  Canon's, uncalibrated in dB. One source feeds both channels - a TRS splitter or a small mixer is
-  still the answer for two sources.
+- **Scratch WAV is Canon's factory recorder, not an audio driver.** Gain is calibrated and
+  per-channel since v64 (see *v64*); the meter and the right-channel register writes are untested on
+  hardware. One mic feeds both channels - a TRS splitter or a small mixer is still the answer for two
+  different sources.
+- **The meter only runs while a WAV is recording** (the audio block is only known to be live then).
+  To set levels before a take, use Record WAV now, watch the meter, stop.
+- **2048/2080-wide 1080p edge unverified** until a RAWFRAME.BIN from a bright frame confirms where
+  the optical black ends (expected ~column 40; recording starts at 44 or later).
 - **Clips recorded before v62 have wrong black levels** in their headers on lit scenes - run
   `fix_mlv_black.py` or set 2047 / 512 / 128 in MLV App.
 - **Card-limited, not camera-limited.** A 12-bit 1920x960 take at 66.3 MB/s on a 65 MB/s card runs
@@ -507,14 +575,12 @@ cells are left empty rather than filled with a flattering number. ISO 12800 was 
 
 **Next (reachable)**
 
-- Hardware-verify v62/v63: black level on a lit scene, a 12-bit take that auto-stops, WAV input
-  select with an external mic, a gain sweep (0 / 20 / 40 / 63) to pin the level scale in dB.
-- **2K DCI width in 1080p.** `skip_left = 100` throws away ~60 image columns (optical black is ~40
-  wide in the binned readout), so the active width could be ~2084, not 2028. Confirm the OB edge from
-  a raw-buffer dump (d7probe), then offer 2048 x 858 (2.39:1): 63 MB/s at 12-bit, 23.976.
-- On-screen audio meter from `FA_AudGetInLevel` once its scale is known (v63 shows the raw value).
-- In-camera WAV channel map (L to both / R to both / swap) as a post-take rewrite - the only form of
-  per-channel "selection" the hardware allows.
+- Run `TESTING-v64.md` (fast-card tester): data-rate ladder to 2048x1080 12-bit, left-edge check,
+  RAWFRAME dumps in 1080p and crop, audio meter / safety track / DCIM/AUDIO, ISO key log.
+- Confirm the OB edge from RAWFRAME.BIN; then consider the top rows too (skip_top 16) and whether
+  the zoom window really has no OB (skip_left 100 there may also be recoverable: 3264 wide).
+- Pre-record audio meter (level setting without recording) - needs the audio input started without
+  the file writer; `FA_Aud_OnlyBlockStart` looks like exactly that, unverified.
 - Anamorphic crop modes: a taller 1:1 window (zoom lists `0x7888/0x788c/0x7890`) + desqueezed preview.
 - HDMI + LCD simultaneous output (DISP struct has separate LCD/HDMI/EVF buffers `0x78/0x70/0x74`).
 - Dirty-rectangle compositing (overlays are capped at 20 fps by a full-screen RGBA conversion).
@@ -577,6 +643,7 @@ Compressed — the full story is in the sections above and the code comments.
 | v61 | Bit depth held between clips (no bounce at start/stop) |
 | v62 | **Black level pinned to 2047** (autodetect window was image); no zoom requests during record teardown; fps and DISO from the real readout |
 | v63 | Scratch WAV **input select** and **per-channel gain** |
+| v64 | 12/10-bit **Raw detect error** fixed; **2048-wide 1080p** + 1.90:1 DCI aspect; WAV gain **in dB**, real per-channel + safety track; **audio meter**; WAVs in **DCIM/AUDIO**; button-event log |
 
 ---
 
