@@ -27,6 +27,7 @@
 #define SIG_6D_116   0x11cb1ed2 // from FF0C0000
 //#define SIG_6D2_105  0x0c042362 // from E0040000
 #define SIG_6D2_111  0x7dc0d132 // from E0040000
+#define SIG_6D2_120  0x9f16ca77 // from E0040000 (1.2.0 ROM)
 #define SIG_700D_115 0x4c2d9f68 // from FF0C0000
 #define SIG_70D_112  0xd8698f05
 #define SIG_750D_110 0xf005931a // from FC0A0000

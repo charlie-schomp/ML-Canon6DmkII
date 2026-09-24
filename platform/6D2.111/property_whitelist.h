@@ -37,7 +37,8 @@ const uint32_t prop_write_allow[] =
     PROP_ICU_AUTO_POWEROFF, // used in multiple places, incl. installer / uninstaller
     PROP_BUTTON_ASSIGNMENT,
     PROP_REMOTE_SW1,
-    PROP_REMOTE_SW2
+    PROP_REMOTE_SW2,
+    PROP_LV_DISPSIZE   // mlv_lite crop mode: request Canon's 5x zoom (1:1 readout)
 };
 
 // anything not listed above will allow reads but not writes

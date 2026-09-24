@@ -137,9 +137,36 @@ void UnregisterEDmacPopCBR(int channel)
     return;
 }
 
+/* EngDrvOut on DIGIC 7 is not a function - Canon inlines it as an MMIO store
+ * plus a store into shadow memory (helper cluster in low RAM ~0x308c0-0x30960;
+ * shadow base pointer at 0x1faa4, = 0x021d0800 on this body, read back with
+ * d7probe).  Same construction the 200D uses for PACK32.  Only the timing
+ * generator registers are allowed through: they are the ones FPS control
+ * needs, they are written by Canon's own per-mode lists (sensor-config block,
+ * "d0006008 / d0006014" pairs), and nothing else in ML is verified to be safe
+ * to poke on this body.  Everything else stays a no-op. */
+#define SHAMEM_BASE_PTR 0x1faa4
 void _EngDrvOut(uint32_t reg, uint32_t value)
 {
-    return;
+    switch (reg)
+    {
+        case 0xd0006000:    /* apply / confirm */
+        case 0xd0006008:    /* timer A */
+        case 0xd000600c:    /* timer A (second copy in Canon's lists) */
+        case 0xd0006014:    /* timer B */
+        case 0xd0006024:    /* timer B, second copy in Canon's zoom list */
+        case 0xd00068d4:    /* readout line count (low half = B in Canon's list) */
+        case 0xd0007008:    /* last write of Canon's timing list */
+        {
+            uint32_t shadow = MEM(SHAMEM_BASE_PTR);
+            if (shadow < 0x1000 || shadow >= 0x80000000) return;
+            *(volatile uint32_t *)(shadow + (reg & 0xfffff)) = value;
+            *(volatile uint32_t *)reg = value;
+            return;
+        }
+        default:
+            return;
+    }
 }
 
 void _engio_write(uint32_t* reg_list)

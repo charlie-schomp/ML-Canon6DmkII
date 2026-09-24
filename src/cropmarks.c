@@ -13,10 +13,45 @@ void cropmark_clear_cache();
 
 static struct bmp_file_t * cropmarks = 0;
 
-static CONFIG_INT( "crop.enable", crop_enabled, 0);  // index of crop file
+/* 1 = recorded area (mlv_lite's own rectangle, shaded outside), 2 = bitmap
+ * file. Deliberately NOT 0/1: ML treats a 0..1 entry as a boolean and greys
+ * every child of the submenu while it reads 0 - so with "Recorded area"
+ * selected the framing guide, PLAY-mode and photo-mode options all looked
+ * disabled. min=1 keeps it a plain choice. crop_enabled is what the rest of
+ * this file has always tested; it now derives from the mode. */
+static CONFIG_INT( "crop.mode", crop_mode, 1);      /* 0 off, 1 recorded area, 2 bitmap */
+/* Bitmap cropmarks are compiled out on this body for now: the submenu that
+ * hosts the picker was unstable and nothing in the workflow needs a static
+ * file. crop_mode is 0 = off, 1 = recorded area. Mode 2 is never reachable. */
+#define crop_enabled (0)
 static CONFIG_INT( "crop.index", crop_index, 0); // index of crop file
 static CONFIG_INT( "crop.movieonly", cropmark_movieonly, 0);
 static CONFIG_INT("crop.playback", cropmarks_play, 0);
+
+/* Framing guide drawn INSIDE the recorded area: record full-width 16:9, frame
+ * for 4:3 or 2.39, keep the rest as reframing room in post. Ratios are laid
+ * out in screen space, which on this body is visually correct for the LV. */
+static CONFIG_INT("crop.guide", crop_guide, 0);
+static const int crop_guide_num[] = { 0, 4, 1, 185, 2, 239, 9, 4 };
+static const int crop_guide_den[] = { 1, 3, 1, 100, 1, 100, 16, 5 };
+static const char * crop_guide_names[] =
+    { "OFF", "4:3", "1:1", "1.85:1", "2:1", "2.39:1", "9:16", "4:5" };
+
+/* Fit the guide inside (x1,y1)-(x2,y2). Returns 0 if no guide. */
+static int crop_guide_rect(int x1, int y1, int x2, int y2,
+                           int * gx1, int * gy1, int * gx2, int * gy2)
+{
+    if (!crop_guide || crop_guide >= (int)COUNT(crop_guide_num)) return 0;
+    int num = crop_guide_num[crop_guide], den = crop_guide_den[crop_guide];
+    int rw = x2 - x1, rh = y2 - y1;
+    if (rw <= 0 || rh <= 0) return 0;
+    int gw, gh;
+    if (rw * den > rh * num) { gh = rh; gw = rh * num / den; }   /* recorded is wider */
+    else                     { gw = rw; gh = rw * den / num; }   /* recorded is taller */
+    *gx1 = x1 + (rw - gw) / 2;  *gx2 = *gx1 + gw;
+    *gy1 = y1 + (rh - gh) / 2;  *gy2 = *gy1 + gh;
+    return 1;
+}
 
 static int cropmark_cache_dirty = 1;
 static int crop_dirty = 0; // redraw cropmarks after some time (unit: 0.1s)
@@ -95,7 +130,7 @@ static void find_cropmarks()
     cropmarks_initialized = 1;
 }
 
-static void reload_cropmark()
+static __attribute__((unused)) void reload_cropmark()
 {
     int i = crop_index;
     static int old_i = -1;
@@ -121,8 +156,9 @@ static void reload_cropmark()
 }
 
 static void
-crop_toggle( void* priv, int sign )
+__attribute__((unused)) crop_toggle( void* priv, int sign )
 {
+    if (num_cropmarks <= 0) { crop_index = 0; return; }
     crop_index = MOD(crop_index + sign, num_cropmarks);
     //~ reload_cropmark(crop_index);
     crop_set_dirty(10);
@@ -130,26 +166,68 @@ crop_toggle( void* priv, int sign )
 
 static MENU_UPDATE_FUNC(crop_display)
 {
-    int index = crop_index;
-    index = COERCE(index, 0, num_cropmarks-1);
-    if (crop_enabled) MENU_SET_VALUE(
-         num_cropmarks ? cropmark_names[index] : "N/A"
-    );
+    if (crop_enabled)
+    {
+        if (num_cropmarks <= 0)
+        {
+            MENU_SET_VALUE("Bitmap: none on card");
+            MENU_SET_WARNING(MENU_WARN_NOT_WORKING, "No .BMP files in ML/cropmks - nothing will be drawn.");
+        }
+        else
+        {
+            int index = COERCE(crop_index, 0, num_cropmarks-1);
+            MENU_SET_VALUE(cropmark_names[index]);
+        }
+    }
+    else if (crop_mode == 0)
+    {
+        MENU_SET_VALUE("OFF");
+    }
+    else
+    {
+        /* OFF is not nothing. With no bitmap selected, ML draws the "default"
+         * cropmarks: the rectangle mlv_lite reports as its actual recorded
+         * area, via set_movie_cropmarks(), shaded outside. Selecting a bitmap
+         * REPLACES that with a static file that knows nothing about the
+         * resolution setting. Upstream's label of OFF for the honest one has
+         * misled people; say what it is. */
+        MENU_SET_VALUE(lv && is_movie_mode() ? "Recorded area" : "Recorded area (movie)");
+    }
     if (cropmark_movieonly && !is_movie_mode())
         MENU_SET_WARNING(MENU_WARN_NOT_WORKING, "Cropmarks are configured only for movie mode");
 }
 
-static MENU_UPDATE_FUNC(crop_display_submenu)
+/* The guide lives in the cropmark cache; notice a change from the draw task
+ * itself (called at the top of cropmark_draw), never from a menu callback. */
+static void crop_guide_check_changed()
 {
+    static int last = -1;
+    if (last != crop_guide) { last = crop_guide; cropmark_cache_dirty = 1; }
+}
+
+static __attribute__((unused)) MENU_UPDATE_FUNC(crop_display_submenu)
+{
+    /* With no bitmaps on the card, COERCE(index, 0, -1) yields -1 and this
+     * read cropmark_names[-1]: the [FF,FF,FF,FF] entry and a crash on opening
+     * the submenu. This build ships no bitmaps, so that is the normal case. */
+    if (num_cropmarks <= 0)
+    {
+        crop_index = 0;
+        MENU_SET_NAME("Bitmap");
+        MENU_SET_VALUE("none on card");
+        MENU_SET_WARNING(MENU_WARN_NOT_WORKING, "Put .BMP files in ML/cropmks to use this.");
+        return;
+    }
     int index = crop_index;
     index = COERCE(index, 0, num_cropmarks-1);
+    crop_index = index;
     MENU_SET_NAME(
         "Bitmap (%d/%d)",
          index+1, num_cropmarks
     );
     MENU_SET_VALUE(
         "%s",
-         num_cropmarks ? cropmark_names[index] : "N/A"
+         cropmark_names[index]
     );
 
     if (info->can_custom_draw)
@@ -172,21 +250,22 @@ static MENU_UPDATE_FUNC(crop_display_submenu)
 static struct menu_entry cropmarks_menu[] = {
     {
         .name = "Cropmarks",
-        .priv = &crop_enabled,
+        .priv = &crop_mode,
         .update    = crop_display,
         .max = 1,
-        .help = "Cropmarks or custom grids for framing.",
+        .choices = CHOICES("OFF", "Recorded area"),
+        .help  = "Recorded area: shades everything outside what mlv_lite records.",
         .depends_on = DEP_GLOBAL_DRAW,
         .submenu_width = 710,
         .submenu_height = 250,
         .children =  (struct menu_entry[]) {
             {
-                .name = "Bitmap",
-                .priv = &crop_index, 
-                .select = crop_toggle,
-                .update    = crop_display_submenu,
-                .icon_type = IT_DICE,
-                .help = "You can draw your own cropmarks in Paint.",
+                .name = "Framing guide",
+                .priv = &crop_guide,
+                .max = 7,
+                .choices = crop_guide_names,
+                .help  = "Aspect frame inside the recorded area, for reframing in post.",
+                .help2 = "Record 16:9, frame for 4:3 or 2.39 - the rest stays as margin.",
             },
             {
                 .name = "Show in photo mode",
@@ -302,9 +381,9 @@ static void cropmarks_frame_save()
 
 static int should_use_default_cropmarks()
 {
-    return 
-        (!crop_enabled) ||
-        (cropmark_movieonly && !is_movie_mode() && lv);
+    return
+        (crop_mode == 1) ||
+        (crop_enabled && cropmark_movieonly && !is_movie_mode() && lv);
 }
 
 
@@ -313,6 +392,21 @@ cropmark_draw()
 {
     if (!get_global_draw()) return;
 
+    if (crop_mode == 0)
+    {
+        /* Genuinely off. Upstream had no such state - its OFF still drew the
+         * default movie bars. Drop any cached cropmark once so the next
+         * redraw wipes it, then draw nothing. */
+        if (cropmark_cache_dirty || crop_dirty)
+        {
+            bvram_mirror_clear();
+            cropmark_cache_dirty = 0;
+            crop_dirty = 0;
+        }
+        return;
+    }
+
+    crop_guide_check_changed();
     get_yuv422_vram(); // just to refresh VRAM params
     clear_lv_afframe_if_dirty();
 
@@ -325,8 +419,6 @@ cropmark_draw()
     }
     #endif
     crop_dirty = 0;
-
-    reload_cropmark(); // reloads only when changed
 
     if (cropmarks_frame_changed())
     {
@@ -516,13 +608,18 @@ static void FAST default_movie_cropmarks()
     /*
         doesn't work with HDMI, please fix that, I don't have it
     */
+    int gx1 = 0, gy1 = 0, gx2 = 0, gy2 = 0;
+    int have_guide = crop_guide_rect(crop_x >> 16, crop_y >> 16,
+                                     crop_x & 0xFFFF, crop_y & 0xFFFF,
+                                     &gx1, &gy1, &gx2, &gy2);
+
     for (y = os.y0; y < MIN(os.y_max+1, BMP_H_PLUS); y++)
     {
         int x1 = (crop_x >> 16);
         int x2 = (crop_x & 0xFFFF);
         int y1 = (crop_y >> 16);
         int y2 = (crop_y & 0xFFFF);
-        
+
         bool draw = (y < y1 || y > y2);
         
         for (x = os.x0; x < os.x_max; x++)
@@ -535,6 +632,15 @@ static void FAST default_movie_cropmarks()
                 /* border pixels should be brighter, to be visible in dark */
                 int border = (x > x1-2 && x < x2+2 && y > y1-2 && y < y2+2);
                 newcolor = border ? COLOR_GRAY(70) : COLOR_BLACK;
+            }
+            else if (have_guide &&
+                     x >= gx1 && x <= gx2 && y >= gy1 && y <= gy2 &&
+                     (x <= gx1 + 1 || x >= gx2 - 1 || y <= gy1 + 1 || y >= gy2 - 1))
+            {
+                /* framing guide: a 2px frame inside the recorded area, drawn
+                 * into the same cache as the cropmark so it survives the
+                 * zebra/peaking passes and costs nothing per frame */
+                newcolor = COLOR_WHITE;
             }
             
             if (newcolor)

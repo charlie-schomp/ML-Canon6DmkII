@@ -1,0 +1,18 @@
+# Module names in this file will be hidden in ML GUI
+adv_int
+arkanoid
+autoexpo
+crop_rec
+deflick
+dot_tune
+# dual_iso: supported on 6D2 1.1.1 (photo only, no FRAME_CMOS video path),
+# unhidden so it appears in the ML menu.
+edmac
+ettr
+img_name
+lua
+# mlv_play unhidden - see modules.included
+mlv_snd
+pic_view
+selftest
+# silent unhidden - dependency of mlv_play, leave it disabled

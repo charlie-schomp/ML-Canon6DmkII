@@ -53,6 +53,10 @@
 #endif
 
 extern uint32_t ml_refresh_display_needed;
+#ifdef FEATURE_RAW_FALSE_COLOR
+extern int falsecolor_raw;          /* falsecolor.c */
+extern void draw_false_raw(void);   /* falsecolor.c */
+#endif
 
 #if defined(FEATURE_RAW_HISTOGRAM) || defined(FEATURE_RAW_ZEBRAS) || defined(FEATURE_RAW_SPOTMETER)
 #define FEATURE_RAW_OVERLAYS
@@ -309,6 +313,29 @@ static CONFIG_INT( "focus.peaking.filter.edges", focus_peaking_filter_edges, 0);
 static CONFIG_INT( "focus.peaking.thr", focus_peaking_pthr, 5); // 1%
 static CONFIG_INT( "focus.peaking.color", focus_peaking_color, 7); // R,G,B,C,M,Y,cc1,cc2
 CONFIG_INT( "focus.peaking.grayscale", focus_peaking_grayscale, 0); // R,G,B,C,M,Y,cc1,cc2
+/* Vertical scan step for LV peaking. Each hit paints a 2x2 block, so a step of
+ * 3 leaves a one-row gap and edges read as a dotted trail; a step of 2 makes
+ * them continuous strokes, for 1.5x the scan cost. */
+static CONFIG_INT( "focus.peaking.lines", focus_peaking_lines, 1);
+/* Noise rejection for the LV peaking.
+ *   0  off
+ *   1  temporal: a block must fire on two consecutive frames before it is drawn
+ *   2  temporal + wide-support Laplacian (samples at +/-2 px instead of +/-1)
+ * See peak_hist_* and calc_peak_wide() for the reasoning. */
+static CONFIG_INT( "focus.peaking.steady", focus_peaking_steady, 1);
+
+/* Clean HDMI: when an HDMI monitor or recorder is attached, draw nothing of
+ * ours on it. On this body the compositor feeds the LCD and HDMI from the same
+ * layer, so "nothing on HDMI" necessarily means "nothing on the LCD" while
+ * HDMI is connected - which is the trade you want when the HDMI end is a
+ * recorder rather than a monitor. Canon's own info display is separate; the
+ * INFO button cycles that to clean as usual. */
+static CONFIG_INT( "clean.hdmi", clean_hdmi_out, 0);
+
+int clean_hdmi_active(void)
+{
+    return clean_hdmi_out && ext_monitor_hdmi;
+}
 
 #if defined(CONFIG_DISPLAY_FILTERS) && defined(FEATURE_FOCUS_PEAK_DISP_FILTER)
 static CONFIG_INT( "focus.peaking.disp", focus_peaking_disp, 0); // display as dots or blended
@@ -333,6 +360,7 @@ static CONFIG_INT( "waveform.draw", waveform_draw,
 #endif
  );
 static CONFIG_INT( "waveform.size", waveform_size,  0 );
+static CONFIG_INT( "waveform.raw",  waveform_raw,   0 );
 static CONFIG_INT( "waveform.bg",   waveform_bg,    COLOR_ALMOST_BLACK ); // solid black
 
 int histogram_or_small_waveform_enabled()
@@ -392,14 +420,54 @@ PROP_HANDLER(PROP_LV_OUTPUT_TYPE)
     if (ml_started) redraw();
 }
 
-#ifdef CONFIG_VARIANGLE_DISPLAY
+#if defined(CONFIG_VARIANGLE_DISPLAY) || defined(CONFIG_MIRROR_OVERLAYS)
 static volatile int lcd_position = 0;
 static volatile int display_dont_mirror_dirty;
+#endif
+
+#ifdef CONFIG_MIRROR_OVERLAYS
+/* 0 auto (follow PROP_LCD_POSITION), 1 never, 2 always. "Always" exists so the
+ * feature is usable even if this body reports the flipped position with a
+ * value other than the 1 that ML's property notes document. */
+/* Canon mirrors the image horizontally when the screen faces forward
+ * (PROP_LCD_POSITION == 1). Confirmed on hardware once the peaking cache
+ * actually rebuilt - see zebra_update_lut(). The transform was briefly
+ * selectable while that was being chased; it is a plain horizontal mirror. */
+static CONFIG_INT("overlay.mirror", overlay_mirror_mode, 1);       /* 0 off, 1 on */
+extern int overlay_mirror_x;   /* vram.c */
+extern int overlay_mirror_y;   /* vram.c */
+
+static void overlay_mirror_apply(void)
+{
+    int wx = overlay_mirror_mode && (lcd_position == 1);
+    if (wx != overlay_mirror_x || overlay_mirror_y)
+    {
+        overlay_mirror_x = wx;
+        overlay_mirror_y = 0;
+        vram_params_set_dirty();
+        get_yuv422_vram();         /* rebuild BM2LV_X now, not on some later pass */
+        redraw_after(100);         /* and wipe overlays drawn the old way */
+    }
+}
+
+static MENU_UPDATE_FUNC(overlay_mirror_update)
+{
+    overlay_mirror_apply();
+    if (lcd_position == 1)
+        MENU_SET_RINFO(overlay_mirror_x ? "mirrored" : "screen flipped");
+}
+#endif
+
+#if defined(CONFIG_VARIANGLE_DISPLAY) || defined(CONFIG_MIRROR_OVERLAYS)
 PROP_HANDLER(PROP_LCD_POSITION)
 {
     if (lcd_position != (int)buf[0]) display_dont_mirror_dirty = 1;
     lcd_position = buf[0];
+    #ifdef CONFIG_MIRROR_OVERLAYS
+    overlay_mirror_apply();
+    #else
     redraw_after(100);
+    #endif
 }
 #endif
 
@@ -426,7 +494,13 @@ int get_global_draw() // menu setting, or off if
     extern int ml_started;
     if (!ml_started) return 0;
     if (!global_draw) return 0;
-    
+
+    /* Clean HDMI wins over everything, including the playback exception below:
+     * a recorder on the HDMI port should get pixels and nothing else. Every
+     * overlay, the info bars and mlv_lite's on-screen indicator all route
+     * through this one gate. */
+    if (clean_hdmi_active()) return 0;
+
     if (PLAY_MODE) return 1; // exception, always draw stuff in play mode
     
     #ifdef CONFIG_CONSOLE
@@ -526,6 +600,69 @@ static inline void waveform_add_pixel(int x, int Y)
 }
 #endif
 
+#ifdef FEATURE_RAW_WAVEFORM
+/* Waveform built from the sensor instead of Canon's preview.
+ *
+ * The YUV waveform plots the LiveView image after picture style, contrast
+ * curve and white balance. That is the right reference for the H.264 and the
+ * wrong one for raw: its "100%" is Canon's, not the sensor's, so it shows
+ * clipping that has not happened and hides headroom that has. This one uses
+ * the same 12-stop scale as the RAW histogram, so the top of the graph is raw
+ * clipping and the bottom is 12 stops under it - meaning the raw waveform,
+ * raw histogram and RAW false colour ramp all agree with each other.
+ */
+static void FAST waveform_build_raw(void)
+{
+    if (!waveform) return;
+    /* raw_update_params() rewrites the shared raw_info, and mlv_lite reads
+     * that same struct from the recording task. Re-deriving the geometry
+     * underneath a running take is a data race on state the recorder depends
+     * on - and "recording stopped when rolling with false colour" was reported
+     * before, which I wrongly put down to CPU cost. While a take is running,
+     * use whatever mlv_lite has already set up and never touch it. */
+    if (NOT_RECORDING)
+    {
+        if (!raw_update_params()) return;
+    }
+    else if (!raw_lv_is_enabled() || raw_info.bits_per_pixel != 14)
+    {
+        return;
+    }
+
+    /* raw -> 0..255 for the waveform's vertical axis. Rebuilt only when the
+     * levels actually move - the RAW histogram rebuilds its equivalent every
+     * single frame, which is 16384 float logs there is no reason to repeat. */
+    static uint8_t r2y[16384];
+    static int lut_white = -1, lut_black = -1;
+    if (lut_white != raw_info.white_level || lut_black != raw_info.black_level)
+    {
+        for (int i = 0; i < 16384; i++)
+            r2y[i] = COERCE((raw_to_ev(i) + 12) * 255 / 12, 0, 255);
+        lut_white = raw_info.white_level;
+        lut_black = raw_info.black_level;
+    }
+
+    int step = lv ? 4 : 2;
+    for (int i = os.y0; i < os.y_max; i += step)
+    {
+        int y = BM2RAW_Y(i);
+        if (y < raw_info.active_area.y1 + 8 || y > raw_info.active_area.y2 - 8) continue;
+
+        for (int j = os.x0; j < os.x_max; j += 2)
+        {
+            int x = BM2RAW_X(j);
+            if (x < raw_info.active_area.x1 + 8 || x > raw_info.active_area.x2 - 8) continue;
+
+            /* Green: the luma proxy, and the channel that runs out first in
+             * most light, so it is the honest one to plot against clipping. */
+            int g = raw_green_pixel_dark(x, y);
+            if (g == 0) continue;                   /* bad pixel */
+            waveform_add_pixel(j, r2y[COERCE(g, 0, 16383)]);
+        }
+    }
+}
+#endif
+
 #if defined(FEATURE_HISTOGRAM)
 static void
 hist_build()
@@ -561,13 +698,24 @@ hist_build()
     }
     #endif
     
+#ifdef FEATURE_RAW_WAVEFORM
+    int waveform_is_raw = (waveform_draw && waveform_raw && can_use_raw_overlays());
+    if (waveform_is_raw)
+    {
+        waveform_build_raw();
+    }
+#else
+    const int waveform_is_raw = 0;
+#endif
+
     histogram.is_rgb =
         histogram.is_raw ||    /* RAW histogram is always RGB-based */
         ((hist_type == 1 ||    /* Use YUV RGB histogram if selected */
           hist_type == 2) &&   /* Fall back to YUV RGB if we can't use the RAW RGB histogram */
          !EXT_MONITOR_RCA);    /* However, we cannot use YUV RGB histogram on RCA monitors, because they use YUV411 instead of YUV422 */
     
-    if (!waveform_draw && !vectorscope_draw && (!hist_draw || histogram.is_raw))
+    if ((!waveform_draw || waveform_is_raw) && !vectorscope_draw &&
+        (!hist_draw || histogram.is_raw))
     {
         /* optimization: no YUV-based histogram/waveform/scope enabled
          * => no need to scan the entire image */
@@ -594,7 +742,7 @@ hist_build()
             }
             
             #ifdef FEATURE_WAVEFORM
-            if (waveform_draw) 
+            if (waveform_draw && !waveform_is_raw)
             {
                 waveform_add_pixel(x, Y);
             }
@@ -603,8 +751,13 @@ hist_build()
             #ifdef FEATURE_VECTORSCOPE
             if (vectorscope_draw)
             {
-                int8_t U = (pixel >>  0) & 0xFF;
-                int8_t V = (pixel >> 16) & 0xFF;
+                /* DIGIC 6/7/8 store chroma biased by +0x80, and UYVY_GET_U/V
+                 * exist precisely to strip it - this site was bypassing them
+                 * with a raw cast. Every neutral pixel therefore arrived as
+                 * -128, landed outside the circle and got painted on the rim:
+                 * a red edge with an empty centre. Upstream bug, all DIGIC 6+. */
+                int8_t U = UYVY_GET_U(pixel);
+                int8_t V = UYVY_GET_V(pixel);
                 vectorscope_addpixel(Y, U, V);
             }
             #endif
@@ -803,7 +956,7 @@ static void FAST draw_zebras_raw_lv()
 {
     if (!raw_update_params()) return;
 
-    uint8_t * const bvram = bmp_vram_real();
+    uint8_t * const bvram = bmp_vram_overlay();
     if (!bvram) return;
     uint8_t * const bvram_mirror = get_bvram_mirror();
     if (!bvram_mirror) return;
@@ -1132,12 +1285,27 @@ static uint16_t bm_lv_x_cache[BMP_W_PLUS - BMP_W_MINUS];
 
 static void zebra_update_lut()
 {
-    static int prev_bm2lv_sx = 0;
+    /* Peaking reads its own uint16 copy of the BM2LV_X mapping. This guard
+     * used to watch only bm2lv.sx, so anything that changed the mapping
+     * without changing the scale went unseen: the tx = 8 correction in
+     * vram.c (peaking kept its 8px rightward offset after the fix shipped),
+     * and the flipped-screen mirror (the source table reflected, this copy
+     * did not, and the option appeared to do nothing at all). Watch
+     * everything the mapping depends on. */
+    /* Keyed on what the source table actually CONTAINS at the image edges,
+     * not on the flag that asks for it to change. Keying on the flag raced:
+     * this rebuilt the instant the flag flipped, from a source table vram.c
+     * had not yet reflected, and then sat on a stable signature forever. The
+     * two edge samples swap when the reflection lands, so this follows the
+     * real state whichever order the two updates run in. */
+    static int prev_sig = -1;
+    int sig = bm2lv.sx ^ (bm2lv.tx << 12) ^ ((os.x0 + os.x_max) << 20)
+            ^ (BM2LV_X(os.x0 + 4) << 8) ^ (BM2LV_X(os.x_max - 5) << 24);
     int rebuild = 0;
 
-    if(unlikely(prev_bm2lv_sx != bm2lv.sx))
+    if(unlikely(prev_sig != sig))
     {
-        prev_bm2lv_sx = bm2lv.sx;
+        prev_sig = sig;
         rebuild = 1;
     }
     
@@ -1163,7 +1331,7 @@ static int zebra_digic_dirty = 0;
 
 static void draw_zebras( int Z )
 {
-    uint8_t * const bvram = bmp_vram_real();
+    uint8_t * const bvram = bmp_vram_overlay();
     int zd = Z && zebra_draw && (lv_luma_is_accurate() || PLAY_OR_QR_MODE) && (zebra_rec || NOT_RECORDING); // when to draw zebras
     if (zd)
     {
@@ -1465,9 +1633,67 @@ static inline int FAST calc_peak(const uint8_t* p8, const int pitch)
     return e;
 }
 
+/* Same Laplacian, sampled two pixels out instead of one.
+ *
+ * The 1-px kernel is the most noise-sensitive detector there is: a single
+ * noisy photosite in Canon's preview IS a maximal Laplacian response, so at
+ * anything above base ISO the peaking fills with sparkle that has nothing to do
+ * with focus. Doubling the sample distance turns the kernel into a band-pass
+ * that rejects the highest spatial frequency - which is where per-pixel noise
+ * lives - while an actual edge, which spans several pixels, still responds
+ * fully. UYVY packs Y at every second byte, so +/-2 px horizontally is +/-4
+ * bytes; vertically it is two rows of pitch. Costs nothing extra. */
+static inline int FAST calc_peak_wide(const uint8_t* p8, const int pitch)
+{
+    const int xm = (int)(*(p8 - 4));
+    const int xp = (int)(*(p8 + 4));
+    const int ym = (int)(*(p8 - 2 * pitch));
+    const int yp = (int)(*(p8 + 2 * pitch));
+
+    int result = ((int)(*p8) * 4) - (xp + xm + yp + ym);
+    int e = ABS(result);
+
+    if (focus_peaking_filter_edges)
+    {
+        int d1 = MAX(ABS(xp - xm), ABS(yp - ym));
+        e = MAX(e - ((d1 << focus_peaking_filter_edges) >> 2), 0) * 2;
+    }
+    return e;
+}
+
 static inline int FAST peak_d2xy(const uint8_t* p8)
 {
-    return calc_peak(p8, vram_lv.pitch);
+    return (focus_peaking_steady >= 2)
+         ? calc_peak_wide(p8, vram_lv.pitch)
+         : calc_peak(p8, vram_lv.pitch);
+}
+
+/* Temporal persistence for peaking.
+ *
+ * "Flashing" false positives are, by definition, hits that do not repeat:
+ * preview noise is uncorrelated from one frame to the next, so a block that
+ * fires from noise fires again next frame with probability p, while a real
+ * edge fires every frame. Requiring two consecutive hits before drawing cuts
+ * noise by a factor of roughly 1/p and leaves edges untouched - at the cost of
+ * one frame of latency on newly-arriving detail, which at 20 fps overlay
+ * refresh is 50 ms.
+ *
+ * One bit per 2x2 BMP block (the unit focus_found_pixel() paints), double-
+ * buffered: 360 x 240 bits x 2 = 21.6 KB. The adaptive threshold still counts
+ * every raw hit, so it settles exactly as before; only the drawing is gated. */
+#define PEAK_HIST_W   (720 / 2)
+#define PEAK_HIST_H   (480 / 2)
+#define PEAK_HIST_LEN ((PEAK_HIST_W * PEAK_HIST_H + 7) / 8)
+static uint8_t * peak_hist[2] = { 0, 0 };
+static int peak_hist_cur = 0;
+
+static inline int peak_hist_check_and_set(int x, int y)
+{
+    int bi = (y >> 1) * PEAK_HIST_W + (x >> 1);
+    if (bi < 0 || bi >= PEAK_HIST_W * PEAK_HIST_H) return 1;
+    uint8_t mask = 1 << (bi & 7);
+    peak_hist[peak_hist_cur][bi >> 3] |= mask;
+    return (peak_hist[peak_hist_cur ^ 1][bi >> 3] & mask) != 0;
 }
 
 #ifdef FEATURE_FOCUS_PEAK_DISP_FILTER
@@ -1709,7 +1935,7 @@ draw_zebra_and_focus( int Z, int F )
 {
     if (unlikely(!get_global_draw())) return 0;
 
-    uint8_t * const bvram = bmp_vram_real();
+    uint8_t * const bvram = bmp_vram_overlay();
     if (unlikely(!bvram)) return 0;
     if (unlikely(!bvram_mirror)) return 0;
     
@@ -1796,8 +2022,25 @@ draw_zebra_and_focus( int Z, int F )
         int n_total = 0;
         if (lv) // fast, realtime
         {
-            n_total = ((yEnd - yStart) * (xEnd - xStart)) / 6;
-            for(int y = yStart; y < yEnd; y += 3)
+            if (focus_peaking_steady)
+            {
+                if (unlikely(!peak_hist[0])) peak_hist[0] = malloc(PEAK_HIST_LEN);
+                if (unlikely(!peak_hist[1])) peak_hist[1] = malloc(PEAK_HIST_LEN);
+                if (peak_hist[0] && peak_hist[1])
+                {
+                    memset(peak_hist[peak_hist_cur], 0, PEAK_HIST_LEN);
+                }
+            }
+
+            /* focus_found_pixel() paints rows y and y+1, so stepping by 3
+             * leaves a one-row hole and every edge reads as a dotted trail.
+             * Stepping by 2 makes the marks abut into a continuous stroke.
+             * n_total must track the step, or the adaptive threshold below
+             * (n_over/n_total vs focus_peaking_pthr) drifts and the peaking
+             * either floods the frame or goes blank. */
+            const int ystep = focus_peaking_lines ? 2 : 3;
+            n_total = ((yEnd - yStart) * (xEnd - xStart)) / (ystep * 2);
+            for(int y = yStart; y < yEnd; y += ystep)
             {
                 uint32_t row = vram + BM2LV_R(y);
                 
@@ -1812,9 +2055,23 @@ draw_zebra_and_focus( int Z, int F )
                     {
                         n_over++;
                         if (unlikely(dirty_pixels_num >= MAX_DIRTY_PIXELS)) break; // threshold too low, abort
+
+                        /* first sighting of this block? record it and wait
+                         * for next frame to confirm before drawing */
+                        if (focus_peaking_steady && peak_hist[0] && peak_hist[1] &&
+                            !peak_hist_check_and_set(x, y))
+                        {
+                            continue;
+                        }
+
                         focus_found_pixel(x, y, e, thr, bvram);
                     }
                 }
+            }
+
+            if (focus_peaking_steady && peak_hist[0] && peak_hist[1])
+            {
+                peak_hist_cur ^= 1;     /* this frame becomes "last frame" */
             }
         }
         else // playback - can be slower and more accurate
@@ -2694,6 +2951,7 @@ struct menu_entry zebra_menus[] = {
         .help = "Enable/disable ML overlay graphics (zebra, cropmarks...)",
         //.essential = FOR_LIVEVIEW,
     },
+
     #endif
     #ifdef FEATURE_ZEBRA
     {
@@ -2832,10 +3090,26 @@ struct menu_entry zebra_menus[] = {
                 .icon_type = IT_DICE,
             },
             {
-                .name = "Grayscale image", 
+                .name = "Grayscale image",
                 .priv = &focus_peaking_grayscale,
                 .max = 1,
                 .help = "Display LiveView image in grayscale.",
+            },
+            {
+                .name = "Edge density",
+                .priv = &focus_peaking_lines,
+                .max = 1,
+                .choices = CHOICES("Dots (faster)", "Lines"),
+                .help  = "Lines scans every 2nd row instead of every 3rd, so the",
+                .help2 = "2x2 marks join into strokes. Costs ~1.5x the scan.",
+            },
+            {
+                .name = "Noise rejection",
+                .priv = &focus_peaking_steady,
+                .max = 2,
+                .choices = CHOICES("OFF", "Steady", "Steady + Wide"),
+                .help  = "Steady: draw only edges seen on 2 consecutive frames.",
+                .help2 = "Wide: detector ignores single-pixel noise. Try Steady+Wide at high ISO.",
             },
             MENU_EOL
         },
@@ -3000,6 +3274,16 @@ struct menu_entry zebra_menus[] = {
                 .update = falsecolor_display_palette,
                 .help = "False color palettes for exposure, banding, green screen...",
             },
+            #ifdef FEATURE_RAW_FALSE_COLOR
+            {
+                .name = "Source       ",
+                .priv = &falsecolor_raw,
+                .max = 1,
+                .choices = CHOICES("Preview (YUV)", "RAW sensor"),
+                .help  = "RAW reads the sensor, ignoring picture style and contrast curve.",
+                .help2 = "Use RAW when the deliverable is raw video - clipping shown is real.",
+            },
+            #endif
             MENU_EOL
         }
     },
@@ -3082,6 +3366,16 @@ struct menu_entry zebra_menus[] = {
                 .icon_type = IT_SIZE,
                 .help = "Waveform size: Small / Large / FullScreen.",
             },
+            #ifdef FEATURE_RAW_WAVEFORM
+            {
+                .name = "Source",
+                .priv = &waveform_raw,
+                .max = 1,
+                .choices = CHOICES("Preview (YUV)", "RAW sensor"),
+                .help  = "RAW plots the sensor. Top of graph = raw clipping,",
+                .help2 = "bottom = 12 stops under. Same scale as RAW histogram.",
+            },
+            #endif
             MENU_EOL
         },
         //.essential = FOR_LIVEVIEW | FOR_PLAYBACK,
@@ -3090,13 +3384,32 @@ struct menu_entry zebra_menus[] = {
     MENU_PLACEHOLDER("Vectorscope"),
     #ifdef FEATURE_LEVEL_INDICATOR
     {
-        .name = "Level Indicator", 
-        .priv = &electronic_level, 
-        .max  = 1, 
+        .name = "Level Indicator",
+        .priv = &electronic_level,
+        .max  = 1,
         .help = "Electronic level indicator in 0.5 degree steps.",
         .depends_on = DEP_GLOBAL_DRAW,
     },
     #endif
+    #ifdef CONFIG_MIRROR_OVERLAYS
+    {
+        .name = "Selfie-screen mirror",
+        .priv = &overlay_mirror_mode,
+        .max = 1,
+        .update = overlay_mirror_update,
+        .help  = "Mirror peaking/zebras/FC when the screen faces forward,",
+        .help2 = "so they line up with Canon's mirrored selfie-mode image.",
+        .depends_on = DEP_GLOBAL_DRAW,
+    },
+    #endif
+    {
+        .name = "Clean HDMI out",
+        .priv = &clean_hdmi_out,
+        .max = 1,
+        .help  = "With HDMI connected, draw no ML overlays or info bars at all.",
+        .help2 = "For a recorder on the HDMI port. Canon's info: cycle INFO to clean.",
+        .depends_on = DEP_GLOBAL_DRAW,
+    },
 };
 
 static struct menu_entry livev_dbg_menus[] = {
@@ -3793,6 +4106,15 @@ void draw_histogram_and_waveform(int allow_play)
 #ifdef FEATURE_VECTORSCOPE
     vectorscope_redraw();
 #endif
+
+#ifdef FEATURE_VRAM_RGBA
+    /* These graphs write the shadow buffer directly instead of going through
+     * bmp_fill/rbf_font, which are the only paths that flag a recomposite. On
+     * the RGBA compositor they therefore sat invisible until some unrelated
+     * text draw happened to flush the frame - the reported "only shows its
+     * full information when it gets updated". */
+    ml_refresh_display_needed = 1;
+#endif
 }
 
 
@@ -3808,8 +4130,58 @@ clearscreen_loop:
 #endif
         msleep(100);
 
+#if defined(FEATURE_VRAM_RGBA) && !defined(LV_OVERLAYS_MODE)
+        /* Clear our overlay the moment ML stops drawing.
+         *
+         * livev_lopriority_task() already does this, but only for bodies that
+         * define LV_OVERLAYS_MODE - which this one does not, so on the RGBA
+         * compositor nothing wiped the last frame of overlays. Canon never
+         * repaints our layer, so pressing INFO to leave ML's display mode left
+         * the overlay frozen on screen until some unrelated event forced a
+         * repaint (pressing Q, typically).
+         *
+         * Watching the falling edge of get_global_draw() covers every route
+         * out - INFO, leaving LiveView, global draw switched off - and cannot
+         * flicker, because by definition we have just stopped drawing. */
+        {
+            static int last_gd = -1;
+            int gd = get_global_draw();
+            /* liveview_display_idle() matters: the upstream LV_OVERLAYS_MODE
+             * version guards on it and I left it out, which let a full-buffer
+             * clrscr() fire while raw recording was running. mlv_lite drops
+             * global draw when it starts a take, so this was landing right on
+             * the start of a recording - a plausible cause of the ERR seen on
+             * alternate takes. Nothing here is worth risking a take for: if we
+             * are not idle, skip it and clear on the next transition. */
+            if (last_gd == 1 && gd == 0 &&
+                !gui_menu_shown() && liveview_display_idle())
+            {
+                clrscr();
+                ml_refresh_display_needed = 1;
+            }
+            last_gd = gd;
+        }
+#endif
+
+#ifdef CONFIG_MIRROR_OVERLAYS
+        /* Follow the screen position by polling, not only by event.
+         *
+         * PROP_LCD_POSITION fires while the hinge is moving and can settle on
+         * a value the handler last saw mid-swing; relying on the event alone
+         * gave a mirror that sometimes did not engage and sometimes did not
+         * release. Sample it here at 10 Hz, act only once it has held still
+         * for 300 ms, and keep re-applying - overlay_mirror_apply() is a
+         * no-op when nothing changed, so a missed rebuild heals itself. */
+        {
+            static int last_pos = -1, stable = 0;
+            if (lcd_position == last_pos) { if (stable < 3) stable++; }
+            else { last_pos = lcd_position; stable = 0; }
+            if (stable >= 3) overlay_mirror_apply();
+        }
+#endif
+
         //~ bmp_printf(FONT_MED, 100, 100, "%d %d %d", idle_countdown_display_dim, idle_countdown_display_off, idle_countdown_globaldraw);
-        
+
         /* blink LED if screen is turned off */
         idle_led_blink_step(k);
 
@@ -3919,6 +4291,28 @@ BMP_LOCK (
  *       with (PlayMain, ShootOlcApp, PlayMovieGuideApp?)
  */
     extern struct dialog* LiveViewApp_dialog;
+
+#ifdef FEATURE_VRAM_RGBA
+    /* dialog_redraw() repaints CANON's layer. On the RGBA compositor ML draws
+     * into its own shadow buffer, which Canon never touches - so on this body
+     * redraw() erased nothing of ours and every bmp_printf lived forever:
+     * NotifyBox text that had already timed out, mlv_lite's "Flushing
+     * buffers..." line, and so on. Clear the ML overlay ourselves. Anything
+     * that should still be on screen is re-drawn by the next overlay pass,
+     * which is exactly how this works on the non-RGBA bodies.
+     *
+     * NOT while recording, though. This is a full-buffer memset into the
+     * compositor layer, and redraw() is called from mlv_lite's own stop path -
+     * so as shipped it fired on every take teardown and the camera threw a
+     * Canon ERR on the next record press, reproducibly on alternate takes.
+     * Stale text during a take is a cosmetic problem; killing the take is not.
+     * NOT_RECORDING covers H.264 and mlv_lite's custom raw state alike. */
+    if (NOT_RECORDING)
+    {
+        clrscr();
+    }
+#endif
+
     if(LiveViewApp_dialog)
     {
         dialog_redraw(LiveViewApp_dialog); // try to redraw (this has semaphores for winsys)
@@ -4125,6 +4519,12 @@ livev_hipriority_task( void* unused )
             if (hist_draw && RAW_HISTOGRAM_ENABLED) raw_needed = 1;          /* raw hisogram (any kind) */
             #endif
             if (spotmeter_draw && spotmeter_formula == 3) raw_needed = 1;   /* spotmeter, units: raw */
+            #ifdef FEATURE_RAW_FALSE_COLOR
+            if (falsecolor_draw && falsecolor_raw) raw_needed = 1;          /* raw false colour */
+            #endif
+            #ifdef FEATURE_RAW_WAVEFORM
+            if (waveform_draw && waveform_raw) raw_needed = 1;              /* raw waveform */
+            #endif
         }
 
         if (!raw_flag && raw_needed)
@@ -4172,6 +4572,14 @@ livev_hipriority_task( void* unused )
             display_filter_step(k);
             #endif
             
+            #ifdef FEATURE_RAW_FALSE_COLOR
+            if (falsecolor_draw && falsecolor_raw && can_use_raw_overlays())
+            {
+                if (k % 4 == 0)
+                    BMP_LOCK( if (lv) draw_false_raw(); )
+            }
+            else
+            #endif
             #ifdef FEATURE_FALSE_COLOR
             if (falsecolor_draw)
             {
@@ -4189,6 +4597,19 @@ livev_hipriority_task( void* unused )
                         ); 
                 )
             }
+
+            #ifdef FEATURE_VRAM_RGBA
+            /* On D678X the OSD is an RGBA buffer that only reaches the panel when
+             * refresh_yuv_from_rgb_task() (bmp.c) sees this flag set.  menu.c and
+             * rbf_font.c set it for their own drawing, which is why menus and text
+             * appear; the zebra / focus peaking / false colour path never did, so
+             * everything it drew was composed into the buffer and then discarded.
+             * That is why no D7 cam had these features working.
+             *
+             * The refresh task rate-limits itself to 20 fps, so setting this every
+             * pass costs nothing extra when nothing changed. */
+            ml_refresh_display_needed = 1;
+            #endif
         }
 
         #ifdef FEATURE_SPOTMETER
@@ -4284,6 +4705,14 @@ livev_lopriority_task( void* unused )
         #endif
 
         // here, redrawing cropmarks does not block fast zoom
+        //
+        // This is the *playback* cropmark redraw, and it is the only part of
+        // FEATURE_CROPMARKS that needs IMGPLAY_ZOOM_LEVEL_ADDR (it avoids fighting
+        // with playback zoom).  Cams that don't have that address found yet can
+        // still use cropmarks in LiveView - including the RAW recording-area frame
+        // that mlv_lite feeds through set_movie_cropmarks() - so gate just this
+        // block rather than the whole feature.
+        #ifdef IMGPLAY_ZOOM_LEVEL_ADDR
         if (crop_enabled && cropmarks_play && PLAY_MODE && DISPLAY_IS_ON && (int32_t)MEM(IMGPLAY_ZOOM_LEVEL_ADDR) <= 0)
         {
             msleep(500);
@@ -4293,6 +4722,7 @@ livev_lopriority_task( void* unused )
                 if ((int32_t)(int32_t)MEM(IMGPLAY_ZOOM_LEVEL_ADDR) >= 0) redraw(); // whoops, CTRL-Z, CTRL-Z :)
             }
         }
+        #endif
         #endif
 
         loprio_sleep();
@@ -4366,7 +4796,8 @@ void update_disp_mode_params_from_bits()
 #ifdef FEATURE_HISTOGRAM
     hist_draw            = bits & (1<<2) ? 1 : 0;
 #endif
-    crop_enabled         = bits & (1<<3) ? 1 : 0;
+    /* presets only recorded on/off for bitmaps; keep OFF if it was OFF */
+    if (crop_mode != 0) crop_mode = bits & (1<<3) ? 2 : 1;
     waveform_draw        = bits & (1<<4) ? 1 : 0;
     falsecolor_draw      = bits & (1<<5) ? 1 : 0;
     spotmeter_draw       = bits & (1<<6) ? 1 : 0;
@@ -4601,7 +5032,7 @@ static void show_overlay()
     }
 
     get_yuv422_vram();
-    uint8_t * const bvram = bmp_vram_real();
+    uint8_t * const bvram = bmp_vram_overlay();
     if (!bvram) return;
     
     clrscr();

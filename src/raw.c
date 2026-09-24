@@ -32,6 +32,8 @@
 #include "console.h"
 #include "fps.h"
 #include "platform/state-object.h"
+#include "patch.h"
+#undef dbg_printf   /* patch.h has its own; raw.c defines it below */
 
 #undef RAW_DEBUG        /* define it to help with porting */
 #undef RAW_DEBUG_DUMP   /* if you want to save the raw image buffer and the DNG from here */
@@ -690,6 +692,132 @@ static void * raw_lv_buffer = 0;
 static int raw_lv_buffer_size = 0;
 #endif
 
+#ifdef CONFIG_LV_BPP_MEM1_PATCH
+/* 6D2 (DIGIC 7) LiveView bit depth, done where Canon does it.
+ *
+ * There is no EngDrvOut on this body, and poking PACK32 alone is wrong anyway
+ * (200D: "good data every other frame" - the raw write-DMAC keeps its 14-bit
+ * byte count).  The raw tap is Canon's Mem1 "Furikake" path
+ * (LiveView/LvPathCore/Driver/LvMem1FurikakePath.c); its update function at
+ * 0xe01470fe (1.1.1) hard-codes the depth twice, a few bytes apart:
+ *
+ *   e014720c  mov.w r0, #0xe     bits per pixel -> DMAC bytes/line = Hsize*bpp>>3
+ *   e0147212  mov.w r0, #2       PACK32 mode code (b1): 0 = 10-bit, 1 = 12, 2 = 14
+ *
+ * (measured with d7probe: PACK32 0xd0008094 = 0x20, EDMAC ch24 xb = 2128*14/8).
+ * We patch both immediates through the MMU patch manager (ROM pages remap,
+ * exactly like the function hooks) and re-run that update by toggling the raw
+ * tap (lv_save_raw 0/1), which is what raw_lv_enable() does anyway.  Canon then
+ * programs PACK32 and the DMAC from the same numbers, so the frame completes
+ * every frame.  The width autodetect below divides the DMAC pitch by the depth
+ * in effect. */
+#define LV_BPP_PATCH_ADDR_BPP    0xe014720c    /* mov.w r0, #imm : bits per pixel */
+#define LV_BPP_PATCH_ADDR_CODE   0xe0147212    /* mov.w r0, #imm : PACK32 code */
+#define LV_BPP_PATCH_ORIG_BPP    0x000ef04f    /* bytes 4f f0 0e 00 as a little-endian word */
+#define LV_BPP_PATCH_ORIG_CODE   0x0002f04f
+
+static int lv_bpp_6d2 = 14;         /* depth in effect on the DMAC (see raw_lv_get_resolution) */
+static int lv_bpp_patched = 0;      /* depth the ROM constants are patched to, 0 = stock (14) */
+
+static void raw_lv_set_bpp_6d2(int bpp)
+{
+    if (bpp != 10 && bpp != 12) bpp = 14;
+    if (bpp == lv_bpp_6d2 && (bpp == 14 ? !lv_bpp_patched : lv_bpp_patched == bpp)) return;
+
+    if (lv_bpp_patched)
+    {
+        unpatch_memory(LV_BPP_PATCH_ADDR_BPP);
+        unpatch_memory(LV_BPP_PATCH_ADDR_CODE);
+        lv_bpp_patched = 0;
+    }
+    if (bpp != 14)
+    {
+        /* mov.w r0, #imm8 (T2): imm8 sits in the low byte of the second halfword */
+        struct patch p[2] = {
+            { .addr = (uint8_t *)LV_BPP_PATCH_ADDR_BPP,  .old_value = LV_BPP_PATCH_ORIG_BPP,
+              .new_value = (LV_BPP_PATCH_ORIG_BPP & ~0xff0000) | (bpp << 16),
+              .size = 4, .description = "6D2 LV bpp: DMAC bits/pixel", .is_instruction = 1 },
+            { .addr = (uint8_t *)LV_BPP_PATCH_ADDR_CODE, .old_value = LV_BPP_PATCH_ORIG_CODE,
+              .new_value = (LV_BPP_PATCH_ORIG_CODE & ~0xff0000) | (((bpp - 10) / 2) << 16),
+              .size = 4, .description = "6D2 LV bpp: PACK32 mode", .is_instruction = 1 },
+        };
+        if (apply_patches(p, 2))
+        {
+            printf("LV bpp %d: patch refused\n", bpp);
+            bpp = 14;
+        }
+        else
+        {
+            lv_bpp_patched = bpp;
+        }
+    }
+    lv_bpp_6d2 = bpp;
+
+    /* Make Canon run the Mem1 path update with the new constants.  Only a
+     * LiveView mode change does that (the update is part of the CapDev path
+     * setup, callers 0xe00d1b46 / 0xe00d26ae - toggling the raw tap does NOT
+     * reach it, which is why the earlier tap-toggle attempts only ever worked
+     * through their zoom fallback).  So bounce the zoom right away, with short
+     * waits, and confirm through shadow memory that the write-DMAC carries the
+     * new byte count (yb_xb low half = bytes/line) before returning. */
+    extern int lv_raw_enabled_6d2_peek(void);
+    if (lv && lv_raw_enabled_6d2_peek() == 1)
+    {
+        extern void set_lv_zoom(int zoom);
+        uint32_t want = raw_info.width * bpp / 8;
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            int z = lv_dispsize;
+            int other = (z == 1) ? 5 : 1;
+            /* each zoom step must really happen; Canon ignores requests
+             * while it is still busy (e.g. right after a recording stops) */
+            for (int k = 0; k < 4 && lv_dispsize != other; k++)
+            {
+                set_lv_zoom(other);
+                for (int j = 0; j < 20 && lv_dispsize != other; j++) msleep(25);
+            }
+            msleep(250 + 250 * attempt);
+            for (int k = 0; k < 4 && lv_dispsize != z; k++)
+            {
+                set_lv_zoom(z);
+                for (int j = 0; j < 20 && lv_dispsize != z; j++) msleep(25);
+            }
+            for (int i = 0; i < 60; i++)      /* up to ~1.5 s */
+            {
+                msleep(25);
+                uint32_t xb = shamem_read((uint32_t)&(raw_lv_edmac->yb_xb)) & 0xFFFF;
+                if (xb == want && lv_dispsize == z)
+                {
+                    /* the LV path is up; give the timing store a moment too
+                     * (it is 0 mid-transition, and the next thing mlv_lite
+                     * does is read the frame rate) */
+                    for (int j = 0; j < 20 && MEM(0x1c928 + 0x1c) == 0; j++) msleep(25);
+                    wait_lv_frames(2);
+                    printf("LV bpp %d: DMAC %d bytes/line after %d ms (try %d)\n", bpp, xb, i * 25, attempt);
+                    return;
+                }
+            }
+        }
+        printf("LV bpp %d: DMAC did not follow (pitch %d)\n", bpp,
+               (int)(shamem_read((uint32_t)&(raw_lv_edmac->yb_xb)) & 0xFFFF));
+        if (lv_bpp_patched)
+        {
+            unpatch_memory(LV_BPP_PATCH_ADDR_BPP);
+            unpatch_memory(LV_BPP_PATCH_ADDR_CODE);
+            lv_bpp_patched = 0;
+        }
+        /* whatever Canon is really sending now is what raw_lv_get_resolution()
+         * will derive from the pitch on the next update; do not assume 14 */
+        lv_bpp_6d2 = 14;
+    }
+}
+
+int raw_lv_get_bpp(void)
+{
+    return lv_bpp_6d2;
+}
+#endif
+
 /* our default LiveView buffer (which can be DEFAULT_RAW_BUFFER or allocated) */
 static void* raw_get_default_lv_buffer()
 {
@@ -769,7 +897,31 @@ static int raw_lv_get_resolution(int* width, int* height)
     if (!lv_raw_size) return 0;
 
     int pitch = lv_raw_size & 0xFFFF;
+#ifdef CONFIG_LV_BPP_MEM1_PATCH
+    /* The DMAC pitch is width * depth / 8 for whatever depth Canon last
+     * programmed - which is not always what we asked for (a bounce that did
+     * not rebuild the path leaves the old packing in place).  Work out the
+     * depth from the pitch itself: the readouts are 2128 or 3264 wide, so
+     * exactly one of 14/12/10 divides out to a known width.  Track that as
+     * the depth in effect, so raw_info never lies about the data. */
+    {
+        static const int widths[] = { 2128, 3264 };
+        int found = 0;
+        int cands[3] = { lv_bpp_6d2, 14, 12 };
+        cands[2] = (lv_bpp_6d2 == 12) ? 10 : (lv_bpp_6d2 == 10) ? 12 : 10;
+        for (int c = 0; c < 3 && !found; c++)
+        {
+            int b = cands[c];
+            if ((pitch * 8) % b) continue;
+            int w = pitch * 8 / b;
+            for (int k = 0; k < (int)COUNT(widths); k++)
+                if (w == widths[k]) { *width = w; lv_bpp_6d2 = b; found = 1; break; }
+        }
+        if (!found) *width = pitch * 8 / lv_bpp_6d2;
+    }
+#else
     *width = pitch * 8 / 14;
+#endif
 
     /* 5D2 uses lv_raw_size >> 16, 5D3 uses lv_raw_height, so this hopefully covers both cases */
     *height = MAX((lv_raw_height & 0xFFFF) + 1, ((lv_raw_size >> 16) & 0xFFFF) + 1);
@@ -1282,6 +1434,19 @@ int raw_update_params_work()
         dirty = 0;
     }
 
+#if defined(CONFIG_6D2) && defined(BLACK_LEVEL)
+    /* 6D2 LiveView: Canon clamps the raw black to 2047 in every readout, ISO
+     * and bit depth (lens-cap clips: 2048 at 14/12/10-bit, 1080p and 5x).
+     * The generic autodetect cannot see it: skip_left 100 comes from the
+     * full-res CR2 border (116 px), but the 1080p raw is binned 3x across, so
+     * only ~40 columns are optical black and x 16..84 is mostly image.  It
+     * read 2128..3654 on lit scenes, which went into the MLV headers and
+     * crushed the shadows in post.  Pin it; this also covers 12/10-bit, where
+     * autodetect never runs and a reset (0) would otherwise stick. */
+    if (lv)
+        raw_info.black_level = BLACK_LEVEL;
+#endif
+
     if (!recompute_black_and_white)
     {
         /* keep the old values */
@@ -1292,6 +1457,18 @@ int raw_update_params_work()
     ASSERT(raw_info.bits_per_pixel == 14);
     int black_mean = 0, black_stdev_x100 = 0;
     int ok = autodetect_black_level(&black_mean, &black_stdev_x100);
+    #if defined(CONFIG_6D2) && defined(BLACK_LEVEL)
+    if (lv)
+    {
+        /* see above: the window is contaminated by image, so neither its
+         * mean nor its consistency check means anything on a lit scene.
+         * Keep the noise figure only when it looks like real black. */
+        if (!ok || ABS(black_mean - BLACK_LEVEL) >= 64)
+            black_stdev_x100 = 620;     /* measured ISO 100 read noise, 14-bit */
+        black_mean = BLACK_LEVEL;
+        ok = 1;
+    }
+    #endif
     #ifdef BLACK_LEVEL
     if (ABS(black_mean - BLACK_LEVEL) < 64)
     {
@@ -1484,6 +1661,20 @@ void raw_set_preview_rect(int x, int y, int w, int h, int obey_info_bars)
     int top_margin      = (obey_info_bars) ? 38 : 0;
     int bottom_margin   = (obey_info_bars) ? 38 : 0;
 
+#ifdef CONFIG_6D2
+    /* The LiveView image does not fill os on this body: in movie mode it is
+     * 408 rows letterboxed inside the 480-row panel, and os.off_169 (36) is
+     * that inset. Mapping the raw height onto all 480 rows drew every tall
+     * recording's rectangle 36 rows past the image at each end, where
+     * set_movie_cropmarks() clamped it to the panel edge - a frame around the
+     * info bars instead of a crop inside the picture. The raw frame maps onto
+     * the image. (obey_info_bars is ML's own preview path, unchanged.) */
+    if (!obey_info_bars)
+    {
+        top_margin = bottom_margin = os.off_169;
+    }
+#endif
+
     /* scaling factor: raw width should match os.x_ex, same for raw height and os.y_ex */
     lv2raw.sx = 1024 * w / BM2LV_DX(os.x_ex);
     lv2raw.sy = 1024 * h / BM2LV_DY(os.y_ex - top_margin - bottom_margin);
@@ -1502,6 +1693,9 @@ raw_set_geometry(int width, int height, int skip_left, int skip_right, int skip_
 {
     raw_info.width = width;
     raw_info.height = height;
+#ifdef CONFIG_LV_BPP_MEM1_PATCH
+    if (lv) raw_info.bits_per_pixel = lv_bpp_6d2;
+#endif
     raw_info.pitch = raw_info.width * raw_info.bits_per_pixel / 8;
     raw_info.frame_size = raw_info.height * raw_info.pitch;
     raw_info.active_area.x1 = skip_left;
@@ -2107,6 +2301,7 @@ static int compute_dynamic_range(int black_mean, int black_stdev_x100, int white
 #ifdef CONFIG_RAW_LIVEVIEW
 
 static int lv_raw_enabled = 0;
+int lv_raw_enabled_6d2_peek(void) { return lv_raw_enabled; }
 
 #ifdef CONFIG_EDMAC_RAW_SLURP
 static void* redirected_raw_buffer = 0;
@@ -2646,6 +2841,45 @@ void raw_lv_request_bpp(int bpp)
     const uint32_t modes[] = { MODE_10BIT, MODE_12BIT, MODE_14BIT, MODE_16BIT};
 
     int bpp_index = COERCE((bpp-10)/2, 0, COUNT(modes));
+
+#ifdef CONFIG_LV_BPP_MEM1_PATCH
+    /* 6D2: go through Canon's own Mem1 path instead of poking PACK32 (see
+     * raw_lv_set_bpp_6d2()); here we only track what depth is in effect */
+    raw_lv_set_bpp_6d2(bpp);
+    raw_info.bits_per_pixel = lv_bpp_6d2;
+    raw_info.pitch = raw_info.width * raw_info.bits_per_pixel / 8;
+    raw_info.frame_size = raw_info.pitch * raw_info.height;
+    give_semaphore(raw_sem);
+    return;
+#endif
+
+#ifdef CONFIG_NO_ENGIO_WRITES
+    /* This cam has no working EngDrvOut() - see _EngDrvOut() in
+     * platform/<cam>/function_overrides.c, which is an empty stub because the
+     * real address has never been found.  The register write below therefore
+     * does nothing, the sensor keeps producing 14-bit data, and ML would go on
+     * to record frames sized for the requested depth.  That produces MLV files
+     * that look valid but contain mis-packed pixels.
+     *
+     * It also fires the ASSERT below: shamem_read() reports the mode already
+     * matches, so we take the "no change needed" path and then assert a bit
+     * depth that was never actually applied.  Observed on 6D2 1.1.1 as
+     * "raw_info.bits_per_pixel == bpp at raw.c:2653".
+     *
+     * Until EngDrvOut is solved for these cams, pin the depth at the sensor's
+     * native 14 bits and report that honestly rather than lying about it.
+     */
+    if (bpp != 14)
+    {
+        bpp = 14;
+        bpp_index = COERCE((bpp-10)/2, 0, COUNT(modes));
+    }
+    raw_info.bits_per_pixel = bpp;
+    raw_info.pitch = raw_info.width * raw_info.bits_per_pixel / 8;
+    raw_info.frame_size = raw_info.pitch * raw_info.height;
+    give_semaphore(raw_sem);
+    return;
+#endif
 
     if (shamem_read(PACK32_MODE) == modes[bpp_index])
     {

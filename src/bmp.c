@@ -191,6 +191,9 @@ void bmp_idle_copy(int direction, int fullsize)
 // but this struct is not yet determined for 200D
 extern int XimrExe(void *);
 extern struct semaphore *winsys_sem;
+/* defined below; forward declared so the conversion loop can index it directly */
+static uint32_t indexed2rgbLUT[RGB_LUT_SIZE];
+
 void refresh_yuv_from_rgb(void)
 {
     // get our indexed buffer, convert into our real rgb buffer
@@ -240,14 +243,22 @@ void refresh_yuv_from_rgb(void)
             rgb_row = rgb_row + BMP_LAYER_WIDTH;
         }
 #else
-        //SJE FIXME benchmark this loop, it probably wants optimising
+        // This runs BMP_VRAM_SIZE times per refresh, so keep it tight:
+        // index the (now 256-entry) LUT directly rather than calling
+        // indexed2rgb(), which cost a call plus a bounds check per pixel.
+        //
+        // Note the alpha test below used to read "rgb && 0xff000000", a
+        // logical AND, so it only ever skipped a fully-zero pixel.  With the
+        // current palette that happened to behave, because the only entries
+        // with zero alpha are exactly 0x00000000 - but it is a bitwise test,
+        // and writing it correctly keeps it right if the palette grows.
         for (size_t n = 0; n < BMP_VRAM_SIZE; n++)
         {
             // limited alpha support, if dest pixel would be full alpha,
             // don't copy into dest.  This is COLOR_TRANSPARENT_BLACK in
             // the LUT
-            uint32_t rgb = indexed2rgb(*b);
-            if ((rgb && 0xff000000) == 0x00000000)
+            uint32_t rgb = indexed2rgbLUT[*b];
+            if ((rgb & 0xff000000) == 0x00000000)
                 rgb_data++;
             else
                 *rgb_data++ = rgb;
@@ -315,7 +326,48 @@ static uint32_t indexed2rgbLUT[RGB_LUT_SIZE] = {
     0xff8e8e8e, 0xff939393, 0xff989898, 0xff9c9c9c, 0xffa1a1a1, // 60
     0xffa5a5a5, 0xffaaaaaa, 0xffafafaf, 0xffb3b3b3, 0xffb8b8b8, // 65
     0xffbcbcbc, 0xffc1c1c1, 0xffc6c6c6, 0xffcacaca, 0xffcfcfcf, // 70
-    0xffd3d3d3, 0xffd8d8d8, 0xffdddddd, 0xffe1e1e1, 0xffe6e6e6  // 75
+    0xffd3d3d3, 0xffd8d8d8, 0xffdddddd, 0xffe1e1e1, 0xffe6e6e6, // 75
+    /* 80..255: not part of Canon's palette as ML uses it.  Padded with the
+     * same fallback indexed2rgb() used to return, so the conversion loop in
+     * refresh_yuv_from_rgb() can index directly with no call and no bounds
+     * check - that loop runs BMP_VRAM_SIZE (518400) times per refresh and is
+     * what makes the overlays feel sluggish on these cams. */
+    0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800,
+    0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800,
+    0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800,
+    0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800,
+    0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800,
+    0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800,
+    0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800,
+    0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800,
+    0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800,
+    0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800,
+    0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800,
+    0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800,
+    0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800,
+    0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800,
+    0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800,
+    0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800,
+    0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800,
+    0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800,
+    0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800,
+    0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800,
+    0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800,
+    0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800,
+    0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800,
+    0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800,
+    0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800,
+    0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800,
+    0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800,
+    0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800,
+    0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800,
+    0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800,
+    0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800,
+    0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800,
+    0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800,
+    0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800,
+    0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800, 0xffa33800,
+    0xffa33800
 };
 
 
@@ -348,15 +400,9 @@ static uint32_t indexed2uyvyLUT[COLOR_ORANGE + 1] = {
 
 uint32_t indexed2rgb(uint8_t color)
 {
-    if (color < RGB_LUT_SIZE)
-    {
-        return indexed2rgbLUT[color];
-    }
-    else
-    {
-        // return gray so it's probably visible
-        return indexed2rgbLUT[4];
-    }
+    /* LUT is a full 256 entries now, so a uint8_t index is always in range.
+     * Entries past Canon's palette hold the old fallback colour. */
+    return indexed2rgbLUT[color];
 }
 
 #endif

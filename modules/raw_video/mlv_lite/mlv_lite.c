@@ -87,6 +87,14 @@ static GUARDED_BY(GuiMainTask) int show_edmac = 0;
 extern WEAK_FUNC(ret_0) void mlv_play_file(char *filename);
 
 /* camera-specific tricks */
+/* provided by src/movtweaks.c (FEATURE_WAV_AUDIO) */
+extern void wav_scratch_start(void);
+extern void wav_scratch_stop(void);
+extern int  wav_scratch_auto_enabled(void);
+extern int  wav_scratch_rename(const char * mlv_path);
+/* src/zebra.c - weak so the module still loads on bodies without it */
+extern WEAK_FUNC(ret_0) int clean_hdmi_active(void);
+
 static int cam_eos_m = 0;
 static int cam_5d2 = 0;
 static int cam_50d = 0;
@@ -133,6 +141,19 @@ static CONFIG_INT("raw.card_spanning", card_spanning, 0);
 static CONFIG_INT("raw.res_x", resolution_index_x, 4);
 static CONFIG_INT("raw.res_x_fine", res_x_fine, 0);
 static CONFIG_INT("raw.aspect.ratio", aspect_ratio_index, 10);
+/* When the chosen aspect needs more rows than the sensor readout has at the
+ * chosen width, upstream keeps the width and CLAMPS the height - so 16:9, 4:3,
+ * 1:1 and 1:2 at 1920 wide all quietly record the same 1920x1192 and only the
+ * help text admits it. 1 = shrink the width instead so the ratio is honoured
+ * and the recorded-area guide tells the truth. */
+static CONFIG_INT("raw.aspect.fit", aspect_fit_width, 1);
+/* 6D2 crop mode.  There are no readout-window registers we can drive on this
+ * body, but Canon's 5x/10x LiveView magnification IS a 1:1 sensor window
+ * (3264x942 raw, 3164x926 active, measured), and mlv_lite records from it
+ * like any other mode.  This just requests that zoom whenever RAW video is on
+ * in movie LiveView, so the resolution list and the framing are the same
+ * every time instead of depending on whether the magnify button was pressed. */
+static CONFIG_INT("raw.crop.zoom", crop_zoom, 0);
 
 static CONFIG_INT("raw.write.speed", measured_write_speed, 0);
 static int measured_write_speeds[CARD_COUNT] = {0};
@@ -330,6 +351,74 @@ struct frame_slot
 
 static GUARDED_BY(settings_sem) struct memSuite * shoot_mem_suite = 0;  /* memory suite for our buffers */
 static GUARDED_BY(settings_sem) struct memSuite * srm_mem_suite = 0;
+
+/* Set when the recording task hands the memory suites back, cleared by the
+ * polling CBR once it has asked for them again. See raw_rec_polling_cbr(). */
+static volatile int buffers_need_realloc = 0;
+
+/* ---- record-path tracing -------------------------------------------------
+ *
+ * Written straight to the card and closed on every line, deliberately. The
+ * failure being chased takes the camera down hard enough to need a battery
+ * pull, which loses Canon's debug ring buffer and everything DryosDebugMsg
+ * put in it - so anything that only lives in RAM tells us nothing afterwards.
+ *
+ * A dozen short appends per take is affordable because none of this sits in
+ * the frame loop; it brackets setup and teardown only. Do NOT add calls to
+ * the per-frame path - writing to the card mid-take competes with the very
+ * thing we are trying to observe.
+ */
+/* FIO returns this on failure; only chdk-dng.c defines it globally */
+#ifndef INVALID_PTR
+#define INVALID_PTR ((void *)0xFFFFFFFF)
+#endif
+
+/* Set to 1 to trace the record path to ML/LOGS/RECDBG.LOG.
+ *
+ * Off by default - it appends to the card on every take. Kept in the tree
+ * rather than deleted because it is what found the buffer-reallocation bug
+ * above, after three wrong guesses made from symptoms alone; the next fault in
+ * this path will be much cheaper to find with it than without. */
+#define REC_TRACE 0
+
+#if REC_TRACE
+static void rec_log(const char * fmt, ...)
+{
+    char msg[160];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(msg, sizeof(msg), fmt, ap);
+    va_end(ap);
+
+    DryosDebugMsg(0, 15, "[REC] %s", msg);
+
+    char line[200];
+    int t = get_ms_clock();
+    int n = snprintf(line, sizeof(line), "%6d.%03d  %s\n", t / 1000, t % 1000, msg);
+
+    FILE * f = FIO_CreateFileOrAppend("ML/LOGS/RECDBG.LOG");
+    if (f == INVALID_PTR) return;
+    FIO_WriteFile(f, line, n);
+    FIO_CloseFile(f);
+}
+
+/* The second-take hypothesis is that something the first take took is never
+ * given back. Census both pools at each end of a take so the two runs can be
+ * diffed directly. format_memory_size() returns a shared static buffer, so
+ * these are printed as plain integers rather than through it. */
+static void rec_log_mem(const char * when)
+{
+    rec_log("%s | free=%dK shoot=%dK/%dchunks srm=%dK",
+            when,
+            GetFreeMemForAllocateMemory() / 1024,
+            shoot_mem_suite ? (int)(shoot_mem_suite->size / 1024) : -1,
+            shoot_mem_suite ? (int)shoot_mem_suite->num_chunks    : -1,
+            srm_mem_suite   ? (int)(srm_mem_suite->size / 1024)   : -1);
+}
+#else
+#define rec_log(...)       do { } while (0)
+#define rec_log_mem(when)  do { } while (0)
+#endif
 
 static GUARDED_BY(settings_sem) void * fullsize_buffers[2];         /* original image, before cropping, double-buffered */
 static GUARDED_BY(LiveViewTask) int fullsize_buffer_pos = 0;        /* which of the full size buffers (double buffering) is currently in use */
@@ -702,6 +791,24 @@ void update_resolution_params()
     int den = aspect_ratio_presets_den[aspect_ratio_index];
     res_y = calc_res_y(res_x, max_res_y, num, den, squeeze_factor);
 
+    if (aspect_fit_width)
+    {
+        /* would this ratio need more rows than we have? then give up width,
+         * not the ratio. Width stays a multiple of 8 pixels (raw_pixblock)
+         * and no smaller than the smallest preset. */
+        int want_y = (int)roundf(res_x * den / (float)num / squeeze_factor);
+        if (want_y > max_res_y)
+        {
+            int fit_x = (int)roundf(max_res_y * squeeze_factor * num / (float)den) & ~7;
+            fit_x = COERCE(fit_x, resolution_presets_x[0], max_res_x);
+            if (fit_x < res_x)
+            {
+                res_x = fit_x;
+                res_y = calc_res_y(res_x, max_res_y, num, den, squeeze_factor);
+            }
+        }
+    }
+
     if (!OUTPUT_COMPRESSION)
     {
         /* check EDMAC restrictions (W * H multiple of 16 bytes) */
@@ -955,6 +1062,16 @@ void setup_bit_depth()
 static REQUIRES(settings_sem)
 void restore_bit_depth()
 {
+    /* 6D2: switching depth means a LiveView rebuild (a visible zoom bounce),
+     * so the depth is held between clips while RAW video stays enabled - it
+     * is set when the format changes (polling below) and dropped back to 14
+     * only when RAW video is turned off or LiveView ends.  raw.c derives the
+     * depth in effect from the DMAC, so nothing here can get out of sync. */
+    if (is_camera("6D2", "*") && raw_video_enabled && lv)
+    {
+        setup_bit_depth_digital_gain(1);
+        return;
+    }
     raw_lv_request_bpp(14);
     setup_bit_depth_digital_gain(1);
 }
@@ -1087,6 +1204,8 @@ static MENU_UPDATE_FUNC(aspect_ratio_update_info)
     }
 }
 
+static struct menu_entry * res_menu_entry = NULL;   /* 6D2: dynamic preset cap */
+
 static MENU_UPDATE_FUNC(resolution_update)
 {
     if (!raw_video_enabled || !lv)
@@ -1098,11 +1217,33 @@ static MENU_UPDATE_FUNC(resolution_update)
     
     refresh_raw_settings(1);
 
-    MENU_SET_VALUE("%dx%d", res_x, res_y);
+    if (res_menu_entry)
+    {
+        /* 6D2: offer only presets the current readout can deliver - 1920 in
+         * the 2028-wide 1080p modes, wider in the 3164-wide 5x/10x zoom */
+        int mx = 0;
+        while (mx + 1 < (int)COUNT(resolution_presets_x) && resolution_presets_x[mx + 1] <= max_res_x) mx++;
+        mx = MAX(mx, 4);
+        res_menu_entry->max = mx;
+        if (resolution_index_x > mx) resolution_index_x = mx;
+    }
+
+    /* Show the aspect the clip will deliver, not just the pixel count. With
+     * the 1.5x vertical squeeze of this body's 1080p readout, 1920x720 in the
+     * file is 16:9 on screen once stretched; computing from res_y * squeeze
+     * reports the achieved ratio even when res_y had to be clamped, which the
+     * requested-ratio menu item cannot tell you. */
+    MENU_SET_VALUE("%dx%d %s", res_x, res_y,
+                   guess_aspect_ratio(res_x, (int)roundf(res_y * squeeze_factor)));
     int crop_factor = calc_crop_factor();
     if (crop_factor) MENU_SET_RINFO("%s%d.%02dx", FMT_FIXEDPOINT2( crop_factor ));
 
     int selected_x = resolution_presets_x[resolution_index_x] + res_x_fine;
+    if (aspect_fit_width && res_x < selected_x && res_x < max_res_x)
+    {
+        MENU_SET_WARNING(MENU_WARN_INFO, "Width reduced from %d to keep %s (max %d rows).",
+                         selected_x, aspect_ratio_choices[aspect_ratio_index], max_res_y);
+    }
     if (is_camera("7D2", "1.1.2"))
     {
         // We don't know how to do EDMAC rect copies yet on this cam.
@@ -1298,6 +1439,22 @@ static MENU_UPDATE_FUNC(pre_recording_update)
     }
 }
 
+/* Width of the ordinary (non-crop) LiveView raw buffer for this body.
+ *
+ * The H.264 proxy checks raw_info.width against a hardcoded 2080, described in
+ * raw_digital_gain_ok() as "an upper bound that should cover all models".  It
+ * does not cover the 6D2: its plain 1080p LiveView raw buffer is 2128 wide, so
+ * the check fires on every recording and use_h264_proxy() silently returns 0 -
+ * the proxy simply never runs, with no menu warning shown either.
+ *
+ * The bound exists to detect hi-res crop_rec modes, and crop_rec has no DIGIC 7
+ * support at all, so raising it for this cam does not weaken the check.
+ */
+static int default_lv_raw_width(void)
+{
+    return is_camera("6D2", "*") ? 2128 : 2080;
+}
+
 static MENU_UPDATE_FUNC(h264_proxy_update)
 {
 
@@ -1309,7 +1466,7 @@ static MENU_UPDATE_FUNC(h264_proxy_update)
         }
 
         /* fixme: duplicate code */
-        int default_width  = 2080;
+        int default_width  = default_lv_raw_width();
         int default_height = video_mode_fps <= 30 ? 2080 : 692;
 
         if (raw_info.width > default_width)
@@ -1341,7 +1498,7 @@ static inline int use_h264_proxy()
         return 0;
     }
 
-    int default_width  = 2080;
+    int default_width  = default_lv_raw_width();
     if (raw_info.width > default_width)
     {
         return 0;
@@ -1504,9 +1661,12 @@ void free_buffers()
     }
     if (srm_mem_suite)
     {
+        rec_log("free_buffers: releasing SRM suite");
         srm_free_suite(srm_mem_suite);
         srm_mem_suite = 0;
+        rec_log("free_buffers: SRM released");
     }
+    rec_log_mem("free_buffers: done");
 }
 
 static REQUIRES(settings_sem)
@@ -1519,9 +1679,11 @@ void realloc_buffers()
     /* allocate the entire memory, but only use large chunks */
     /* yes, this may be a bit wasteful, but at least it works */
     /* note: full memory allocation is very slow (1-2 seconds) */
+    rec_log_mem("realloc_buffers: after free, before alloc");
     shoot_mem_suite = shoot_malloc_suite(0);
     srm_mem_suite = use_srm_memory ? srm_malloc_suite(0) : 0;
     info_led_off();
+    rec_log_mem("realloc_buffers: after alloc");
 
     printf("Shoot memory: %s\n", shoot_mem_suite ? format_memory_size(shoot_mem_suite->size) : "N/A");
     printf("SRM memory: %s\n", srm_mem_suite ? format_memory_size(srm_mem_suite->size) : "N/A");
@@ -1566,6 +1728,7 @@ int setup_buffers()
     if (!shoot_mem_suite && !srm_mem_suite)
     {
         printf("No memory suites.\n");
+        rec_log("setup_buffers: NO MEMORY SUITES - giving up");
         return 0;
     }
 
@@ -1961,6 +2124,11 @@ void show_recording_status()
 
             case INDICATOR_ON_SCREEN:
             {
+                /* Global draw being off is exactly when this indicator is
+                 * used - which is also exactly the state Clean HDMI puts us
+                 * in. A REC timer on a recorder's feed defeats the point. */
+                if (clean_hdmi_active()) break;
+
                 /* Position the Recording Icon */
                 int rl_x = 500;
                 int rl_y = 40;
@@ -1971,6 +2139,15 @@ void show_recording_status()
                 int rl_color = update_status(status, sizeof(status));
                 int len = strlen(status);
                 snprintf(status + len, sizeof(status) - len, "               ");
+
+                /* Erase the previous indicator before drawing the new one.
+                 * The space-padding of `status` above is meant to do this, but
+                 * spaces render as nothing on the RGBA compositor, so each
+                 * update overprinted the last and the timer piled up into a
+                 * solid block of digits. Colour 0 is transparent. This is a
+                 * small rectangle, not the whole buffer, so unlike the
+                 * full-screen clear in redraw() it is safe to do mid-take. */
+                bmp_fill(0, rl_x, rl_y, 220, 78);
 
                 /* Draw the movie camera icon */
                 rl_icon_width = bfnt_draw_char(
@@ -2026,6 +2203,65 @@ unsigned int raw_rec_polling_cbr(unsigned int unused)
     /* auto-disable raw video in photo mode or outside LiveView */
     int raw_video_active = raw_video_enabled && lv && is_movie_mode();
 
+    /* 6D2: no LiveView zoom requests (bit-depth bounce, crop hold) until
+     * Canon has finished winding down a recording.  A zoom change posted
+     * during the teardown asserts in Canon's LV job manager
+     * (g_LvJob[..].fEnableInstance, LvJob.c:203) and takes the Evf task down
+     * - seen when a 12-bit clip auto-stopped on a full buffer (v60). */
+    static int lv_quiet_until = 0;
+    static int bpp_tries = 0;
+    static int bpp_tries_for = 0;
+    if (!RAW_IS_IDLE || RECORDING_H264 || !lv)
+        lv_quiet_until = get_ms_clock() + 2500;
+    if (!lv) bpp_tries = 0;
+    int lv_settled = get_ms_clock() > lv_quiet_until;
+
+    /* 6D2: apply the chosen bit depth while idle, so the (visible) LiveView
+     * rebuild happens once when the format is changed, not at every record
+     * start and stop.  raw_lv_request_bpp() is a no-op when already there.
+     * Three tries per requested depth, then leave it (record start reports
+     * the mismatch) instead of bouncing the view every few seconds. */
+    if (is_camera("6D2", "*") && raw_video_active && lv_settled && !gui_menu_shown()
+        && raw_lv_is_enabled() && raw_info.bits_per_pixel != BPP)
+    {
+        static int last_try = 0;
+        if (bpp_tries_for != BPP) { bpp_tries_for = BPP; bpp_tries = 0; }
+        if (bpp_tries < 3 && get_ms_clock() - last_try > 3000)
+        {
+            bpp_tries++;
+            last_try = get_ms_clock();
+            take_semaphore(settings_sem, 0);
+            raw_lv_request_bpp(BPP);
+            give_semaphore(settings_sem);
+            if (raw_info.bits_per_pixel == BPP) bpp_tries = 0;
+        }
+    }
+
+    /* crop mode: hold Canon's 5x zoom while RAW video is on in movie LV.
+     * It is a mode, not a shortcut: if the magnify button (or Canon) drops
+     * the view back to 1x, it is re-requested about a second later, so the
+     * resolution list and framing never silently change under you.  10x is
+     * left alone (focus check).  Released when the option is switched off. */
+    {
+        static int crop_applied = 0;
+        static int crop_wait = 0;
+        if (!lv) crop_applied = 0;
+        if (crop_zoom && raw_video_active && lv_settled && !gui_menu_shown())
+        {
+            if (lv_dispsize == 1)
+            {
+                if (crop_wait > 0) crop_wait--;
+                else { set_lv_zoom(5); crop_applied = 1; crop_wait = 10; }
+            }
+            else crop_wait = 0;
+        }
+        else if (!crop_zoom && crop_applied)
+        {
+            if (lv && lv_dispsize > 1 && !RAW_IS_RECORDING) set_lv_zoom(1);
+            crop_applied = 0;
+        }
+    }
+
     /* when Canon state changes, their memory layout may change too
      * reallocate the memory when this happens */
     static int prev_state = -1;
@@ -2048,6 +2284,35 @@ unsigned int raw_rec_polling_cbr(unsigned int unused)
         realloc = 1;
     }
     prev_state = current_state;
+
+    /* Reallocate after a take has handed the buffers back.
+     *
+     * The state word above is the only thing that normally triggers a realloc,
+     * and on a raw-only take here nothing in it moves: raw_video_active stays
+     * 1 (still enabled, still in LiveView, still movie mode), RECORDING_H264
+     * stays 0 because the H.264 proxy is off, and the pic-quality / resolution
+     * / fps / crop fields are untouched. Meanwhile raw_video_rec_task()'s
+     * teardown calls free_buffers() unconditionally.
+     *
+     * So after the first take both suites were NULL and nothing ever asked for
+     * them back: every later take died in setup_buffers() with "No memory
+     * suites", having already created and header-stamped its MLV - the
+     * 1024-byte files. Confirmed from ML/LOGS/RECDBG.LOG, where the freed
+     * suites are followed by that message repeating every 250ms forever.
+     * Running with the H.264 proxy enabled hid this, because RECORDING_H264
+     * toggling across a take flipped the state word and forced the realloc.
+     *
+     * This is edge-triggered on the teardown rather than tested against the
+     * suite pointers. Testing the pointers looks more direct but is level-
+     * triggered: if an allocation ever fails, the condition stays true and the
+     * CBR retries every tick - and realloc_buffers() is not cheap, it takes
+     * 1-2s with gui_uilock(UILOCK_EVERYTHING) held and the LED on. One flag
+     * set once per take cannot loop. */
+    if (buffers_need_realloc)
+    {
+        buffers_need_realloc = 0;
+        realloc = 1;
+    }
 
     /* caveat: we may get out of LiveView before recording fully stops
      * don't free the resources if the raw video task is still active */
@@ -3372,6 +3637,21 @@ void raw_video_rec_task(uint32_t card_index)
         raw_recording_state = RAW_PREPARING;
         give_semaphore(settings_sem);
 
+        rec_log("========== TAKE START, card=%d, srm_enabled=%d",
+                card_index, (int)use_srm_memory);
+        rec_log_mem("take start");
+
+        /* Scratch audio: Canon's own WAV recorder, started alongside the raw clip.
+         * Costs ~0.19 MB/s and records no video, unlike the H.264 proxy - which
+         * matters on a body with no ML audio backend and no bandwidth to spare.
+         * Started here rather than at RAW_RECORDING so the WAV covers the whole
+         * take; the two are driven by the same sensor clock, so the only offset
+         * is a fixed start delay, not drift. */
+        if (wav_scratch_auto_enabled() == 2)
+        {
+            wav_scratch_start();
+        }
+
         mlv_rec_call_cbr(MLV_REC_EVENT_PREPARING, NULL);
 
         /* globals - updated by vsync hook */
@@ -3386,9 +3666,8 @@ void raw_video_rec_task(uint32_t card_index)
 
         if (lv_dispsize == 10)
         {
-            /* assume x10 is for focusing */
-            /* todo: detect x5 preset in crop_rec? */
-            set_lv_zoom(1);
+            /* assume x10 is for focusing; in crop mode fall back to 5x, not 1x */
+            set_lv_zoom(crop_zoom ? 5 : 1);
         }
 
         /* note: rec_trigger is implemented via pre_recording */
@@ -3416,9 +3695,33 @@ void raw_video_rec_task(uint32_t card_index)
         /* wait for two frames to be sure everything is refreshed */
         wait_lv_frames(2);
 
-        /* detect raw parameters (geometry, black level etc) */
-        raw_set_dirty();
-        if (!raw_update_params())
+        /* A post-take reallocation may still be in flight: realloc_buffers()
+         * frees both suites, then spends 1-2s asking Canon for everything back
+         * with the UI locked. Starting a take inside that window came out as
+         * "Raw detect error" - the take was racing the memory it needed.
+         * Upstream waits the same way in the H.264 proxy path above; do it
+         * here too, for the ordinary raw-only path. Bounded, so a genuine
+         * allocation failure still falls through to the existing error. */
+        for (int i = 0; i < 50 && !shoot_mem_suite && !srm_mem_suite; i++)
+        {
+            msleep(100);
+        }
+
+        /* detect raw parameters (geometry, black level etc)
+         *
+         * This can fail transiently right after the post-take reallocation or
+         * a display-mode change, while Canon is still re-establishing the LV
+         * raw stream. One attempt was turning those moments into aborted
+         * takes ("Raw detect error"). Try a few times, a frame apart, before
+         * concluding it is really unavailable. */
+        int raw_ok = 0;
+        for (int attempt = 0; attempt < 5 && !raw_ok; attempt++)
+        {
+            if (attempt) msleep(100);
+            raw_set_dirty();
+            raw_ok = raw_update_params();
+        }
+        if (!raw_ok)
         {
             NotifyBox(5000, "Raw detect error");
             goto cleanup;
@@ -3429,6 +3732,15 @@ void raw_video_rec_task(uint32_t card_index)
         setup_buffers();
         setup_bit_depth();
         give_semaphore(settings_sem);
+
+        if (raw_info.bits_per_pixel != BPP)
+        {
+            /* the depth switch is not guaranteed on every body (6D2: Canon's
+             * raw tap has to be reconfigured); never write frames sized for a
+             * depth the data does not have */
+            NotifyBox(5000, "%d-bit not applied (sensor at %d) - not recording", BPP, raw_info.bits_per_pixel);
+            goto cleanup;
+        }
 
         /* create output file */
         raw_movie_filename = get_next_raw_movie_file_name();
@@ -3837,6 +4149,19 @@ abort_and_check_early_stop:
 
     if (card_index == 0)
     {
+        /* Stop the scratch WAV here, before the buffers drain, not down in
+         * cleanup. The flush can run for many seconds after the camera has
+         * stopped recording - a short take that fills the buffer takes longer
+         * to write out than it did to shoot - and stopping the recorder after
+         * it left the audio running that much longer than the clip. Measured
+         * on a 3s take with a full buffer: 11.4s of WAV against 3s of video.
+         * Stopping here keeps the WAV bracketing the take by the fraction of
+         * a second it takes to start and stop, which is what we want. */
+        if (wav_scratch_auto_enabled() == 2)
+        {
+            wav_scratch_stop();
+        }
+
         /* write remaining frames */
         /* H.264: we will be recording black frames during this time,
          * so there shouldn't be any starving issues - at least in theory */
@@ -3906,6 +4231,12 @@ abort_and_check_early_stop:
             }
             free_slot(slot_index);
         }
+
+        /* Wipe the progress line. Printing spaces painted a black bar instead
+         * of removing it (and the bar was too short, which is why "left" kept
+         * showing); colour 0 is transparent, so this actually clears back to
+         * the live image. bmp_fill also flags a recomposite for us. */
+        bmp_fill(0, 0, 100, 720, 40);
     }
 
     if (!written_total[card_index] || !f)
@@ -3918,6 +4249,27 @@ abort_and_check_early_stop:
     }
 
 cleanup:
+    /* Catch-all stop for the scratch WAV.
+     *
+     * The normal stop is up in abort_and_check_early_stop:, before the buffer
+     * flush, so the audio ends with the take rather than with the card. But
+     * six `goto cleanup` sites between the WAV starting and that block - raw
+     * detect error, file create error, card full and friends - jump straight
+     * past it, and used to leave Canon's recorder running.
+     *
+     * The consequences all showed up in the files: the next take's
+     * wav_scratch_start() returned early because wav_is_recording was still
+     * set, so it never opened its own file, and the eventual stop closed a
+     * recording that had begun during the *failed* take - then renamed it to
+     * the new clip. Measured on the card: 13.2s of video against 0.2s of
+     * audio, 27.2s against 6.8s, and one 0.1s clip carrying 28.4s of sound.
+     *
+     * wav_scratch_stop() is idempotent, so the normal path is unaffected. */
+    if (wav_scratch_auto_enabled() == 2)
+    {
+        wav_scratch_stop();
+    }
+
     if (f)
         finish_chunk(f, card_index);
     if (!written_total[card_index]
@@ -3929,10 +4281,15 @@ cleanup:
 
     if (card_index == 0) // avoid cleaning up twice on dual slot cams
     {
+        rec_log_mem("teardown: before free_buffers");
         take_semaphore(settings_sem, 0);
         free_buffers();
         restore_bit_depth();
         give_semaphore(settings_sem);
+
+        /* ask the polling CBR for them back - see raw_rec_polling_cbr() */
+        buffers_need_realloc = 1;
+        rec_log_mem("teardown: after free_buffers + restore_bit_depth");
 
         /* everything saved, we can unlock the buttons */
         gui_uilock(UILOCK_NONE);
@@ -3958,6 +4315,20 @@ cleanup:
         ResumeLiveView();
         redraw();
         raw_recording_state = RAW_IDLE;
+        rec_log("========== TAKE END (state back to IDLE)");
+
+        if (wav_scratch_auto_enabled() == 2)
+        {
+            /* Rename last, after the state machine is already back to IDLE.
+             * The recorder was stopped before the flush; this only moves the
+             * finished file, and it sleeps half a second waiting for Canon to
+             * close it - so it has no business happening while the task still
+             * counts as recording. Canon wrote SampleN.wav to the card root;
+             * move it next to the clip as <clip>.WAV. raw_movie_filename is
+             * cleared above when nothing was written, and the callee treats an
+             * empty name as "nothing to do". */
+            wav_scratch_rename(raw_movie_filename);
+        }
         mlv_rec_call_cbr(MLV_REC_EVENT_STOPPED, NULL);
     }
 }
@@ -4032,11 +4403,30 @@ static struct menu_entry raw_video_menu[] =
                 .choices = RESOLUTION_CHOICES_X,
             },
             {
+                .name = "Crop mode",
+                .priv = &crop_zoom,
+                .max = 1,
+                .choices = CHOICES("OFF", "1:1 (5x zoom)"),
+                .help  = "1:1 window via Canon's 5x zoom: 3164x926 max, no binning, ALWAYS 30p.",
+                .help2 = "Held while RAW video is on (magnify still gives 10x). Enables dual ISO.",
+            },
+            {
                 .name = "Aspect ratio",
                 .priv = &aspect_ratio_index,
                 .max = COUNT(aspect_ratio_presets_num) - 1,
                 .update = aspect_ratio_update,
                 .choices = aspect_ratio_choices,
+                .children =  (struct menu_entry[]) {
+                    {
+                        .name = "If too tall",
+                        .priv = &aspect_fit_width,
+                        .max = 1,
+                        .choices = CHOICES("Clamp height", "Shrink width"),
+                        .help  = "Shrink width: the ratio is honoured, the frame gets narrower.",
+                        .help2 = "Clamp height: keep the width, silently record a wider ratio.",
+                    },
+                    MENU_EOL
+                },
             },
             {
                 .name       = "Data format",
@@ -4352,14 +4742,41 @@ static int raw_rec_should_preview(void)
      * (e.g. x5 zoom, crop_rec) */
     int raw_active_width = raw_info.active_area.x2 - raw_info.active_area.x1;
     int raw_active_height = raw_info.active_area.y2 - raw_info.active_area.y1;
-    int framing_incorrect =
-        raw_active_width > 2000 ||
-        raw_active_height > (video_mode_fps <= 30 ? 1300 : 720);
+
+    /* The "> 2000" here is a DIGIC 5 heuristic for spotting x5 zoom and
+     * crop_rec modes. This body's ORDINARY 1080p LiveView raw is 2028 active
+     * pixels wide, so it tripped both tests on every frame: framing_incorrect
+     * and preview_broken were permanently true, PREVIEW_AUTO always returned 1,
+     * and ML's own raw preview replaced Canon's LiveView at all times. Two
+     * visible consequences: refresh_cropmarks() reset the recorded-area guide
+     * whenever the preview was active (so it never showed), and focus peaking
+     * ran on a preview scaled to the recording rectangle, so its alignment
+     * drifted with the resolution setting. Same family of bug as the proxy's
+     * hardcoded 2080. Judge hi-res against the body's known LV width instead;
+     * crop_rec has no DIGIC 7 support, so nothing is lost. */
+    int hires = raw_info.width > default_lv_raw_width();
+    int framing_incorrect = is_camera("6D2", "*")
+        ? hires
+        : (raw_active_width > 2000 ||
+           raw_active_height > (video_mode_fps <= 30 ? 1300 : 720));
 
     /* some modes have Canon preview totally broken */
-    int preview_broken = (lv_dispsize == 1 && raw_active_width > 2000);
+    int preview_broken = (lv_dispsize == 1 &&
+                          (is_camera("6D2", "*") ? hires : raw_active_width > 2000));
 
-    int prefer_framing_preview = 
+    /* On this body Canon's LiveView preview is geometrically correct in every
+     * mode we can reach (no crop modes exist), and the recorded-area cropmark
+     * shows the framing. So in Auto, ML's own raw preview has nothing to add
+     * and two things to break: refresh_cropmarks() resets the recorded-area
+     * guide whenever ML's preview is active, and peaking then runs on an
+     * image scaled to the recording rectangle. Worse, the choice below flips
+     * on inputs that move at runtime - max_res_x from raw detection, a long
+     * half-shutter press - so the LiveView was switching between the two
+     * previews on its own: the flashing, the guide that only appeared on
+     * half-press, and its wrong size. Canon preview in Auto here; a long
+     * half-shutter press still gives ML's framing preview as a deliberate
+     * action, and PREVIEW_ML remains a choice. */
+    int prefer_framing_preview = is_camera("6D2", "*") ? 0 :
         (res_x < max_res_x * 80/100) ? 1 :  /* prefer correct framing instead of large black bars */
         (res_x*9 < res_y*16)         ? 1 :  /* tall aspect ratio -> prevent image hiding under info bars*/
         (framing_incorrect)          ? 1 :  /* use correct framing in modes where Canon preview is incorrect */
@@ -4493,6 +4910,17 @@ static struct lvinfo_item info_items[] = {
     }
 };
 
+/* look up a RAW video submenu entry by the variable it edits - never by
+ * index, so inserting an entry (6D2 Crop mode) cannot retarget these tweaks */
+static struct menu_entry * raw_video_submenu_entry(void * priv)
+{
+    for (struct menu_entry * e = raw_video_menu[0].children; e->priv != MENU_EOL_PRIV; e++)
+    {
+        if (e->priv == priv) return e;
+    }
+    return NULL;
+}
+
 static unsigned int raw_rec_init()
 {
     cam_eos_m = is_camera("EOSM", "2.0.2");
@@ -4545,18 +4973,32 @@ static unsigned int raw_rec_init()
     int version = get_digic_version();
     if (version > 5)
     { // hide features unsupported on modern cams
-        raw_video_menu->children[11].shidden = 1; // Hide "Small hacks"
+        struct menu_entry * e = raw_video_submenu_entry(&small_hacks);
+        if (e) e->shidden = 1; // Hide "Small hacks"
         small_hacks = 0;
     }
     if (version != 5)
     { // so far, only Digic 5 has working lossless compression, hide on other cams
-        if (raw_video_menu->children[2].max > 2)
+        struct menu_entry * e = raw_video_submenu_entry(&output_format);
+        if (e && e->max > 2)
         {
-            raw_video_menu->children[2].max = 2; // hide lossless options, which are 3, 4, 5
+            e->max = 2; // hide lossless options, which are 3, 4, 5
             output_format = 0; // plain 14-bit, no lossless support on D4, D678 (yet)
         }
     }
 
+    if (is_camera("6D2", "*"))
+    {
+        /* start with the 1080p cap (2028-wide readout: nothing above 1920);
+         * resolution_update() raises it in the 3164-wide crop readout */
+        res_menu_entry = raw_video_submenu_entry(&resolution_index_x);
+        if (res_menu_entry) res_menu_entry->max = 4;
+        resolution_index_x = MIN(resolution_index_x, 4);
+
+        /* 14/12/10-bit uncompressed: raw.c switches the depth through Canon's
+         * own raw-tap driver (CONFIG_LV_BPP_MEM1_PATCH); lossless stays hidden */
+        if (output_format > OUTPUT_10BIT_UNCOMPRESSED) output_format = OUTPUT_14BIT_NATIVE;
+    }
     menu_add("Movie", raw_video_menu, COUNT(raw_video_menu));
 
     /* hack: force proper alignment in menu */
@@ -4618,6 +5060,7 @@ MODULE_CONFIGS_START()
     MODULE_CONFIG(resolution_index_x)
     MODULE_CONFIG(res_x_fine)
     MODULE_CONFIG(aspect_ratio_index)
+    MODULE_CONFIG(crop_zoom)
     MODULE_CONFIG(measured_write_speed)
     MODULE_CONFIG(pre_record)
     MODULE_CONFIG(rec_trigger)

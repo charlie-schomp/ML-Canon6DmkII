@@ -90,7 +90,25 @@
 extern int winsys_bmp_dirty_bit_neg;
 #define WINSYS_BMP_DIRTY_BIT_NEG MEM(&winsys_bmp_dirty_bit_neg) // faked via function_overrides.c
 #define FOCUS_CONFIRMATION 0 // wrong, but safe, no focus lock
-#define YUV422_LV_BUFFER_DISPLAY_ADDR 0x0 // it expects this to be pointer to address
+// Display VRAM struct.  Found via "CurrentImgAddr : %#08x" (string @ 0xe00ab0b0),
+// which is reached by a PC-relative ADR, not a literal pool -- searching for a pointer
+// to the string finds nothing.  The getter is at 0xe00aadf8:
+//     e00aadfa  ldr r0, [pc, #0x248]   ; literal @ 0xe00ab044 = 0x7dc8
+//     e00aae02  ldr r0, [r0]           ; r0 = *(int *)0x7dc8 = struct ptr
+//     e00aae2a  ldr r4, [r0, #0x78]    ; param1 == 1 -> LCD
+// param1 selects DisplayOut; the sibling getter at 0xe00aae32 uses 0x6c / 0x74.
+// (Same values as fw 1.2.0 -- this is a DryOS data-segment global, so it did not move.)
+#define DISP_VRAM_STRUCT_PTR ((unsigned int *)(*(int *)0x7dc8))
+// Mirror the ROM getter's own selection logic rather than hardcoding one field.
+// From the disassembly at 0xe00aadf8, for param1 == 0 (the default display):
+//     struct[0x0c] == 1  ->  buffer is struct[0x78]
+//     otherwise          ->  buffer is struct[0x70]
+// (param1 == 1 forces 0x78, param1 == 2 forces 0x70.)
+// Hardcoding 0x78 as the 200D does gives 0 on this body when 0x0c != 1, and
+// get_yuv422buffer() then silently returns 0, so nothing is ever drawn.
+// One line on purpose: the macro is expanded several times inside
+// get_yuv422buffer(), and line continuations here are easy to mangle.
+#define YUV422_LV_BUFFER_DISPLAY_ADDR (DISP_VRAM_STRUCT_PTR == 0 ? 0 : (*(DISP_VRAM_STRUCT_PTR + (0x0c / 4)) == 1 ? *(DISP_VRAM_STRUCT_PTR + (0x78 / 4)) : *(DISP_VRAM_STRUCT_PTR + (0x70 / 4))))
 #define YUV422_HD_BUFFER_DMA_ADDR 0x0 // it expects this to be shamem_read(some_DMA_ADDR)
 #define YUV422_LV_BUFFER_1 0x7f3e9600 // these three from srmGetShootMemAreaAddress()
 #define YUV422_LV_BUFFER_2 0x7f7eec00
@@ -170,3 +188,16 @@ extern int winsys_bmp_dirty_bit_neg;
 
 //address of XimrContext structure to redraw in FEATURE_VRAM_RGBA
 #define XIMR_CONTEXT 0x9b01c
+
+/* SoundDevice (Canon audio driver) - used by the scratch WAV recorder.
+ * State struct is *(SOUNDDEV_STATE_PTR_ADDR + 8), a heap object (0x40543420
+ * on a live 1.1.1 body).  Fields, from ./SoundDevice/SoundDevice.c:
+ *   +0x28 u8  external mic plugged (jack detect)
+ *   +0x3c u8  ALC on        +0x3f/+0x40 u8  input level L/R, 0..63
+ *   +0x3e u8  factory mode (the FA_AudioRecStart recorder)
+ *   +0x44 u32 input active  +0x88 u32 mic used in factory mode (0 int, 1 ext)
+ * SOUNDDEV_SET_VOLUME_IN(alc, apply, L, R) clamps L/R to 63, stores them and
+ * sends them to the audio IC when !alc && input active.  Volatile: it does
+ * not touch Canon's saved sound settings. */
+#define SOUNDDEV_STATE_PTR_ADDR     0x5300
+#define SOUNDDEV_SET_VOLUME_IN      0xe0646c2f   /* thumb; 1.1.1 */
