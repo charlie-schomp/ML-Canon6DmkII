@@ -95,6 +95,10 @@ int raw_update_params();
 /* like raw_update_params(), but also valid below 14-bit (for raw recorders) */
 int raw_update_params_any_bpp();
 
+/* 6D2: true while raw.c is bouncing the LiveView zoom to change bit depth -
+ * nothing else may touch PROP_LV_DISPSIZE until it clears */
+int raw_lv_bpp_bouncing(void);
+
 /* get a red/green/blue pixel near the specified coords (approximate) */
 int raw_red_pixel(int x, int y);
 int raw_green_pixel(int x, int y);

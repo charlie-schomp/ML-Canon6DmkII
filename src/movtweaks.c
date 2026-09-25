@@ -1062,12 +1062,24 @@ void wav_scratch_stop(void);   /* defined below */
  * meter reads, 0xe04b576e).  Read only while the recorder has the input live,
  * shown as dBFS bars in LiveView and as numbers in the menu. */
 static CONFIG_INT("wav.input", wav_input, 0);          /* 0 auto, 1 internal, 2 external */
-static CONFIG_INT("wav.meter", wav_meter, 1);          /* LiveView bars while recording */
+static CONFIG_INT("wav.meter", wav_meter, 2);          /* 0 off, 1 while recording, 2 always in LV */
+static int wav_block_on = 0;    /* audio block started by us, for metering without a file */
 #ifdef SOUNDDEV_SET_VOLUME_IN
 static CONFIG_INT("wav.gain.mode", wav_gain_mode, 0);  /* 0 factory default, 1 manual */
-static CONFIG_INT("wav.gain.left", wav_gain_l, 30);
-static CONFIG_INT("wav.gain.right", wav_gain_r, 30);
+/* Gain is chosen in whole dB stops, not in Canon's 0..63 table index: the
+ * table steps are 0.375 dB and uneven (~0.875 dB per index up to 48, 0.75
+ * above), so an index is not a number anyone can reason about.  Stop 0 is
+ * mute, stops 1..19 are -12 dB .. +42 dB in 3 dB steps; the nearest table
+ * entry is looked up per input, and the menu shows the dB actually applied. */
+static CONFIG_INT("wav.gain.ldb", wav_gain_l, 11);     /* stop index, 11 = +18 dB */
+static CONFIG_INT("wav.gain.rdb", wav_gain_r, 11);
 static CONFIG_INT("wav.gain.rmode", wav_gain_rmode, 0); /* 0 = left, 1 own level, 2..5 safety -6/-12/-18/-24 dB */
+#define WAV_GAIN_STOPS 20
+#define WAV_STOP_DB(i) (-12 + ((i) - 1) * 3)           /* i >= 1 */
+#define WAV_GAIN_CHOICES CHOICES("Mute", "-12 dB", "-9 dB", "-6 dB", "-3 dB", "0 dB", \
+                                 "+3 dB", "+6 dB", "+9 dB", "+12 dB", "+15 dB", "+18 dB", \
+                                 "+21 dB", "+24 dB", "+27 dB", "+30 dB", "+33 dB", "+36 dB", \
+                                 "+39 dB", "+42 dB")
 #endif
 
 static uint8_t * wav_sounddev_state(void)
@@ -1103,6 +1115,34 @@ static int wav_input_live(void)
     return wav_is_recording && st && st[0x3e] && *(volatile uint32_t *)(st + 0x44);
 }
 
+/* Audio running at all - either the WAV recorder, or the input block we start
+ * ourselves so the meter works before a take.
+ *
+ * FA_Aud_OnlyBlockStart (0xe008c4dc) is the factory "audio on, no file"
+ * entry point: it runs the same init the recorder does (0xe078ad88) and then
+ * starts the block (0xe078ad04, arg 1); FA_Aud_OnlyBlockStop (0xe008c4ec)
+ * stops it and terminates.  Neither takes an argument.  We only use it when
+ * nothing else owns the audio hardware - not while Canon records H.264, and
+ * never at the same time as the WAV recorder, which does its own init. */
+static int wav_audio_live(void)
+{
+    return wav_input_live() || wav_block_on;
+}
+
+static void wav_block_start(void)
+{
+    if (wav_block_on || wav_is_recording || RECORDING_H264) return;
+    call("FA_Aud_OnlyBlockStart");
+    wav_block_on = 1;
+}
+
+static void wav_block_stop(void)
+{
+    if (!wav_block_on) return;
+    wav_block_on = 0;
+    call("FA_Aud_OnlyBlockStop");
+}
+
 #if defined(SOUNDDEV_SET_VOLUME_IN) && defined(AUDIO_GAIN_TABLE_INT)
 #define WAV_GAIN_MUTE ((int32_t)0xffff0000)
 
@@ -1121,11 +1161,19 @@ static const int32_t * wav_gain_table(int ext)
     return t;
 }
 
-/* register value for a Canon level (0..63) */
-static int32_t wav_level_reg(const int32_t * t, int level)
+/* table entry closest to a requested gain in dB (entries are 0.375 dB steps) */
+static int32_t wav_level_reg(const int32_t * t, int stop)
 {
-    level = COERCE(level, 0, 63);
-    return level ? t[level] : WAV_GAIN_MUTE;
+    stop = COERCE(stop, 0, WAV_GAIN_STOPS - 1);
+    if (stop == 0) return WAV_GAIN_MUTE;
+    int want = WAV_STOP_DB(stop) * 8 / 3;
+    int best = 1, bestd = 1 << 30;
+    for (int k = 1; k <= 63; k++)
+    {
+        int d = ABS(t[k] - want);
+        if (d < bestd) { bestd = d; best = k; }
+    }
+    return t[best];
 }
 
 /* right-channel register for the chosen mode */
@@ -1161,27 +1209,27 @@ static void wav_write_regs(void)
 
 static void wav_apply_gain(void)
 {
-#ifdef SOUNDDEV_SET_VOLUME_IN
+#if defined(SOUNDDEV_SET_VOLUME_IN) && defined(AUDIO_GAIN_TABLE_INT)
     if (!wav_gain_mode) return;
+    if (!wav_audio_live()) return;              /* nothing would reach the audio block */
+
     uint8_t * st = wav_sounddev_state();
-    if (!st || !st[0x3e]) return;               /* only while the factory recorder owns the driver */
-    int l = COERCE(wav_gain_l, 0, 63);
+    if (wav_is_recording && st && st[0x3e] && *(volatile uint32_t *)(st + 0x44))
+    {
+        /* Canon's own setter first, so the driver's idea of the level matches
+         * ours (it also turns ALC off).  It writes table[L] to both channels;
+         * the registers below then set the two channels apart. */
+        int idx = COERCE(wav_gain_l, 0, WAV_GAIN_STOPS - 1) * 63 / (WAV_GAIN_STOPS - 1);
+        int (*set_volume_in)(int alc, int apply, int l, int r) = (void *) SOUNDDEV_SET_VOLUME_IN;
+        set_volume_in(0, 1, idx, idx);
+    }
 
-    /* Canon's own setter first: ALC off, driver state consistent, and it
-     * writes table[L] to both channels */
-    int (*set_volume_in)(int alc, int apply, int l, int r) = (void *) SOUNDDEV_SET_VOLUME_IN;
-    set_volume_in(0, 1, l, l);
-
-  #ifdef AUDIO_GAIN_TABLE_INT
-    /* then the channels, independently */
-    if (!*(volatile uint32_t *)(st + 0x44)) return;          /* input not running: nothing reached the block */
-    const int32_t * t = wav_gain_table(*(uint32_t *)(st + 0x4c) == 1);
+    const int32_t * t = wav_gain_table(wav_mic_to_use());
     if (!t) return;
-    wav_expect_l = wav_level_reg(t, l);
+    wav_expect_l = wav_level_reg(t, wav_gain_l);
     wav_expect_r = wav_right_reg(t, wav_expect_l);
     wav_write_regs();
     wav_regs_set = 1;
-  #endif
 #endif
 }
 
@@ -1254,7 +1302,21 @@ static void wav_meter_task(void * unused)
     {
         msleep(50);
 
-        if (!wav_input_live())
+        /* metering without a take: bring the audio block up when the user
+         * asked for it and nothing else owns the hardware */
+        int want_block = (wav_meter == 2) && lv && is_movie_mode()
+                       && !wav_is_recording && !RECORDING_H264 && !ml_shutdown_requested;
+        if (want_block && !wav_block_on)
+        {
+            wav_block_start();
+            if (wav_block_on && wav_gain_mode) wav_apply_gain();
+        }
+        else if (!want_block && wav_block_on && !wav_is_recording)
+        {
+            wav_block_stop();
+        }
+
+        if (!wav_audio_live())
         {
             wav_meter_valid = 0;
             wav_meter_db10[0] = wav_meter_db10[1] = -999;
@@ -1297,7 +1359,8 @@ static void wav_meter_task(void * unused)
         }
 #endif
 
-        int show = wav_meter && lv && !gui_menu_shown() && get_global_draw();
+        int show = wav_meter && lv && !gui_menu_shown() && get_global_draw()
+                 && (wav_meter == 2 || wav_is_recording);
         if (show)
         {
             static int k = 0;
@@ -1357,6 +1420,11 @@ void wav_scratch_start(void)
         return;
     }
     wav_scratch_free_number();
+
+    /* our metering block must let go first - FA_AudioRecStart runs the same
+     * init itself, and two owners of the audio hardware is a SoundDevice
+     * assert waiting to happen */
+    wav_block_stop();
 
     /* factory mode ignores the jack; pick the mic ourselves (see above).
      * Test_AudSetMicAmp reads vararg 1 by value (ldr r4,[r0]). */
@@ -1472,8 +1540,13 @@ int wav_scratch_rename(const char * mlv_path)
         snprintf(base, sizeof(base), "W%02d-%02d%02d", now.tm_mday, now.tm_hour, now.tm_min);
     }
 
+    /* Canon's vsnprintf (which ML's snprintf calls) does NOT handle %c: it
+     * padded the buffer with the character instead, so v64/v65 created a
+     * directory named "BBBBBBBB..." in the card root.  Build the path by
+     * hand and never use %c anywhere in ML. */
     char dir[24];
-    snprintf(dir, sizeof(dir), "%c:/DCIM/AUDIO", src[0]);
+    snprintf(dir, sizeof(dir), "X:/DCIM/AUDIO");
+    dir[0] = src[0];
     FIO_CreateDirectory(dir);                   /* no-op if it exists */
 
     /* never overwrite: W24-1720.WAV, then W241720A..Z.WAV (8.3 names) */
@@ -1482,13 +1555,15 @@ int wav_scratch_rename(const char * mlv_path)
     snprintf(dest, sizeof(dest), "%s/%s.WAV", dir, base);
     for (int k = 0; k < 26 && FIO_GetFileSize(dest, &dsz) == 0; k++)
     {
-        /* first 7 characters without the dash: W24-1720 -> W241720, M24-1720 -> M241720 */
-        char alt[8];
+        /* first 7 characters without the dash: W24-1720 -> W241720, M24-1720 -> M241720,
+         * plus a letter - built by hand, see the %c note above */
+        char alt[9];
         int j = 0;
         for (const char * c = base; *c && j < 7; c++)
             if (*c != '-') alt[j++] = *c;
+        alt[j++] = 'A' + k;
         alt[j] = 0;
-        snprintf(dest, sizeof(dest), "%s/%s%c.WAV", dir, alt, 'A' + k);
+        snprintf(dest, sizeof(dest), "%s/%s.WAV", dir, alt);
     }
     if (FIO_GetFileSize(dest, &dsz) == 0)
     {
@@ -1567,20 +1642,20 @@ static MENU_UPDATE_FUNC(wav_input_update)
 #ifdef SOUNDDEV_SET_VOLUME_IN
 static MENU_SELECT_FUNC(wav_gain_select)
 {
-    menu_numeric_toggle(priv, delta, 0, 63);
-    if (wav_is_recording) wav_apply_gain();     /* live, so you can ride it */
+    menu_numeric_toggle(priv, delta, 0, WAV_GAIN_STOPS - 1);
+    wav_apply_gain();       /* live, so you can ride it (and set it on the meter) */
 }
 
 static MENU_SELECT_FUNC(wav_gain_mode_select)
 {
     menu_numeric_toggle(priv, delta, 0, 1);
-    if (wav_is_recording) wav_apply_gain();
+    wav_apply_gain();
 }
 
 static MENU_SELECT_FUNC(wav_gain_rmode_select)
 {
     menu_numeric_toggle(priv, delta, 0, 5);
-    if (wav_is_recording) wav_apply_gain();
+    wav_apply_gain();
 }
 
 static MENU_UPDATE_FUNC(wav_gain_update)
@@ -1593,20 +1668,20 @@ static MENU_UPDATE_FUNC(wav_gain_update)
   #ifdef AUDIO_GAIN_TABLE_INT
     int ext = wav_mic_to_use();
     const int32_t * t = wav_gain_table(ext);
-    if (!t) { MENU_SET_RINFO("lvl %d", *(int *)entry->priv); return; }
+    if (!t) return;
     char s[16];
     int32_t lreg = wav_level_reg(t, wav_gain_l);
+    /* the stop is what you asked for; RINFO is what the table can actually
+     * give (they differ by up to half a step, and the ends clamp) */
     if (entry->priv == &wav_gain_l)
     {
         wav_reg_str(s, sizeof(s), lreg);
-        MENU_SET_VALUE("%s", s);
-        MENU_SET_RINFO("lvl %d, %s", wav_gain_l, ext ? "ext" : "int");
+        MENU_SET_RINFO("%s, %s mic", s, ext ? "ext" : "int");
     }
     else if (entry->priv == &wav_gain_r)
     {
         wav_reg_str(s, sizeof(s), wav_right_reg(t, lreg));
-        MENU_SET_VALUE("%s", s);
-        MENU_SET_RINFO("lvl %d", wav_gain_r);
+        MENU_SET_RINFO("%s", s);
         if (wav_gain_rmode != 1)
             MENU_SET_WARNING(MENU_WARN_NOT_WORKING, "Set Right channel to 'Own level' to use this.");
     }
@@ -1615,9 +1690,6 @@ static MENU_UPDATE_FUNC(wav_gain_update)
         wav_reg_str(s, sizeof(s), wav_right_reg(t, lreg));
         MENU_SET_RINFO("R %s", s);
     }
-    MENU_SET_HELP("Digital input gain, 0.375 dB steps (Canon's %s-mic table).", ext ? "external" : "internal");
-  #else
-    MENU_SET_RINFO("lvl %d", *(int *)entry->priv);
   #endif
 }
 #endif
@@ -1768,7 +1840,8 @@ static MENU_UPDATE_FUNC(wav_audio_main_update)
         {
             char g[16];
             wav_reg_str(g, sizeof(g), wav_level_reg(t, wav_gain_l));
-            MENU_SET_RINFO("%s mic, %s", wav_mic_to_use() ? "ext" : "int", g);
+            MENU_SET_RINFO("%s mic, %s%s", wav_mic_to_use() ? "ext" : "int", g,
+                           wav_block_on ? ", live" : "");
         }
     }
     else
@@ -1828,12 +1901,13 @@ static struct menu_entry mov_audio_menus[] = {
                 .help2      = "Manual: set the input gain in dB, per channel. RAM only.",
             },
             {
-                .name       = "Left level",
+                .name       = "Left gain",
                 .priv       = &wav_gain_l,
-                .max        = 63,
+                .max        = WAV_GAIN_STOPS - 1,
                 .select     = wav_gain_select,
                 .update     = wav_gain_update,
-                .help       = "Left input gain. Level 0 = mute. Changes apply live.",
+                .choices    = WAV_GAIN_CHOICES,
+                .help       = "Left input gain, in 3 dB stops. Changes apply live.",
                 .help2      = "Watch the meter: keep peaks below about -6 dBFS.",
             },
             {
@@ -1847,20 +1921,22 @@ static struct menu_entry mov_audio_menus[] = {
                 .help2      = "clipped peaks (merge in post: 6D2/tools/wav_dualgain.py).",
             },
             {
-                .name       = "Right level",
+                .name       = "Right gain",
                 .priv       = &wav_gain_r,
-                .max        = 63,
+                .max        = WAV_GAIN_STOPS - 1,
                 .select     = wav_gain_select,
                 .update     = wav_gain_update,
+                .choices    = WAV_GAIN_CHOICES,
                 .help       = "Right input gain when Right channel = Own level.",
             },
             #endif
             {
                 .name       = "Level meter",
                 .priv       = &wav_meter,
-                .max        = 1,
-                .help       = "L/R peak meter in LiveView while the WAV records (dBFS),",
-                .help2      = "white tick = 1.5 s peak hold, CLIP when a channel hits full scale.",
+                .max        = 2,
+                .choices    = CHOICES("OFF", "While recording", "Always (LiveView)"),
+                .help       = "L/R peak meter in dBFS, 1.5 s peak hold, CLIP at full scale.",
+                .help2      = "Always: starts Canon's audio input so you can set levels first.",
             },
             MENU_EOL,
         },

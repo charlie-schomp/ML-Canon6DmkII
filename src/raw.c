@@ -719,6 +719,15 @@ static int raw_lv_buffer_size = 0;
 static int lv_bpp_6d2 = 14;         /* depth in effect on the DMAC (see raw_lv_get_resolution) */
 static int lv_bpp_patched = 0;      /* depth the ROM constants are patched to, 0 = stock (14) */
 
+/* Set while the zoom bounce below is running.  mlv_lite's crop mode holds
+ * Canon's 5x zoom by re-requesting it whenever it sees 1x, so without this
+ * the two fight over PROP_LV_DISPSIZE: the bounce drops to 1x, the crop hold
+ * immediately asks for 5x again, and the bounce never sees the zoom it asked
+ * for.  Canon's LV job manager does not survive that for long either
+ * (ASSERT g_LvJob[..].fEnableInstance, LvJob.c:203, killing the Evf task). */
+static volatile int lv_bpp_bouncing = 0;
+int raw_lv_bpp_bouncing(void) { return lv_bpp_bouncing; }
+
 static void raw_lv_set_bpp_6d2(int bpp)
 {
     if (bpp != 10 && bpp != 12) bpp = 14;
@@ -765,6 +774,7 @@ static void raw_lv_set_bpp_6d2(int bpp)
     {
         extern void set_lv_zoom(int zoom);
         uint32_t want = raw_info.width * bpp / 8;
+        lv_bpp_bouncing = 1;
         for (int attempt = 0; attempt < 3; attempt++)
         {
             int z = lv_dispsize;
@@ -794,10 +804,12 @@ static void raw_lv_set_bpp_6d2(int bpp)
                     for (int j = 0; j < 20 && MEM(0x1c928 + 0x1c) == 0; j++) msleep(25);
                     wait_lv_frames(2);
                     printf("LV bpp %d: DMAC %d bytes/line after %d ms (try %d)\n", bpp, xb, i * 25, attempt);
+                    lv_bpp_bouncing = 0;
                     return;
                 }
             }
         }
+        lv_bpp_bouncing = 0;
         printf("LV bpp %d: DMAC did not follow (pitch %d)\n", bpp,
                (int)(shamem_read((uint32_t)&(raw_lv_edmac->yb_xb)) & 0xFFFF));
         if (lv_bpp_patched)

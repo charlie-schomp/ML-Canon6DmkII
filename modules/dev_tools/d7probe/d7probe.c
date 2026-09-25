@@ -239,16 +239,6 @@ static void d7probe_dump(void)
                   "[sdclk] 0xe0292568 to SDCON regs 0xd2090600 618 61c 620 62c 630 624 628 638 604 60c (slot offset added)\n");
     dump_words(f, "[sdtbl]", (uint32_t *)0x110c0, (0x11600 - 0x110c0) / 4, 0x110c0);
 
-    /* button events (ISO key investigation): what reached ML, whether ML
-     * blocked it, and the ISO at that moment (raw units: 72=100, 80=200 ..) */
-    {
-        extern int gui_event_log_get(int i, int * t, int * param, int * arg, int * raw_iso, int * blocked);
-        int t, param, arg, iso, blocked;
-        my_fprintf(f, "\n[keys] t(ms) param arg raw_iso blocked-by-ML\n");
-        for (int i = 0; gui_event_log_get(i, &t, &param, &arg, &iso, &blocked); i++)
-            my_fprintf(f, "[keys] %8d %4x %8x %3d %s\n", t, param, arg, iso, blocked ? "BLOCKED" : "-");
-    }
-
     /* audio: SoundDevice state (*(0x5300+8)), gain + peak registers, and the
      * AudioLevel meter struct (*(0x7a44+4)) */
     {

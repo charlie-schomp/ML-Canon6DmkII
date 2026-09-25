@@ -2224,14 +2224,28 @@ unsigned int raw_rec_polling_cbr(unsigned int unused)
     /* 6D2: apply the chosen bit depth while idle, so the (visible) LiveView
      * rebuild happens once when the format is changed, not at every record
      * start and stop.  raw_lv_request_bpp() is a no-op when already there.
-     * Three tries per requested depth, then leave it (record start reports
-     * the mismatch) instead of bouncing the view every few seconds. */
+     *
+     * v66: no three-strikes lockout.  It was meant to stop the view bouncing
+     * every few seconds when the switch could not be made, but once the count
+     * ran out nothing ever tried again, so the camera sat at 14-bit and every
+     * take reported "not applied" until the format was toggled by hand.  Back
+     * off instead: quick retries at first, then one every 15 s, and start over
+     * whenever anything that could explain the failure changes (the depth
+     * asked for, LiveView, or the zoom). */
     if (is_camera("6D2", "*") && raw_video_active && lv_settled && !gui_menu_shown()
+        && !get_halfshutter_pressed()
         && raw_lv_is_enabled() && raw_info.bits_per_pixel != BPP)
     {
         static int last_try = 0;
-        if (bpp_tries_for != BPP) { bpp_tries_for = BPP; bpp_tries = 0; }
-        if (bpp_tries < 3 && get_ms_clock() - last_try > 3000)
+        static int last_zoom = 0;
+        if (bpp_tries_for != BPP || last_zoom != lv_dispsize)
+        {
+            bpp_tries_for = BPP;
+            last_zoom = lv_dispsize;
+            bpp_tries = 0;
+        }
+        int wait_ms = (bpp_tries < 3) ? 1000 : 15000;
+        if (get_ms_clock() - last_try > wait_ms)
         {
             bpp_tries++;
             last_try = get_ms_clock();
@@ -2251,7 +2265,8 @@ unsigned int raw_rec_polling_cbr(unsigned int unused)
         static int crop_applied = 0;
         static int crop_wait = 0;
         if (!lv) crop_applied = 0;
-        if (crop_zoom && raw_video_active && lv_settled && !gui_menu_shown())
+        if (crop_zoom && raw_video_active && lv_settled && !gui_menu_shown()
+            && !raw_lv_bpp_bouncing())      /* the bit-depth bounce owns the zoom */
         {
             if (lv_dispsize == 1)
             {
@@ -2260,7 +2275,7 @@ unsigned int raw_rec_polling_cbr(unsigned int unused)
             }
             else crop_wait = 0;
         }
-        else if (!crop_zoom && crop_applied)
+        else if (!crop_zoom && crop_applied && !raw_lv_bpp_bouncing())
         {
             if (lv && lv_dispsize > 1 && !RAW_IS_RECORDING) set_lv_zoom(1);
             crop_applied = 0;
@@ -3743,7 +3758,8 @@ void raw_video_rec_task(uint32_t card_index)
             /* the depth switch is not guaranteed on every body (6D2: Canon's
              * raw tap has to be reconfigured); never write frames sized for a
              * depth the data does not have */
-            NotifyBox(5000, "%d-bit not applied (sensor at %d) - not recording", BPP, raw_info.bits_per_pixel);
+            NotifyBox(5000, "%d-bit not ready (sensor at %d) - wait a moment, then record",
+                      BPP, raw_info.bits_per_pixel);
             goto cleanup;
         }
 

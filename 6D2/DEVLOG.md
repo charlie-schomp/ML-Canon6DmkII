@@ -2,7 +2,7 @@
 
 Raw video, focus peaking and the rest of the monitoring overlays, working on a DIGIC 7 body.
 
-    Build:     v65, 2026-09-24
+    Build:     v66, 2026-09-25
     Base:      magiclantern_simplified @ 40c0a133b
     Platforms: 6D2.111 (primary, tested on hardware over four weeks)
                6D2.120 (parallel build, boot-tested in qemu only)
@@ -398,6 +398,91 @@ ML's verdict and the ISO at the time; d7probe dumps them (`[keys]`).
 
 ---
 
+## v66 (first build with hardware results for the v62-v65 work)
+
+Confirmed on the camera from the v65 card: **12-bit records** (four clips, 1920x1038, black 512,
+71.7 MB/s), **2048-wide works** (2048x1108 14-bit, black 2047, clean to all four edges - the wider
+1080p active area is real), **black level is right without correction**, and **per-channel audio
+gain reaches the hardware** (five WAVs, R consistently 10-13 dB under L with Safety -12 dB). Three
+of those WAVs have L pinned at 0.0 dBFS, which is exactly what the safety channel is for.
+
+### Reverted: the button-event log
+
+v64 added a 128-entry ring in `gui.c` to catch the ISO-button question. It broke every LiveView
+overlay, so it is gone (`gui.c` is byte-identical to upstream again, and d7probe's `[keys]` dump
+with it). The likely reason is memory, not logic: 2.5 KB of new BSS on a body whose `user_mem` has
+about 11 KB of headroom over the DryOS minimum. **Do not add static buffers to the core on this
+cam - put diagnostics in a module.** The ISO button is left alone; changing ISO outside the ML
+overlay menu works.
+
+### "BBBBBBBB..." in the card root
+
+**Canon's `vsnprintf` - which ML's `snprintf()` calls - does not implement `%c`.** It padded the
+buffer with the character instead of emitting one, so `snprintf(dir, 24, "%c:/DCIM/AUDIO", 'B')`
+produced a directory of 23 B's. The WAVs inside were named correctly, so only the directory was
+wrong. Both `%c` uses are gone (the path is built by hand). Nothing in ML should use `%c`.
+
+### 12/10-bit "not applied" - two causes, both fixed
+
+1. **Two owners of the zoom.** The depth switch bounces the LiveView zoom to make Canon rebuild
+   the Mem1 path; mlv_lite's crop mode holds Canon's 5x zoom by re-requesting it whenever it sees
+   1x. The bounce drops to 1x, the crop hold immediately asks for 5x back, the bounce never sees
+   the zoom it asked for - and Canon's LV job manager does not survive the thrash
+   (`ASSERT g_LvJob[..].fEnableInstance`, LvJob.c:203, Evf - the crash log on this card).
+   raw.c now raises `raw_lv_bpp_bouncing()` for the duration and the crop hold yields to it.
+2. **A three-strikes lockout with no way back.** v62 capped the idle retries at three per depth to
+   stop the view bouncing forever. Once they ran out nothing retried, so the camera sat at 14-bit
+   and every take said "not applied" until the format was toggled by hand. Now: three quick tries
+   (1 s apart), then one every 15 s, and the count resets when the requested depth, LiveView or
+   the zoom changes. Also skipped while the half-shutter is held (Canon is busy).
+
+### Audio: meter without recording, gain in dB stops
+
+- **Meter = OFF / While recording / Always (LiveView).** "Always" brings the audio input up with
+  the factory eventproc pair `FA_Aud_OnlyBlockStart` / `FA_Aud_OnlyBlockStop` (0xe008c4dc /
+  0xe008c4ec: the same init the recorder runs, then the block with arg 1, no file writer), so
+  levels can be set before a take. It yields to the WAV recorder (which does its own init) and is
+  never started while Canon records H.264 - two owners of the audio hardware is a SoundDevice
+  assert waiting to happen.
+- **Gain is chosen in dB now**, in 3 dB stops from -12 to +42 plus Mute, instead of Canon's 0..63
+  table index. The index was never a number anyone could reason about: the steps are 0.375 dB and
+  uneven (~0.875 dB per index to 48, 0.75 above). ML picks the nearest table entry for the input in
+  use and shows the dB actually applied next to the stop.
+
+### 8-bit: not reachable, and not worth much
+
+The Mem1 update writes two things: bits-per-pixel (`mov r0,#0xe`) into the DMAC byte count, and a
+PACK32 code (`mov r0,#2`) into a **nibble** (`Pack32Set` 0xe0228746 builds the register as
+`b0<<8 | b1<<4 | b2`). Canon only ever emits three codes - 0=10-bit, 1=12-bit, 2=14-bit - plus a
+separate 16-bit path (`mov r0,#0x10`) when the "through" flag is set. There is no 8-bit case
+anywhere in the LV path, and the nibble's other values are undocumented; writing 8 into the byte
+count with a code the packer does not implement gives mis-sized frames, which is exactly how the
+pre-v49 12-bit attempts failed. It could be *probed* (set the count to 8, walk codes 3..15, watch
+the EDMAC pitch) but it belongs in d7probe, not in a shipping menu.
+
+Worth less than it sounds, too: the 8-bit step is 64 DN(14) against a read noise of 6.2 DN at
+ISO 100, so the quantisation would be ten times the noise - visible posterisation in every
+gradient. 10-bit already costs shadow detail at base ISO. Below 10-bit the honest saving is
+resolution, not depth.
+
+### Higher frame rates: where the room actually is
+
+- The sensor already does **59.94p in the binned readout** (Canon's own 1080p60 mode). Nothing in
+  ML blocks recording raw there - it is bandwidth: 1920x1080 12-bit at 59.94 is 186 MB/s. What
+  fits a ~85 MB/s card is about **1920x432 12-bit (74.6)** or **1280x720 10-bit (69.1)**.
+- The **crop (1:1) readout is fixed at 29.97** on the sensor side - five attempts in v50-v58, all
+  measured 29.97. Not an FPS-override problem.
+- **FPS override in the binned readout is plausible and untried.** v58 found that the binned
+  timing lists leave the `0x68xx` sensor-interface words at 0 and let the TG timer pace the frame
+  (the 1080p list's B=786 is the 60p base; Canon scales it x2 for 30p, x2.5 for 24p), and
+  `_EngDrvOut` on this body is already whitelisted for exactly those registers
+  (`0xd0006008/600c/6014/6024`). That is the one lever that could give arbitrary rates in 1080p -
+  including a true 48p for half-speed. The risk is Canon's exposure loop re-asserting B (154
+  re-applies were counted in the zoom readout), so it needs the same continuous re-apply that
+  ML's FPS override does elsewhere. Next experiment, not a promise.
+
+---
+
 ## Measured: ISO response in video mode
 
 Read noise from lens-cap dark frames, 1920×720 14-bit, black 2047 / white 16200. Dark mean landed
@@ -536,8 +621,8 @@ cells are left empty rather than filled with a flattering number. ISO 12800 was 
   per-channel since v64 (see *v64*); the meter and the right-channel register writes are untested on
   hardware. One mic feeds both channels - a TRS splitter or a small mixer is still the answer for two
   different sources.
-- **The meter only runs while a WAV is recording** (the audio block is only known to be live then).
-  To set levels before a take, use Record WAV now, watch the meter, stop.
+- **Meter "Always" starts Canon's audio input** (`FA_Aud_OnlyBlockStart`) whenever movie LiveView
+  is up. Untested on hardware; if it misbehaves, set the meter to "While recording".
 - **2048/2080-wide 1080p edge unverified** until a RAWFRAME.BIN from a bright frame confirms where
   the optical black ends (expected ~column 40; recording starts at 44 or later).
 - **Clips recorded before v62 have wrong black levels** in their headers on lit scenes - run
@@ -575,7 +660,7 @@ cells are left empty rather than filled with a flattering number. ISO 12800 was 
 
 **Next (reachable)**
 
-- Run `TESTING-v64.md` (fast-card tester): data-rate ladder to 2048x1080 12-bit, left-edge check,
+- Run the v66 test sequences: data-rate ladder to 2048x1080 12-bit, left-edge check,
   RAWFRAME dumps in 1080p and crop, audio meter / safety track / DCIM/AUDIO, ISO key log.
 - Confirm the OB edge from RAWFRAME.BIN; then consider the top rows too (skip_top 16) and whether
   the zoom window really has no OB (skip_left 100 there may also be recoverable: 3264 wide).
@@ -645,6 +730,7 @@ Compressed — the full story is in the sections above and the code comments.
 | v63 | Scratch WAV **input select** and **per-channel gain** |
 | v64 | 12/10-bit **Raw detect error** fixed; **2048-wide 1080p** + 1.90:1 DCI aspect; WAV gain **in dB**, real per-channel + safety track; **audio meter**; WAVs in **DCIM/AUDIO**; button-event log |
 | v65 | Movie tab reordered (RAW video first, audio last as one submenu); two-stage test plan |
+| v66 | Button-event log **reverted** (broke overlays); `%c` snprintf bug (the "BBBB..." directory); bit-depth switch no longer fights crop mode's zoom hold, retry lockout removed; audio meter without recording; gain in 3 dB stops |
 
 ---
 

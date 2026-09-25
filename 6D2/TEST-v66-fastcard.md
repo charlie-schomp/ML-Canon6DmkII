@@ -1,4 +1,4 @@
-# 6D Mark II ML v65 — fast-card test
+# 6D Mark II ML v66 — fast-card test
 
 For firmware **1.1.1**. About 40 minutes. Nothing here changes Canon settings or factory data.
 If the camera ever locks up, pull the battery and keep any `CRASH*.LOG` / `ASSERT*.LOG`
@@ -37,6 +37,9 @@ For the crop rows: RAW video → **Crop mode ON** (5× window, 29.97 fps); Aspec
 | i | crop | 2240×926 | 10 | 77.7 |
 | j | crop | 2560×926 | 10 | 88.8 |
 
+If a 12/10-bit format ever says "not ready (sensor at 14)", wait two seconds and press record
+again — note if it ever stays stuck.
+
 As a rule, a format runs continuously if its MB/s is at most about 90 % of your card's write speed.
 
 ## 3. Stability
@@ -46,8 +49,9 @@ As a rule, a format runs continuously if its MB/s is at most about 90 % of your 
 ## 4. Quick checks
 - One 5 s 14-bit clip of a lit scene. MLV App → RAW black level should read **2047**.
 - For one 2048-wide clip, check the **left edge** in MLV App for a dark band.
-- Movie → **Scratch audio** → Mode *Auto with RAW*, Gain *Manual*, Left level ~35. Record
-  one clip: a `.WAV` with the clip's name should appear in `DCIM/AUDIO`.
+- Movie → **Scratch audio** → Mode *Auto with RAW*, Gain *Manual*, Left gain *+18 dB*,
+  Level meter *Always*. Record one clip: the L/R meter should move in LiveView, and a `.WAV`
+  with the clip's name should appear in `DCIM/AUDIO` (nothing new in the card root).
 
 ## Send back
 This sheet, all `CRASH*`/`ASSERT*` logs, the `DCIM/AUDIO` WAVs, and the clips from 2d, 3 and 4
