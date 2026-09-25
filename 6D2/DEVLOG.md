@@ -2,7 +2,7 @@
 
 Raw video, focus peaking and the rest of the monitoring overlays, working on a DIGIC 7 body.
 
-    Build:     v66, 2026-09-25
+    Build:     v67, 2026-09-25
     Base:      magiclantern_simplified @ 40c0a133b
     Platforms: 6D2.111 (primary, tested on hardware over four weeks)
                6D2.120 (parallel build, boot-tested in qemu only)
@@ -398,6 +398,41 @@ ML's verdict and the ISO at the time; d7probe dumps them (`[keys]`).
 
 ---
 
+## v67 - the v64/v65/v66 display work is reverted
+
+**v64 broke the overlay and menu engine and I shipped three builds without catching it.** The
+symptoms on hardware: LiveView overlays broken, frame guides gone, INFO no longer cycling the
+views, Canon's menus and ML's layer painting over each other. Reverting `gui.c` in v66 did not fix
+it, which ruled out the button-event log and pointed at the other v64 change that draws.
+
+**Cause: the audio level meter task.** It drew into ML's bitmap layer and called `bmp_fill()`,
+which sets `ml_refresh_display_needed`, about twenty times a second - gated only on
+`lv && !gui_menu_shown() && get_global_draw()`. That is not ML's overlay gate. Every other overlay
+goes through `liveview_display_idle()`, which also refuses when `gui_state != GUISTATE_IDLE`, when
+`CURRENT_GUI_MODE > 3` (Canon menu, playback), when the display is off and when a Canon dialog is
+up. On a `FEATURE_VRAM_RGBA` body the flag makes the compositor push ML's layer over whatever
+Canon has on screen, so the meter kept re-compositing ML's graphics on top of Canon's UI. v66 made
+it worse by defaulting the meter to "Always".
+
+**The rule this cost us:** anything that draws in LiveView must be gated on
+`liveview_display_idle()` (or `zebra_should_run()`), not on `lv`. A draw loop that sets the refresh
+flag unconditionally will fight Canon for the screen on every DIGIC 6/7/8 body.
+
+v67 restores the v63 files for everything that touches drawing or menus - `movtweaks.c`, `raw.c`,
+`raw.h`, `mlv_lite.c`, `fps-engio_per_cam.c` - and re-applies only the two fixes that never draw:
+
+- `raw_update_params_any_bpp()`, so recording works while the camera holds 12/10-bit (the overlays
+  keep the 14-bit-only behaviour they need).
+- `raw_lv_bpp_bouncing()`, so the bit-depth zoom bounce and mlv_lite's crop-mode zoom hold stop
+  fighting over `PROP_LV_DISPSIZE`, plus retry backoff in place of the three-strikes lockout.
+
+Shelved with the revert, to be re-added one at a time behind the right gate: the level meter, the
+dB gain scale, `DCIM/AUDIO` filing, the Movie-tab reorder, 2048-wide 1080p and the DCI aspect.
+The hardware results they produced still stand (12-bit records, 2048 is clean to the edges,
+per-channel gain reaches the hardware) - the code that delivered them is what needs redoing.
+
+---
+
 ## v66 (first build with hardware results for the v62-v65 work)
 
 Confirmed on the camera from the v65 card: **12-bit records** (four clips, 1920x1038, black 512,
@@ -730,6 +765,7 @@ Compressed — the full story is in the sections above and the code comments.
 | v63 | Scratch WAV **input select** and **per-channel gain** |
 | v64 | 12/10-bit **Raw detect error** fixed; **2048-wide 1080p** + 1.90:1 DCI aspect; WAV gain **in dB**, real per-channel + safety track; **audio meter**; WAVs in **DCIM/AUDIO**; button-event log |
 | v65 | Movie tab reordered (RAW video first, audio last as one submenu); two-stage test plan |
+| v67 | **Reverted all v64-v66 display/menu work** (the audio meter task was painting over Canon's UI); kept the any-bpp record fix and the zoom-ownership fix |
 | v66 | Button-event log **reverted** (broke overlays); `%c` snprintf bug (the "BBBB..." directory); bit-depth switch no longer fights crop mode's zoom hold, retry lockout removed; audio meter without recording; gain in 3 dB stops |
 
 ---

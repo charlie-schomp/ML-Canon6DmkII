@@ -1219,17 +1219,8 @@ int raw_update_params_work()
         // darktable source says:
         // Vertical x="2" width="116"
         // Horizontal y="8" height="32"
-        // Those are full-resolution CR2 columns.  The 1080p LiveView raw is
-        // the full 6384-column readout binned 3x across (2128 = 6384 / 3), so
-        // the optical black is only ~118/3 = 40 columns wide; skip_left 100
-        // threw away ~60 columns of image.  44 keeps a 4-column margin past
-        // the OB edge, 4 on the right for the last partial bin: 2080 usable
-        // (DCI 2K 2048 fits).  The 1:1 zoom window has no OB at the left and
-        // keeps the geometry that was validated on hardware.  d7probe's raw
-        // frame dump (RAWFRAME.BIN) is there to confirm the edge.
         skip_top    = 16;
-        skip_left   = zoom ? 100 : 44;
-        skip_right  = zoom ? 0 : 4;
+        skip_left   = 100;
         #endif
 
         #if defined(CONFIG_70D)
@@ -1670,8 +1661,8 @@ int raw_update_params()
 /* The same update, valid at any bit depth - for raw recorders.
  * raw_update_params() fails below 14-bit on purpose, so the overlays (which
  * only decode 14-bit) switch themselves off.  Recorders must not inherit that:
- * since the 6D2 holds 12/10-bit between clips (v61), mlv_lite's record-start
- * check ran into it every time and gave up with "Raw detect error". */
+ * the 6D2 holds 12/10-bit between clips, so mlv_lite's record-start check ran
+ * into it every time and gave up with "Raw detect error". */
 int raw_update_params_any_bpp()
 {
     return raw_update_params_retry();
@@ -1752,18 +1743,6 @@ raw_set_geometry(int width, int height, int skip_left, int skip_right, int skip_
     int preview_skip_top = skip_top + 8;
     int preview_width = raw_info.jpeg.width - 28;
     int preview_height = raw_info.jpeg.height - 16;
-
-#ifdef CONFIG_6D2
-    /* The raw->screen mapping (peaking, raw overlays, recorded-area guide)
-     * was aligned on hardware against the old 1080p geometry (skip 100 / 0).
-     * Widening the recordable area must not move it, so the preview rect
-     * stays on that reference; only what can be recorded grows. */
-    if (lv && lv_dispsize == 1 && width == 2128)
-    {
-        preview_skip_left = 100 + 14;
-        preview_width = (width - 100) - 28;
-    }
-#endif
 
 #ifdef CONFIG_RAW_LIVEVIEW
     if (lv_dispsize > 1)
