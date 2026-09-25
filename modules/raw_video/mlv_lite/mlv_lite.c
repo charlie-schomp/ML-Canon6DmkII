@@ -1335,6 +1335,32 @@ static MENU_UPDATE_FUNC(aspect_ratio_update)
     write_speed_update(entry, info);
 }
 
+static MENU_UPDATE_FUNC(output_format_update);   /* defined below */
+
+/* 6D2: the bit depth is switched by making Canon rebuild its LiveView path,
+ * which can fail; show what is really in effect (and, when it disagrees, what
+ * the write DMAC was asked for and what it reported) rather than only what was
+ * requested.  Menu text only - nothing is drawn in LiveView. */
+static MENU_UPDATE_FUNC(output_format_bpp_update)
+{
+    output_format_update(entry, info);
+
+    if (!is_camera("6D2", "*") || !lv || !raw_lv_is_enabled()) return;
+
+    if (raw_info.bits_per_pixel == BPP)
+    {
+        MENU_SET_RINFO("%d-bit live", raw_info.bits_per_pixel);
+        return;
+    }
+
+    int want = 0, got = 0, zoom = 0;
+    int res = raw_lv_bpp_status(&want, &got, &zoom);
+    MENU_SET_RINFO("at %d: %d/%d z%d r%d", raw_info.bits_per_pixel, got, want, zoom, res);
+    MENU_SET_WARNING(MENU_WARN_ADVICE,
+                     "Sensor still at %d-bit. Leave the menu a few seconds; it retries.",
+                     raw_info.bits_per_pixel);
+}
+
 static MENU_UPDATE_FUNC(output_format_update)
 {
     refresh_raw_settings(0);
@@ -2228,7 +2254,6 @@ unsigned int raw_rec_polling_cbr(unsigned int unused)
      * whenever anything that could explain the failure changes (the depth
      * asked for, LiveView, or the zoom). */
     if (is_camera("6D2", "*") && raw_video_active && lv_settled && !gui_menu_shown()
-        && !get_halfshutter_pressed()
         && raw_lv_is_enabled() && raw_info.bits_per_pixel != BPP)
     {
         static int last_try = 0;
@@ -3753,8 +3778,16 @@ void raw_video_rec_task(uint32_t card_index)
             /* the depth switch is not guaranteed on every body (6D2: Canon's
              * raw tap has to be reconfigured); never write frames sized for a
              * depth the data does not have */
-            NotifyBox(5000, "%d-bit not ready (sensor at %d) - wait a moment, then record",
-                      BPP, raw_info.bits_per_pixel);
+            int want = 0, got = 0, zoom = 0;
+            int res = raw_lv_bpp_status(&want, &got, &zoom);
+            /* want/got are the write DMAC's bytes per line: got == want means
+             * the switch worked and something else disagrees, got == the
+             * 14-bit figure means Canon never rebuilt the path, got == 0 means
+             * the shadow register read came back empty */
+            NotifyBox(8000, "%d-bit not ready (at %d)\nDMAC %d want %d zoom %d res %d",
+                      BPP, raw_info.bits_per_pixel, got, want, zoom, res);
+            printf("bpp %d not ready: at %d, DMAC %d want %d zoom %d res %d\n",
+                   BPP, raw_info.bits_per_pixel, got, want, zoom, res);
             goto cleanup;
         }
 
@@ -4448,7 +4481,7 @@ static struct menu_entry raw_video_menu[] =
                 .name       = "Data format",
                 .priv       = &output_format,
                 .max        = 5,
-                .update     = output_format_update,
+                .update     = output_format_bpp_update,
                 .choices    = CHOICES(
                                 "14-bit",
                                 "12-bit",

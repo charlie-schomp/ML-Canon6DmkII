@@ -2,7 +2,7 @@
 
 Raw video, focus peaking and the rest of the monitoring overlays, working on a DIGIC 7 body.
 
-    Build:     v67, 2026-09-25
+    Build:     v68, 2026-09-25
     Base:      magiclantern_simplified @ 40c0a133b
     Platforms: 6D2.111 (primary, tested on hardware over four weeks)
                6D2.120 (parallel build, boot-tested in qemu only)
@@ -398,6 +398,34 @@ ML's verdict and the ISO at the time; d7probe dumps them (`[keys]`).
 
 ---
 
+## v68 - stop guessing at the bit-depth switch
+
+Two guesses at why 12/10-bit reports "not ready" were wrong (the half-shutter gate added in v66 is
+gone again - the flag at `0x53f8` reads 0 when idle, so it was not that either). v68 adds no
+behaviour, only instrumentation, all of it text in menus and logs - nothing draws in LiveView:
+
+- raw.c keeps what the last switch asked of the write DMAC and what it saw (`raw_lv_bpp_status()`:
+  want, got, the zoom it ended on, and 1 ok / -1 gave up / 0 never ran).
+- mlv_lite shows that on the **Data format** line (`12-bit live`, or `at 14: got/want z r`) and in
+  the refusal message, so the state can be read without recording.
+- d7probe dumps `gui_state`, the GUI mode, half-shutter, `liveview_display_idle()`,
+  `job_state_ready_to_take_pic()` and the same depth status.
+
+The numbers separate the possibilities that have been guessed at so far: `got` equal to the 14-bit
+figure means Canon never rebuilt the Mem1 path; `got` equal to `want` means the switch worked and
+something downstream disagrees; `got` 0 means the shadow read is empty (the probe's dump of
+`0xd0058000` also shows zeros past the first few words, which is worth resolving either way).
+
+**Trash button reaching Canon instead of ML** is not part of the v64 regression - it is untouched
+v63 code. `handle_ml_menu_erase()` only opens the ML menu when `gui_state == GUISTATE_IDLE` (0) and
+otherwise passes the button to Canon; on this body LiveView does not always report 0. The probe now
+records the value, and the fix is one condition once we know it.
+
+**Cropmarks disappearing during focus** is stock behaviour, not a regression: overlays stop while
+`job_state_ready_to_take_pic()` is false, and the 20 fps compositor makes the return sluggish.
+
+---
+
 ## v67 - the v64/v65/v66 display work is reverted
 
 **v64 broke the overlay and menu engine and I shipped three builds without catching it.** The
@@ -765,6 +793,7 @@ Compressed — the full story is in the sections above and the code comments.
 | v63 | Scratch WAV **input select** and **per-channel gain** |
 | v64 | 12/10-bit **Raw detect error** fixed; **2048-wide 1080p** + 1.90:1 DCI aspect; WAV gain **in dB**, real per-channel + safety track; **audio meter**; WAVs in **DCIM/AUDIO**; button-event log |
 | v65 | Movie tab reordered (RAW video first, audio last as one submenu); two-stage test plan |
+| v68 | Diagnostics for the bit-depth switch and `gui_state`; half-shutter gate removed |
 | v67 | **Reverted all v64-v66 display/menu work** (the audio meter task was painting over Canon's UI); kept the any-bpp record fix and the zoom-ownership fix |
 | v66 | Button-event log **reverted** (broke overlays); `%c` snprintf bug (the "BBBB..." directory); bit-depth switch no longer fights crop mode's zoom hold, retry lockout removed; audio meter without recording; gain in 3 dB stops |
 

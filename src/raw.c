@@ -728,6 +728,19 @@ static int lv_bpp_patched = 0;      /* depth the ROM constants are patched to, 0
 static volatile int lv_bpp_bouncing = 0;
 int raw_lv_bpp_bouncing(void) { return lv_bpp_bouncing; }
 
+/* What the last depth switch asked for and what it got, so a failure can be
+ * diagnosed from the camera instead of guessed at: want/got are the write
+ * DMAC's bytes per line (expected vs the shadow's final value), zoom is
+ * lv_dispsize when we gave up, and result is 1 ok / -1 gave up / 0 not run. */
+static int lv_bpp_want = 0, lv_bpp_got = 0, lv_bpp_zoom = 0, lv_bpp_result = 0;
+int raw_lv_bpp_status(int * want, int * got, int * zoom)
+{
+    if (want) *want = lv_bpp_want;
+    if (got)  *got  = lv_bpp_got;
+    if (zoom) *zoom = lv_bpp_zoom;
+    return lv_bpp_result;
+}
+
 static void raw_lv_set_bpp_6d2(int bpp)
 {
     if (bpp != 10 && bpp != 12) bpp = 14;
@@ -774,6 +787,7 @@ static void raw_lv_set_bpp_6d2(int bpp)
     {
         extern void set_lv_zoom(int zoom);
         uint32_t want = raw_info.width * bpp / 8;
+        lv_bpp_want = want; lv_bpp_got = 0; lv_bpp_result = 0;
         lv_bpp_bouncing = 1;
         for (int attempt = 0; attempt < 3; attempt++)
         {
@@ -804,11 +818,15 @@ static void raw_lv_set_bpp_6d2(int bpp)
                     for (int j = 0; j < 20 && MEM(0x1c928 + 0x1c) == 0; j++) msleep(25);
                     wait_lv_frames(2);
                     printf("LV bpp %d: DMAC %d bytes/line after %d ms (try %d)\n", bpp, xb, i * 25, attempt);
+                    lv_bpp_got = xb; lv_bpp_zoom = lv_dispsize; lv_bpp_result = 1;
                     lv_bpp_bouncing = 0;
                     return;
                 }
             }
         }
+        lv_bpp_got = (int)(shamem_read((uint32_t)&(raw_lv_edmac->yb_xb)) & 0xFFFF);
+        lv_bpp_zoom = lv_dispsize;
+        lv_bpp_result = -1;
         lv_bpp_bouncing = 0;
         printf("LV bpp %d: DMAC did not follow (pitch %d)\n", bpp,
                (int)(shamem_read((uint32_t)&(raw_lv_edmac->yb_xb)) & 0xFFFF));

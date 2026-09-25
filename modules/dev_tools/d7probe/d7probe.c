@@ -31,6 +31,8 @@
 #include <patch.h>
 #include <raw.h>
 #include <fps.h>
+#include <zebra.h>
+#include <shoot.h>
 #include "d7probe.h"
 
 extern WEAK_FUNC(ret_1) int convert_f_patch_to_patch(struct function_hook_patch *f_patch_in,
@@ -238,6 +240,29 @@ static void d7probe_dump(void)
                   "[sdclk] mode 6..9 pick lists from 0x1137c/0x11484/0x114a8/0x1152c; 11 words per set, written by\n"
                   "[sdclk] 0xe0292568 to SDCON regs 0xd2090600 618 61c 620 62c 630 624 628 638 604 60c (slot offset added)\n");
     dump_words(f, "[sdtbl]", (uint32_t *)0x110c0, (0x11600 - 0x110c0) / 4, 0x110c0);
+
+    /* GUI state: ML only opens its menu on the Trash button when
+     * gui_state == GUISTATE_IDLE (0); anything else and Canon gets the button,
+     * which is why Trash sometimes brings up Canon's screen instead of ML's
+     * menu.  Dump what this body actually reports in LiveView. */
+    {
+        /* 6D2 1.1.1, same addresses as platform consts.h:
+         * CURRENT_GUI_MODE 0x6760, HALFSHUTTER_PRESSED 0x53f8 */
+        extern int gui_state;
+        extern int dofpreview;
+        extern int liveview_display_idle(void);
+        extern int job_state_ready_to_take_pic(void);
+        my_fprintf(f, "\n[gui] gui_state=%d (GUISTATE_IDLE=0) gui_mode=%d halfshutter=%d dofpreview=%d\n",
+                   gui_state, (int)MEM(0x6760), (int)MEM(0x53f8), dofpreview);
+        my_fprintf(f, "[gui] lv=%d lv_dispsize=%d display_idle=%d ready_to_take_pic=%d\n",
+                   lv, lv_dispsize, liveview_display_idle(), job_state_ready_to_take_pic());
+    }
+    {
+        int want = 0, got = 0, zoom = 0;
+        int res = raw_lv_bpp_status(&want, &got, &zoom);
+        my_fprintf(f, "[bpp] in effect=%d  last switch: DMAC got=%d want=%d zoom=%d result=%d\n",
+                   raw_info.bits_per_pixel, got, want, zoom, res);
+    }
 
     /* audio: SoundDevice state (*(0x5300+8)), gain + peak registers, and the
      * AudioLevel meter struct (*(0x7a44+4)) */

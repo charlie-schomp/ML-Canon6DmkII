@@ -99,6 +99,10 @@ int raw_update_params_any_bpp();
  * nothing else may touch PROP_LV_DISPSIZE until it clears */
 int raw_lv_bpp_bouncing(void);
 
+/* 6D2: what the last bit-depth switch asked of the write DMAC (bytes per line)
+ * and what it saw; returns 1 ok, -1 gave up, 0 never ran */
+int raw_lv_bpp_status(int * want, int * got, int * zoom);
+
 /* get a red/green/blue pixel near the specified coords (approximate) */
 int raw_red_pixel(int x, int y);
 int raw_green_pixel(int x, int y);
