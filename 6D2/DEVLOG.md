@@ -2,7 +2,7 @@
 
 Raw video, focus peaking and the rest of the monitoring overlays, working on a DIGIC 7 body.
 
-    Build:     v64, 2026-09-24
+    Build:     v65, 2026-09-24
     Base:      magiclantern_simplified @ 40c0a133b
     Platforms: 6D2.111 (primary, tested on hardware over four weeks)
                6D2.120 (parallel build, boot-tested in qemu only)
@@ -644,6 +644,7 @@ Compressed — the full story is in the sections above and the code comments.
 | v62 | **Black level pinned to 2047** (autodetect window was image); no zoom requests during record teardown; fps and DISO from the real readout |
 | v63 | Scratch WAV **input select** and **per-channel gain** |
 | v64 | 12/10-bit **Raw detect error** fixed; **2048-wide 1080p** + 1.90:1 DCI aspect; WAV gain **in dB**, real per-channel + safety track; **audio meter**; WAVs in **DCIM/AUDIO**; button-event log |
+| v65 | Movie tab reordered (RAW video first, audio last as one submenu); two-stage test plan |
 
 ---
 

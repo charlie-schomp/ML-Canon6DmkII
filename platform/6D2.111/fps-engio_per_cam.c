@@ -186,12 +186,12 @@ static struct menu_entry crop_fps24_menu[] =
     },
 };
 
-static void crop_fps24_init()
+/* called from movtweak_init(), so the Movie tab order is fixed:
+ * RAW video, video options, this, audio */
+void crop_fps24_menu_add(void)
 {
     menu_add("Movie", crop_fps24_menu, COUNT(crop_fps24_menu));
 }
-
-INIT_FUNC("crop_fps24", crop_fps24_init);
 #else
 int fps_crop24_active(void) { return 0; }
 #endif /* CONFIG_CROP24_EXPERIMENT */

@@ -1641,86 +1641,11 @@ static MENU_UPDATE_FUNC(wav_scratch_update)
 #endif /* FEATURE_WAV_AUDIO */
 
 static struct menu_entry mov_menus[] = {
-    #ifdef FEATURE_WAV_AUDIO
-    {
-        .name       = "Scratch audio (WAV)",
-        .priv       = &wav_scratch_audio,
-        .max        = 2,
-        .choices    = CHOICES("OFF", "Manual", "Auto with RAW"),
-        /* No .update here on purpose. An .update that calls MENU_SET_VALUE on
-         * an entry that already has .choices makes the two fight over the same
-         * cell, and the value alternates between them on successive redraws -
-         * the reported flashing. Live status lives on the entry below. */
-        .help       = "Record audio to a WAV via Canon's own recorder. ~0.19 MB/s.",
-        .help2      = "Files go to DCIM/AUDIO, named after the clip (Auto) or time.",
-        .submenu_width = 710,
-        .children =  (struct menu_entry[]) {
-            {
-                .name       = "Input",
-                .priv       = &wav_input,
-                .max        = 2,
-                .update     = wav_input_update,
-                .choices    = CHOICES("Auto (jack)", "Internal mic", "External mic"),
-                .help       = "Mic for the WAV. Canon's recorder ignores the jack by itself,",
-                .help2      = "so Auto checks it at each start. Both channels share one source.",
-            },
-            #ifdef SOUNDDEV_SET_VOLUME_IN
-            {
-                .name       = "Gain",
-                .priv       = &wav_gain_mode,
-                .max        = 1,
-                .select     = wav_gain_mode_select,
-                .choices    = CHOICES("Factory default", "Manual"),
-                .help       = "Factory default is quiet (peaks ~ -41 dBFS measured).",
-                .help2      = "Manual: set the input gain in dB, per channel. RAM only.",
-            },
-            {
-                .name       = "Left level",
-                .priv       = &wav_gain_l,
-                .max        = 63,
-                .select     = wav_gain_select,
-                .update     = wav_gain_update,
-                .help       = "Left input gain. Level 0 = mute. Changes apply live.",
-                .help2      = "Watch the meter: keep peaks below about -6 dBFS.",
-            },
-            {
-                .name       = "Right channel",
-                .priv       = &wav_gain_rmode,
-                .max        = 5,
-                .select     = wav_gain_rmode_select,
-                .update     = wav_gain_update,
-                .choices    = CHOICES("Same as left", "Own level", "Safety -6 dB", "Safety -12 dB", "Safety -18 dB", "Safety -24 dB"),
-                .help       = "Safety: R records the same source N dB lower - a backup for",
-                .help2      = "clipped peaks (merge in post: 6D2/tools/wav_dualgain.py).",
-            },
-            {
-                .name       = "Right level",
-                .priv       = &wav_gain_r,
-                .max        = 63,
-                .select     = wav_gain_select,
-                .update     = wav_gain_update,
-                .help       = "Right input gain when Right channel = Own level.",
-            },
-            #endif
-            {
-                .name       = "Level meter",
-                .priv       = &wav_meter,
-                .max        = 1,
-                .help       = "L/R peak meter in LiveView while the WAV records (dBFS),",
-                .help2      = "white tick = 1.5 s peak hold, CLIP when a channel hits full scale.",
-            },
-            MENU_EOL,
-        },
-    },
-    {
-        .name       = "Record WAV now",
-        .select     = wav_scratch_now,
-        .update     = wav_scratch_now_update,
-        .icon_type  = IT_ACTION,
-        .help       = "Start/stop Canon's WAV recorder by hand, right now.",
-        .help2      = "Saved to DCIM/AUDIO/W<day>-<hhmm>.WAV. Independent of RAW.",
-    },
-    #endif
+    /* Movie tab order (v65): RAW video first, other video options, audio last.
+     * mlv_lite registers "RAW video" when the module loads - after this menu
+     * exists - so it takes this placeholder's slot instead of landing at the
+     * bottom.  Hidden while the module is not loaded. */
+    MENU_PLACEHOLDER("RAW video"),
     #ifdef FEATURE_MOVIE_RECORDING_50D
     {
         .name       = "Movie Record",
@@ -1785,7 +1710,7 @@ static struct menu_entry mov_menus[] = {
         .max = 180,
         .help = "Change 29:59 movie recording limit",
         .help2 = "Too long recording makes empty files on ExFAT, ok on FAT32",
-    }
+    },
     #endif
     #ifdef FEATURE_GRADUAL_EXPOSURE
     {
@@ -1811,6 +1736,137 @@ static struct menu_entry mov_menus[] = {
     },
     #endif
 };
+
+#ifdef FEATURE_WAV_AUDIO
+/* one line in the Movie tab: status only, SET/Q opens the submenu.  No .priv
+ * and no .choices here, so MENU_SET_VALUE has the cell to itself (see the
+ * flashing note on the Mode entry). */
+static MENU_UPDATE_FUNC(wav_audio_main_update)
+{
+    static const char * modes[] = { "OFF", "Manual", "Auto with RAW" };
+    if (wav_is_recording)
+    {
+        if (wav_meter_valid)
+        {
+            int a = wav_meter_hold10[0], b = wav_meter_hold10[1];
+            MENU_SET_VALUE("REC  L %d  R %d dBFS", a <= -999 ? -99 : a / 10, b <= -999 ? -99 : b / 10);
+        }
+        else
+        {
+            MENU_SET_VALUE("REC");
+        }
+    }
+    else
+    {
+        MENU_SET_VALUE("%s", modes[COERCE(wav_scratch_audio, 0, 2)]);
+    }
+  #if defined(SOUNDDEV_SET_VOLUME_IN) && defined(AUDIO_GAIN_TABLE_INT)
+    if (wav_gain_mode)
+    {
+        const int32_t * t = wav_gain_table(wav_mic_to_use());
+        if (t)
+        {
+            char g[16];
+            wav_reg_str(g, sizeof(g), wav_level_reg(t, wav_gain_l));
+            MENU_SET_RINFO("%s mic, %s", wav_mic_to_use() ? "ext" : "int", g);
+        }
+    }
+    else
+  #endif
+    {
+        MENU_SET_RINFO("%s mic", wav_mic_to_use() ? "ext" : "int");
+    }
+}
+
+static struct menu_entry mov_audio_menus[] = {
+    {
+        .name       = "Scratch audio",
+        .select     = menu_open_submenu,
+        .update     = wav_audio_main_update,
+        .icon_type  = IT_SUBMENU,
+        .help       = "Audio to a WAV via Canon's own recorder (~0.19 MB/s), no video.",
+        .help2      = "Files go to DCIM/AUDIO. Press SET or Q for all audio settings.",
+        .submenu_width = 710,
+        .children =  (struct menu_entry[]) {
+            {
+                .name       = "Mode",
+                .priv       = &wav_scratch_audio,
+                .max        = 2,
+                .choices    = CHOICES("OFF", "Manual", "Auto with RAW"),
+                /* No .update here on purpose. An .update that calls
+                 * MENU_SET_VALUE on an entry that already has .choices makes
+                 * the two fight over the same cell, and the value alternates
+                 * between them on successive redraws - the reported flashing. */
+                .help       = "Auto with RAW: starts/stops with raw recording, named after the clip.",
+                .help2      = "Manual: use Record WAV now below.",
+            },
+            {
+                .name       = "Record WAV now",
+                .select     = wav_scratch_now,
+                .update     = wav_scratch_now_update,
+                .icon_type  = IT_ACTION,
+                .help       = "Start/stop Canon's WAV recorder by hand, right now.",
+                .help2      = "Saved to DCIM/AUDIO/W<day>-<hhmm>.WAV. Independent of RAW.",
+            },
+            {
+                .name       = "Input",
+                .priv       = &wav_input,
+                .max        = 2,
+                .update     = wav_input_update,
+                .choices    = CHOICES("Auto (jack)", "Internal mic", "External mic"),
+                .help       = "Mic for the WAV. Canon's recorder ignores the jack by itself,",
+                .help2      = "so Auto checks it at each start. Both channels share one source.",
+            },
+            #ifdef SOUNDDEV_SET_VOLUME_IN
+            {
+                .name       = "Gain",
+                .priv       = &wav_gain_mode,
+                .max        = 1,
+                .select     = wav_gain_mode_select,
+                .choices    = CHOICES("Factory default", "Manual"),
+                .help       = "Factory default is quiet (peaks ~ -41 dBFS measured).",
+                .help2      = "Manual: set the input gain in dB, per channel. RAM only.",
+            },
+            {
+                .name       = "Left level",
+                .priv       = &wav_gain_l,
+                .max        = 63,
+                .select     = wav_gain_select,
+                .update     = wav_gain_update,
+                .help       = "Left input gain. Level 0 = mute. Changes apply live.",
+                .help2      = "Watch the meter: keep peaks below about -6 dBFS.",
+            },
+            {
+                .name       = "Right channel",
+                .priv       = &wav_gain_rmode,
+                .max        = 5,
+                .select     = wav_gain_rmode_select,
+                .update     = wav_gain_update,
+                .choices    = CHOICES("Same as left", "Own level", "Safety -6 dB", "Safety -12 dB", "Safety -18 dB", "Safety -24 dB"),
+                .help       = "Safety: R records the same source N dB lower - a backup for",
+                .help2      = "clipped peaks (merge in post: 6D2/tools/wav_dualgain.py).",
+            },
+            {
+                .name       = "Right level",
+                .priv       = &wav_gain_r,
+                .max        = 63,
+                .select     = wav_gain_select,
+                .update     = wav_gain_update,
+                .help       = "Right input gain when Right channel = Own level.",
+            },
+            #endif
+            {
+                .name       = "Level meter",
+                .priv       = &wav_meter,
+                .max        = 1,
+                .help       = "L/R peak meter in LiveView while the WAV records (dBFS),",
+                .help2      = "white tick = 1.5 s peak hold, CLIP when a channel hits full scale.",
+            },
+            MENU_EOL,
+        },
+    },
+};
+#endif
 
 // Only create this menu if the cam has any feature that needs it
 #if defined(FEATURE_NITRATE) || defined(FEATURE_MOVIE_RESTART) \
@@ -1914,7 +1970,16 @@ struct menu_entry expo_override_menus[] = {
 
 static void movtweak_init()
 {
+    /* Movie tab, in this order: RAW video (placeholder, filled by mlv_lite),
+     * the other video options, the crop-mode 24p experiment, and audio last */
     menu_add("Movie", mov_menus, COUNT(mov_menus));
+    #ifdef CONFIG_CROP24_EXPERIMENT
+    extern void crop_fps24_menu_add(void);
+    crop_fps24_menu_add();
+    #endif
+    #ifdef FEATURE_WAV_AUDIO
+    menu_add("Movie", mov_audio_menus, COUNT(mov_audio_menus));
+    #endif
     #ifdef FEATURE_EXPO_OVERRIDE
     bv_sem = create_named_semaphore("bv", SEM_CREATE_UNLOCKED);
     #endif
