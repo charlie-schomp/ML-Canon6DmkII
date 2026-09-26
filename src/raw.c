@@ -33,6 +33,7 @@
 #include "fps.h"
 #include "platform/state-object.h"
 #include "patch.h"
+#include "gui-common.h"      /* redraw() after the LiveView bounce below */
 #undef dbg_printf   /* patch.h has its own; raw.c defines it below */
 
 #undef RAW_DEBUG        /* define it to help with porting */
@@ -728,6 +729,26 @@ static int lv_bpp_patched = 0;      /* depth the ROM constants are patched to, 0
 static volatile int lv_bpp_bouncing = 0;
 int raw_lv_bpp_bouncing(void) { return lv_bpp_bouncing; }
 
+/* Put the display back together after a zoom bounce.
+ *
+ * On DIGIC 6/7/8 (FEATURE_VRAM_RGBA) ML does not draw into Canon's bitmap: it
+ * owns a separate compositor layer that Canon never clears.  So when the
+ * LiveView mode changes under it - which is exactly what this bounce does -
+ * ML's old contents stay on screen over whatever Canon draws next, and Canon's
+ * menus and ML's overlays end up on top of each other.  redraw() is ML's fix
+ * for that (clrscr() on the ML layer, dialog_redraw() so Canon repaints, then
+ * the cropmark / menu / lens-display dirty flags), and every other place that
+ * disturbs LiveView already calls it - FPS override, ResumeLiveView, a change
+ * of recording state.  Not while recording: redraw()'s full-buffer clear on
+ * this body throws a Canon ERR mid-take (see the note in zebra.c). */
+static void raw_lv_bounce_redraw(void)
+{
+    if (NOT_RECORDING)
+    {
+        redraw();
+    }
+}
+
 /* What the last depth switch asked for and what it got, so a failure can be
  * diagnosed from the camera instead of guessed at: want/got are the write
  * DMAC's bytes per line (expected vs the shadow's final value), zoom is
@@ -820,6 +841,7 @@ static void raw_lv_set_bpp_6d2(int bpp)
                     printf("LV bpp %d: DMAC %d bytes/line after %d ms (try %d)\n", bpp, xb, i * 25, attempt);
                     lv_bpp_got = xb; lv_bpp_zoom = lv_dispsize; lv_bpp_result = 1;
                     lv_bpp_bouncing = 0;
+                    raw_lv_bounce_redraw();
                     return;
                 }
             }
@@ -828,6 +850,7 @@ static void raw_lv_set_bpp_6d2(int bpp)
         lv_bpp_zoom = lv_dispsize;
         lv_bpp_result = -1;
         lv_bpp_bouncing = 0;
+        raw_lv_bounce_redraw();
         printf("LV bpp %d: DMAC did not follow (pitch %d)\n", bpp,
                (int)(shamem_read((uint32_t)&(raw_lv_edmac->yb_xb)) & 0xFFFF));
         if (lv_bpp_patched)

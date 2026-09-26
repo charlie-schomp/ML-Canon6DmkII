@@ -2,7 +2,7 @@
 
 Raw video, focus peaking and the rest of the monitoring overlays, working on a DIGIC 7 body.
 
-    Build:     v68, 2026-09-25
+    Build:     v69, 2026-09-26
     Base:      magiclantern_simplified @ 40c0a133b
     Platforms: 6D2.111 (primary, tested on hardware over four weeks)
                6D2.120 (parallel build, boot-tested in qemu only)
@@ -395,6 +395,64 @@ Nothing in ML's key chain consumes the main dial or unknown keys outside the ML 
 magic zoom, module handlers incl. mlv_lite, flexinfo, held-button tracker), and ML cannot write
 `PROP_ISO` anyway. To settle it from the camera, `gui.c` now keeps the last 128 button events with
 ML's verdict and the ISO at the time; d7probe dumps them (`[keys]`).
+
+---
+
+## v69 - how the overlay engine works here, and why the zoom bounce broke it
+
+### The engine, and how it differs from DIGIC 4/5
+
+On DIGIC 4/5 ML draws straight into Canon's own bitmap layer. Canon repaints that layer whenever
+its UI changes, which wipes ML's graphics, and ML's overlay pass puts them back a frame later.
+Stale ML content is therefore self-correcting, and nothing special has to happen when the display
+mode changes.
+
+On DIGIC 6/7/8 (`FEATURE_VRAM_RGBA`, this body) that is not how it works:
+
+- `bmp_vram()` is an 8-bit indexed **shadow** buffer that only ML writes.
+- `refresh_yuv_from_rgb_task()` (bmp.c) converts it into Canon's **RGBA compositor layer** at
+  20 fps, but only when `ml_refresh_display_needed` is set.
+- **Canon never clears ML's layer.** It composites its own UI and ML's layer together.
+
+So when the LiveView mode changes - a zoom, Canon's menu opening, INFO switching views - Canon
+redraws its part and ML's old contents stay on screen on top of it. That is exactly the reported
+symptom: "Canon menus overwrite ML overlays", INFO appearing not to cycle, frame guides from the
+previous state hanging around.
+
+ML's answer is `redraw()` (zebra.c, via `MLEV_REDRAW`): `clrscr()` on the ML layer, then
+`dialog_redraw(LiveViewApp_dialog)` so Canon repaints its own dialog, then `crop_set_dirty()`,
+`menu_set_dirty()`, `lens_display_set_dirty()`, `afframe_set_dirty()` so every ML element rebuilds.
+Upstream calls it from every path that disturbs LiveView: the INFO/display-preset keys, opening and
+closing the ML menu, **FPS override** (`if (lv) redraw();` in fps-engio.c), `ResumeLiveView()`,
+a change of recording state, notify boxes, the console.
+
+### What we added that upstream does not have
+
+The 6D2 port changes the LiveView mode from code, in two places upstream has no equivalent for:
+
+1. the **bit-depth switch**, which bounces the zoom (1 -> 5 -> 1) so Canon rebuilds the Mem1 raw
+   path with the patched constants;
+2. **crop mode**, which holds Canon's 5x zoom by re-requesting it.
+
+Neither called `redraw()`. Every depth change therefore left ML's layer stale over a display Canon
+had just rebuilt, and with the v66/v67 backoff retrying for ever, a failed switch bounced the mode
+every 15 s indefinitely. v69 calls `redraw()` at the end of the bounce (never while recording -
+its full-buffer clear throws a Canon ERR mid-take, see the note in zebra.c) and caps the retries
+again, with the v66 resets so it cannot lock out.
+
+### The depth switch was never broken - it was one selection behind
+
+The v68 diagnostics settled it. Three screens, every one of them `r1` with `got == want`:
+
+| shown | meaning |
+|---|---|
+| `12-bit at 10: 2660/2660 z1 r1` | last switch succeeded; 2660 = 2128x10/8, so it was the switch **to 10-bit** |
+| `10-bit at 12: 3192/3192 z1 r1` | same, one behind again (3192 = 2128x12/8) |
+| `12-bit at 14: 0/0 z0 r0` | the switch had not run yet |
+
+The applier refused while the ML menu was open (`!gui_menu_shown()`), so the depth only changed
+after the menu closed - hence "one menu open/close cycle" to make it take. v69 drops that gate;
+the bounce ends in `redraw()`, which repaints the menu as well.
 
 ---
 
@@ -793,6 +851,7 @@ Compressed — the full story is in the sections above and the code comments.
 | v63 | Scratch WAV **input select** and **per-channel gain** |
 | v64 | 12/10-bit **Raw detect error** fixed; **2048-wide 1080p** + 1.90:1 DCI aspect; WAV gain **in dB**, real per-channel + safety track; **audio meter**; WAVs in **DCIM/AUDIO**; button-event log |
 | v65 | Movie tab reordered (RAW video first, audio last as one submenu); two-stage test plan |
+| v69 | `redraw()` after the zoom bounce (the overlay/menu conflation); depth applies with the menu open; retry cap restored |
 | v68 | Diagnostics for the bit-depth switch and `gui_state`; half-shutter gate removed |
 | v67 | **Reverted all v64-v66 display/menu work** (the audio meter task was painting over Canon's UI); kept the any-bpp record fix and the zoom-ownership fix |
 | v66 | Button-event log **reverted** (broke overlays); `%c` snprintf bug (the "BBBB..." directory); bit-depth switch no longer fights crop mode's zoom hold, retry lockout removed; audio meter without recording; gain in 3 dB stops |

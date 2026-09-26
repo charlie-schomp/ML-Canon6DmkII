@@ -2253,7 +2253,12 @@ unsigned int raw_rec_polling_cbr(unsigned int unused)
      * instead - quick retries at first, then one every 15 s - and start over
      * whenever anything that could explain the failure changes (the depth
      * asked for, LiveView, or the zoom). */
-    if (is_camera("6D2", "*") && raw_video_active && lv_settled && !gui_menu_shown()
+    /* Apply the depth as soon as it is chosen, even with the menu open: the
+     * old !gui_menu_shown() gate is why the Data format line was always one
+     * selection behind ("12-bit ... at 10"), since the switch only ran after
+     * the menu was closed.  The bounce ends in redraw(), which repaints the
+     * menu too. */
+    if (is_camera("6D2", "*") && raw_video_active && lv_settled
         && raw_lv_is_enabled() && raw_info.bits_per_pixel != BPP)
     {
         static int last_try = 0;
@@ -2264,8 +2269,11 @@ unsigned int raw_rec_polling_cbr(unsigned int unused)
             last_zoom = lv_dispsize;
             bpp_tries = 0;
         }
-        int wait_ms = (bpp_tries < 3) ? 1000 : 15000;
-        if (get_ms_clock() - last_try > wait_ms)
+        /* three tries, then stop until something changes (the counter above
+         * resets on a new depth, a zoom change or leaving LiveView).  Retrying
+         * for ever would bounce the LiveView mode every few seconds, which is
+         * a display problem in its own right. */
+        if (bpp_tries < 3 && get_ms_clock() - last_try > 1000)
         {
             bpp_tries++;
             last_try = get_ms_clock();
