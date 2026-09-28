@@ -2,7 +2,7 @@
 
 Raw video, focus peaking and the rest of the monitoring overlays, working on a DIGIC 7 body.
 
-    Build:     v70, 2026-09-28
+    Build:     v71, 2026-09-28
     Base:      magiclantern_simplified @ 40c0a133b
     Platforms: 6D2.111 (primary, tested on hardware over four weeks)
                6D2.120 (parallel build, boot-tested in qemu only)
@@ -395,6 +395,30 @@ Nothing in ML's key chain consumes the main dial or unknown keys outside the ML 
 magic zoom, module handlers incl. mlv_lite, flexinfo, held-button tracker), and ML cannot write
 `PROP_ISO` anyway. To settle it from the camera, `gui.c` now keeps the last 128 button events with
 ML's verdict and the ISO at the time; d7probe dumps them (`[keys]`).
+
+---
+
+## v71 - first two shelved items back
+
+Re-introduced on top of v70, both audio-only, neither drawing anything in LiveView:
+
+- **WAVs filed in `DCIM/AUDIO`** - `<clip>.WAV` alongside a raw take, `W<day>-<hhmm>.WAV` for a
+  manual one (and for a raw take that never wrote a file, which used to leave the audio orphaned
+  in the card root). Collisions get a letter suffix. Carries the `%c` fix: Canon's `vsnprintf`
+  pads the buffer with the character instead of emitting one, which is how v64/v65 created a
+  directory of 23 B's. The move waits for Canon to close the file, so a manual stop hands it to a
+  short-lived task rather than blocking the menu.
+- **Gain in whole dB** - Mute, then -12 dB .. +42 dB in 3 dB steps, mapped to the nearest entry in
+  Canon's per-input table (0.375 dB steps, uneven: ~0.875 dB per index to 48, 0.75 above). The
+  right channel is genuinely independent now: Canon's driver writes `table[LEFT]` to both
+  registers, so ML writes the right one itself. Modes: Same as left / Own level / Safety -6, -12,
+  -18, -24 dB. Proven on hardware in v65 - five takes with R 10-13 dB under L, three of them with
+  L pinned at 0 dBFS, which is exactly what the safety channel is for.
+
+No watchdog task for the registers: Canon re-applies its own left-only level while the recorder
+settles, so the gain is written twice, 200 ms apart, instead of a task polling for ever.
+
+Still shelved: 2048-wide 1080p, the audio level meter, the Movie-tab reorder (see `SHELVED.md`).
 
 ---
 
@@ -885,6 +909,7 @@ Compressed — the full story is in the sections above and the code comments.
 | v63 | Scratch WAV **input select** and **per-channel gain** |
 | v64 | 12/10-bit **Raw detect error** fixed; **2048-wide 1080p** + 1.90:1 DCI aspect; WAV gain **in dB**, real per-channel + safety track; **audio meter**; WAVs in **DCIM/AUDIO**; button-event log |
 | v65 | Movie tab reordered (RAW video first, audio last as one submenu); two-stage test plan |
+| v71 | Shelved items 1 and 2 back: `DCIM/AUDIO` filing (with the `%c` fix) and gain in 3 dB stops with a real per-channel/safety right channel |
 | v70 | Timers/counters/retry loops replaced by `liveview_display_idle()` + one state memo; bounce rewritten on ML primitives; menu string overlap ("bitormat") fixed |
 | v69 | `redraw()` after the zoom bounce (the overlay/menu conflation); depth applies with the menu open; retry cap restored |
 | v68 | Diagnostics for the bit-depth switch and `gui_state`; half-shutter gate removed |

@@ -1,5 +1,7 @@
 # Shelved in the v67 revert — queue for re-introduction
 
+**Status: items 1 and 2 are back as of v71.** Items 3–5 remain shelved.
+
 Everything here worked on the bench and some of it worked on the camera; it was removed because
 it shipped alongside the overlay regression and I could not tell which part was at fault. The
 order below is deliberate: each step is independently testable, and nothing above depends on
@@ -12,8 +14,8 @@ recording). That is what the audio meter got wrong and what the zoom bounce was 
 
 | # | Item | Risk | Why it is safe to bring back / what must change |
 |---|---|---|---|
-| 1 | **`DCIM/AUDIO` filing** — WAVs named after the clip, manual takes as `W<day>-<hhmm>.WAV` | low | File I/O only, draws nothing. Must carry the `%c` fix: Canon's `vsnprintf` does not implement `%c` and pads the buffer instead (that is where the `BBBBBBBB…` directory came from). Build those paths by hand. |
-| 2 | **Gain in dB stops** — Mute, −12…+42 in 3 dB steps | low | Menu text and register writes only. The per-channel gain and the safety track are *proven on hardware* (five WAVs, R 10–13 dB under L). |
+| ~~1~~ | ✅ **v71** — **`DCIM/AUDIO` filing** — WAVs named after the clip, manual takes as `W<day>-<hhmm>.WAV` | low | File I/O only, draws nothing. Must carry the `%c` fix: Canon's `vsnprintf` does not implement `%c` and pads the buffer instead (that is where the `BBBBBBBB…` directory came from). Build those paths by hand. |
+| ~~2~~ | ✅ **v71** — **Gain in dB stops** — Mute, −12…+42 in 3 dB steps | low | Menu text and register writes only. The per-channel gain and the safety track are *proven on hardware* (five WAVs, R 10–13 dB under L). |
 | 3 | **2048-wide 1080p** — `skip_left` 44 / `skip_right` 4, plus the 2048 preset and 1.90:1 DCI aspect | medium | Proven on hardware: `M25-0906` recorded 2048×1108, clean to all four edges. The suspect part is the preview-rect override that keeps overlays aligned — re-add the geometry **first, alone**, confirm frame guides still line up, then the presets. |
 | 4 | **Audio level meter** — L/R dBFS bars, peak hold, CLIP | high | This *was* the regression. Re-add gated on `liveview_display_idle()`, not `lv`; default to *While recording*; and treat "Always (LiveView)", which starts the audio block with `FA_Aud_OnlyBlockStart`, as a separate experiment after the gated version is proven. |
 | 5 | **Movie-tab reorder** — RAW video first, audio last in one submenu | medium | Uses `MENU_PLACEHOLDER`, which rewrites entries in the menu engine. Innocent as far as I know (the regression predates it), but it is the one item that touches the menu engine, so it goes last and alone. |

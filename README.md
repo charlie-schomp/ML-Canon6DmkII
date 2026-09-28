@@ -31,7 +31,7 @@ What does not (yet), and why, is in [6D2/DEVLOG.md](6D2/DEVLOG.md).
 | `6D2/README.md` | user guide: install, where things are, card-speed table |
 | `6D2/DEVLOG.md` | technical write-up: findings, ROM addresses, change history, roadmap |
 | `6D2/builds/` | ready-to-copy zips for 1.1.1 and 1.2.0 (`autoexec.bin` + `ML/`, checksums) |
-| `6D2/TEST-v70.md` | short re-test |
+| `6D2/TEST-v71.md` | short re-test |
 | `6D2/SHELVED.md` | what the v67 revert removed, and the order to bring it back |
 | `6D2/tools/` | `fix_mlv_black.py` (repairs pre-v62 black levels), `wav_dualgain.py` (safety-track WAV -> 32-bit float), `rawframe.py` (reads d7probe raw dumps), `mlvwalk.py`, `blackcheck.py` |
 | `platform/6D2.111`, `platform/6D2.120` | camera ports |
