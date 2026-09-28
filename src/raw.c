@@ -810,49 +810,38 @@ static void raw_lv_set_bpp_6d2(int bpp)
         uint32_t want = raw_info.width * bpp / 8;
         lv_bpp_want = want; lv_bpp_got = 0; lv_bpp_result = 0;
         lv_bpp_bouncing = 1;
-        for (int attempt = 0; attempt < 3; attempt++)
+
+        /* One bounce, using ML's own primitives rather than a poll:
+         * set_lv_zoom() already waits on PROP_LV_DISPSIZE (prop_request_change_wait,
+         * 1 s) and settles afterwards, so retrying the request by hand added
+         * nothing; wait_lv_frames() is a real frame sync, so the DMAC check is
+         * counted in frames instead of milliseconds.  Canon programs the new
+         * path during the mode change, so it is there within a frame or two -
+         * eight is generous and bounded. */
+        int z = lv_dispsize;
+        set_lv_zoom(z == 1 ? 5 : 1);
+        set_lv_zoom(z);
+
+        for (int i = 0; i < 8; i++)
         {
-            int z = lv_dispsize;
-            int other = (z == 1) ? 5 : 1;
-            /* each zoom step must really happen; Canon ignores requests
-             * while it is still busy (e.g. right after a recording stops) */
-            for (int k = 0; k < 4 && lv_dispsize != other; k++)
+            lv_bpp_got = shamem_read((uint32_t)&(raw_lv_edmac->yb_xb)) & 0xFFFF;
+            if ((uint32_t)lv_bpp_got == want && lv_dispsize == z)
             {
-                set_lv_zoom(other);
-                for (int j = 0; j < 20 && lv_dispsize != other; j++) msleep(25);
+                lv_bpp_zoom = lv_dispsize;
+                lv_bpp_result = 1;
+                lv_bpp_bouncing = 0;
+                printf("LV bpp %d: DMAC %d bytes/line\n", bpp, lv_bpp_got);
+                raw_lv_bounce_redraw();
+                return;
             }
-            msleep(250 + 250 * attempt);
-            for (int k = 0; k < 4 && lv_dispsize != z; k++)
-            {
-                set_lv_zoom(z);
-                for (int j = 0; j < 20 && lv_dispsize != z; j++) msleep(25);
-            }
-            for (int i = 0; i < 60; i++)      /* up to ~1.5 s */
-            {
-                msleep(25);
-                uint32_t xb = shamem_read((uint32_t)&(raw_lv_edmac->yb_xb)) & 0xFFFF;
-                if (xb == want && lv_dispsize == z)
-                {
-                    /* the LV path is up; give the timing store a moment too
-                     * (it is 0 mid-transition, and the next thing mlv_lite
-                     * does is read the frame rate) */
-                    for (int j = 0; j < 20 && MEM(0x1c928 + 0x1c) == 0; j++) msleep(25);
-                    wait_lv_frames(2);
-                    printf("LV bpp %d: DMAC %d bytes/line after %d ms (try %d)\n", bpp, xb, i * 25, attempt);
-                    lv_bpp_got = xb; lv_bpp_zoom = lv_dispsize; lv_bpp_result = 1;
-                    lv_bpp_bouncing = 0;
-                    raw_lv_bounce_redraw();
-                    return;
-                }
-            }
+            wait_lv_frames(1);
         }
-        lv_bpp_got = (int)(shamem_read((uint32_t)&(raw_lv_edmac->yb_xb)) & 0xFFFF);
+
         lv_bpp_zoom = lv_dispsize;
         lv_bpp_result = -1;
         lv_bpp_bouncing = 0;
-        raw_lv_bounce_redraw();
-        printf("LV bpp %d: DMAC did not follow (pitch %d)\n", bpp,
-               (int)(shamem_read((uint32_t)&(raw_lv_edmac->yb_xb)) & 0xFFFF));
+        printf("LV bpp %d: DMAC did not follow (%d, want %d)\n", bpp, lv_bpp_got, (int)want);
+
         if (lv_bpp_patched)
         {
             unpatch_memory(LV_BPP_PATCH_ADDR_BPP);
@@ -862,6 +851,7 @@ static void raw_lv_set_bpp_6d2(int bpp)
         /* whatever Canon is really sending now is what raw_lv_get_resolution()
          * will derive from the pitch on the next update; do not assume 14 */
         lv_bpp_6d2 = 14;
+        raw_lv_bounce_redraw();
     }
 }
 

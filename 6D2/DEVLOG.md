@@ -2,7 +2,7 @@
 
 Raw video, focus peaking and the rest of the monitoring overlays, working on a DIGIC 7 body.
 
-    Build:     v69, 2026-09-26
+    Build:     v70, 2026-09-28
     Base:      magiclantern_simplified @ 40c0a133b
     Platforms: 6D2.111 (primary, tested on hardware over four weeks)
                6D2.120 (parallel build, boot-tested in qemu only)
@@ -395,6 +395,40 @@ Nothing in ML's key chain consumes the main dial or unknown keys outside the ML 
 magic zoom, module handlers incl. mlv_lite, flexinfo, held-button tracker), and ML cannot write
 `PROP_ISO` anyway. To settle it from the camera, `gui.c` now keeps the last 128 button events with
 ML's verdict and the ISO at the time; d7probe dumps them (`[keys]`).
+
+---
+
+## v70 - fewer moving parts: timers and counters replaced by one state check
+
+v69 tried to apply the depth with the ML menu open. The readout said what happened:
+`3724/3192 z1 r-1` - the DMAC stayed at the 14-bit pitch, so **with the ML menu up Canon does not
+rebuild the raw path at all**. The old `!gui_menu_shown()` gate was load-bearing, and changing the
+depth from inside the menu also produced the black-then-conflated menu that was reported.
+
+But `!gui_menu_shown()` was never the right *expression* of that condition either. The right one
+is **`liveview_display_idle()`** - the same gate every ML overlay uses. It is false while the ML
+menu is up, while Canon owns the display (its menu, playback, a dialog), while the camera is
+metering or focusing, and while the display is off. One real state check now replaces:
+
+| removed | was |
+|---|---|
+| `lv_quiet_until` / `lv_settled` | a 2.5 s timer after any recording activity, guessing at when Canon's teardown had finished |
+| `!gui_menu_shown()` | a partial approximation of "ML owns the screen" |
+| `!get_halfshutter_pressed()` | another partial approximation (added v66, removed v68) |
+| `bpp_tries` / `bpp_tries_for` / `last_zoom` / `wait_ms` | a retry counter that either locked out (v62) or bounced the LiveView mode every 15 s for ever (v66/v67) |
+
+In its place, one memo of the `(depth, zoom)` state last attempted, cleared the moment the depth
+in effect matches. It tries once per state, cannot lock out, and picks the depth up again if it
+later slips back - which is what the three-strikes counter was reaching for.
+
+The bounce itself lost three nested loops, 25 ms polling and the 250/500/750 ms sleeps:
+`set_lv_zoom()` already waits on `PROP_LV_DISPSIZE` internally (`prop_request_change_wait`, 1 s),
+so re-requesting by hand added nothing, and `wait_lv_frames()` is a real frame sync, so the DMAC
+is now checked over eight frames rather than 60 sleeps. It is about ten lines instead of thirty-five.
+
+Also: the long right-hand status string ran into the entry name and the two rendered on top of each
+other ("Data format" + "12-bit" came out as **"bitormat"**). The right-hand text is now `live` or
+`at 14`, with the numbers moved to the help line, which has room for them.
 
 ---
 
@@ -851,6 +885,7 @@ Compressed — the full story is in the sections above and the code comments.
 | v63 | Scratch WAV **input select** and **per-channel gain** |
 | v64 | 12/10-bit **Raw detect error** fixed; **2048-wide 1080p** + 1.90:1 DCI aspect; WAV gain **in dB**, real per-channel + safety track; **audio meter**; WAVs in **DCIM/AUDIO**; button-event log |
 | v65 | Movie tab reordered (RAW video first, audio last as one submenu); two-stage test plan |
+| v70 | Timers/counters/retry loops replaced by `liveview_display_idle()` + one state memo; bounce rewritten on ML primitives; menu string overlap ("bitormat") fixed |
 | v69 | `redraw()` after the zoom bounce (the overlay/menu conflation); depth applies with the menu open; retry cap restored |
 | v68 | Diagnostics for the bit-depth switch and `gui_state`; half-shutter gate removed |
 | v67 | **Reverted all v64-v66 display/menu work** (the audio meter task was painting over Canon's UI); kept the any-bpp record fix and the zoom-ownership fix |

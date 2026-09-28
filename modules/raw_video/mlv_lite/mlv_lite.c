@@ -1347,18 +1347,31 @@ static MENU_UPDATE_FUNC(output_format_bpp_update)
 
     if (!is_camera("6D2", "*") || !lv || !raw_lv_is_enabled()) return;
 
+    /* Keep this short: a long right-hand string runs into the entry name and
+     * the two render on top of each other ("Data format" + "12-bit" came out
+     * as "bitormat").  The numbers go on the help line, which has room. */
     if (raw_info.bits_per_pixel == BPP)
     {
-        MENU_SET_RINFO("%d-bit live", raw_info.bits_per_pixel);
+        MENU_SET_RINFO("live");
         return;
     }
 
+    MENU_SET_RINFO("at %d", raw_info.bits_per_pixel);
+
     int want = 0, got = 0, zoom = 0;
     int res = raw_lv_bpp_status(&want, &got, &zoom);
-    MENU_SET_RINFO("at %d: %d/%d z%d r%d", raw_info.bits_per_pixel, got, want, zoom, res);
-    MENU_SET_WARNING(MENU_WARN_ADVICE,
-                     "Sensor still at %d-bit. Leave the menu a few seconds; it retries.",
-                     raw_info.bits_per_pixel);
+    if (res < 0)
+    {
+        MENU_SET_WARNING(MENU_WARN_ADVICE,
+                         "Switch failed: DMAC %d, wanted %d. Close the menu and try again.",
+                         got, want);
+    }
+    else
+    {
+        MENU_SET_WARNING(MENU_WARN_ADVICE,
+                         "Applies when you close the menu (sensor is at %d-bit now).",
+                         raw_info.bits_per_pixel);
+    }
 }
 
 static MENU_UPDATE_FUNC(output_format_update)
@@ -2229,18 +2242,19 @@ unsigned int raw_rec_polling_cbr(unsigned int unused)
     /* auto-disable raw video in photo mode or outside LiveView */
     int raw_video_active = raw_video_enabled && lv && is_movie_mode();
 
-    /* 6D2: no LiveView zoom requests (bit-depth bounce, crop hold) until
-     * Canon has finished winding down a recording.  A zoom change posted
-     * during the teardown asserts in Canon's LV job manager
-     * (g_LvJob[..].fEnableInstance, LvJob.c:203) and takes the Evf task down
-     * - seen when a 12-bit clip auto-stopped on a full buffer (v60). */
-    static int lv_quiet_until = 0;
-    static int bpp_tries = 0;
-    static int bpp_tries_for = 0;
-    if (!RAW_IS_IDLE || RECORDING_H264 || !lv)
-        lv_quiet_until = get_ms_clock() + 2500;
-    if (!lv) bpp_tries = 0;
-    int lv_settled = get_ms_clock() > lv_quiet_until;
+    /* 6D2: LiveView is only ours to disturb - to bounce the zoom for a depth
+     * change, or to hold the 5x crop window - while ML actually owns the
+     * screen.  liveview_display_idle() is that condition, and it is the same
+     * one every ML overlay uses: false while the ML menu is up, while Canon
+     * owns the display (its menu, playback, a dialog), while the camera is
+     * metering or focusing, and while the display is off.
+     *
+     * It replaces a 2.5 s quiet timer, a gui_menu_shown() check and a retry
+     * counter, all of which were approximations of it.  The timer in
+     * particular was guarding against a zoom request landing in Canon's record
+     * teardown (LvJob.c:203, which took the Evf task down in v60); the state
+     * check covers that case properly, because Canon is not idle then. */
+    int lv_ours = liveview_display_idle() && NOT_RECORDING && RAW_IS_IDLE;
 
     /* 6D2: apply the chosen bit depth while idle, so the (visible) LiveView
      * rebuild happens once when the format is changed, not at every record
@@ -2253,34 +2267,33 @@ unsigned int raw_rec_polling_cbr(unsigned int unused)
      * instead - quick retries at first, then one every 15 s - and start over
      * whenever anything that could explain the failure changes (the depth
      * asked for, LiveView, or the zoom). */
-    /* Apply the depth as soon as it is chosen, even with the menu open: the
-     * old !gui_menu_shown() gate is why the Data format line was always one
-     * selection behind ("12-bit ... at 10"), since the switch only ran after
-     * the menu was closed.  The bounce ends in redraw(), which repaints the
-     * menu too. */
-    if (is_camera("6D2", "*") && raw_video_active && lv_settled
-        && raw_lv_is_enabled() && raw_info.bits_per_pixel != BPP)
+    /* Apply the chosen depth once per (depth, zoom) state.  No timer and no
+     * try counter: the memo is cleared the moment the depth in effect matches,
+     * so a state that has been attempted is not attempted again until it
+     * changes, and a depth that later slips back (LiveView restart, a mode
+     * change) is picked up again on the next pass.  That is what the old
+     * three-strikes counter was reaching for, without the lockout it caused.
+     *
+     * The bounce only works while ML owns the display - with the ML menu open
+     * Canon does not rebuild the raw path at all, which is what v69 got wrong
+     * (the DMAC stayed at the 14-bit pitch and the switch reported failure). */
+    if (is_camera("6D2", "*") && raw_video_active && raw_lv_is_enabled())
     {
-        static int last_try = 0;
-        static int last_zoom = 0;
-        if (bpp_tries_for != BPP || last_zoom != lv_dispsize)
+        static int tried_for = -1;
+        if (raw_info.bits_per_pixel == BPP)
         {
-            bpp_tries_for = BPP;
-            last_zoom = lv_dispsize;
-            bpp_tries = 0;
+            tried_for = -1;                     /* in sync - forget the attempt */
         }
-        /* three tries, then stop until something changes (the counter above
-         * resets on a new depth, a zoom change or leaving LiveView).  Retrying
-         * for ever would bounce the LiveView mode every few seconds, which is
-         * a display problem in its own right. */
-        if (bpp_tries < 3 && get_ms_clock() - last_try > 1000)
+        else if (lv_ours)
         {
-            bpp_tries++;
-            last_try = get_ms_clock();
-            take_semaphore(settings_sem, 0);
-            raw_lv_request_bpp(BPP);
-            give_semaphore(settings_sem);
-            if (raw_info.bits_per_pixel == BPP) bpp_tries = 0;
+            int state = BPP * 16 + lv_dispsize;
+            if (tried_for != state)
+            {
+                tried_for = state;
+                take_semaphore(settings_sem, 0);
+                raw_lv_request_bpp(BPP);
+                give_semaphore(settings_sem);
+            }
         }
     }
 
@@ -2293,7 +2306,7 @@ unsigned int raw_rec_polling_cbr(unsigned int unused)
         static int crop_applied = 0;
         static int crop_wait = 0;
         if (!lv) crop_applied = 0;
-        if (crop_zoom && raw_video_active && lv_settled && !gui_menu_shown()
+        if (crop_zoom && raw_video_active && lv_ours
             && !raw_lv_bpp_bouncing())      /* the bit-depth bounce owns the zoom */
         {
             if (lv_dispsize == 1)
