@@ -94,6 +94,7 @@ extern int  wav_scratch_auto_enabled(void);
 extern int  wav_scratch_rename(const char * mlv_path);
 /* src/zebra.c - weak so the module still loads on bodies without it */
 extern WEAK_FUNC(ret_0) int clean_hdmi_active(void);
+extern WEAK_FUNC(ret_0) int dual_iso_is_enabled(void);
 
 static int cam_eos_m = 0;
 static int cam_5d2 = 0;
@@ -154,6 +155,7 @@ static CONFIG_INT("raw.aspect.fit", aspect_fit_width, 1);
  * in movie LiveView, so the resolution list and the framing are the same
  * every time instead of depending on whether the magnify button was pressed. */
 static CONFIG_INT("raw.crop.zoom", crop_zoom, 0);
+static int crop_refused = 0;        /* 6D2: Canon refused the 5x request (Face AF) */
 
 static CONFIG_INT("raw.write.speed", measured_write_speed, 0);
 static int measured_write_speeds[CARD_COUNT] = {0};
@@ -1062,12 +1064,14 @@ void setup_bit_depth()
 static REQUIRES(settings_sem)
 void restore_bit_depth()
 {
-    /* 6D2: switching depth means a LiveView rebuild (a visible zoom bounce),
-     * so the depth is held between clips while RAW video stays enabled - it
-     * is set when the format changes (polling below) and dropped back to 14
-     * only when RAW video is turned off or LiveView ends.  raw.c derives the
-     * depth in effect from the DMAC, so nothing here can get out of sync. */
-    if (is_camera("6D2", "*") && raw_video_enabled && lv)
+    /* 6D2: the depth is held while RAW video is on in movie mode - between
+     * clips, and across LiveView stopping (Canon's menu, playback): the armed
+     * patch makes Canon's own LiveView restart come up at the chosen depth, so
+     * coming back needs no zoom bounce.  Dropped back to 14 when RAW video is
+     * turned off or the camera leaves movie mode (photo LiveView, ML's raw
+     * overlays and silent pictures expect 14).  raw.c derives the depth in
+     * effect from the DMAC, so nothing here can get out of sync. */
+    if (is_camera("6D2", "*") && raw_video_enabled && is_movie_mode())
     {
         setup_bit_depth_digital_gain(1);
         return;
@@ -1337,6 +1341,27 @@ static MENU_UPDATE_FUNC(aspect_ratio_update)
 
 static MENU_UPDATE_FUNC(output_format_update);   /* defined below */
 
+/* Crop mode shares Canon's 5x zoom with two other things that are easy to
+ * mistake for it: the Dual ISO module (on this body it only acts in the 1:1
+ * readout, i.e. whenever the view is at 5x or 10x, crop mode or not) and a
+ * Face AF setting that makes Canon refuse the zoom.  Menu text only. */
+static MENU_UPDATE_FUNC(crop_zoom_update)
+{
+    if (!is_camera("6D2", "*")) return;
+
+    if (crop_zoom && crop_refused && lv && lv_dispsize == 1)
+    {
+        MENU_SET_WARNING(MENU_WARN_ADVICE,
+                         "Face AF blocked the 5x zoom. Lens to MF, then close the menu.");
+    }
+    else if (dual_iso_is_enabled())
+    {
+        MENU_SET_WARNING(MENU_WARN_INFO, crop_zoom
+                         ? "Dual ISO is ON (Expo menu): crop clips record dual ISO."
+                         : "Dual ISO is ON (Expo menu): active whenever the view is 5x/10x.");
+    }
+}
+
 /* 6D2: the bit depth is switched by making Canon rebuild its LiveView path,
  * which can fail; show what is really in effect (and, when it disagrees, what
  * the write DMAC was asked for and what it reported) rather than only what was
@@ -1358,13 +1383,25 @@ static MENU_UPDATE_FUNC(output_format_bpp_update)
 
     MENU_SET_RINFO("at %d", raw_info.bits_per_pixel);
 
+    /* one attempt per menu close; say why the last one did not take */
     int want = 0, got = 0, zoom = 0;
     int res = raw_lv_bpp_status(&want, &got, &zoom);
-    if (res < 0)
+    if (res == -2)
     {
         MENU_SET_WARNING(MENU_WARN_ADVICE,
-                         "Switch failed: DMAC %d, wanted %d. Close the menu and try again.",
-                         got, want);
+                         "Face AF blocked the 5x zoom this needs. Lens to MF, close menu.");
+    }
+    else if (res == -3)
+    {
+        MENU_SET_WARNING(MENU_WARN_ADVICE,
+                         "Zoom did not return to %dx. Magnify back; depth applies then.",
+                         zoom);
+    }
+    else if (res == -1)
+    {
+        MENU_SET_WARNING(MENU_WARN_ADVICE,
+                         "Canon kept %d-bit at %dx (DMAC %d/%d). Close menu to retry.",
+                         raw_info.bits_per_pixel, zoom, got, want);
     }
     else
     {
@@ -2256,70 +2293,88 @@ unsigned int raw_rec_polling_cbr(unsigned int unused)
      * check covers that case properly, because Canon is not idle then. */
     int lv_ours = liveview_display_idle() && NOT_RECORDING && RAW_IS_IDLE;
 
-    /* 6D2: apply the chosen bit depth while idle, so the (visible) LiveView
-     * rebuild happens once when the format is changed, not at every record
-     * start and stop.  raw_lv_request_bpp() is a no-op when already there.
+    /* crop mode: hold Canon's 5x zoom while RAW video is on in movie LV, so
+     * the resolution list and framing never silently change under you.  10x is
+     * left alone (focus check).  Released when the option is switched off.
      *
-     * No three-strikes lockout: it was meant to stop the view bouncing every
-     * few seconds when the switch could not be made, but once the count ran
-     * out nothing ever tried again, so the camera sat at 14-bit and every take
-     * reported "not applied" until the format was toggled by hand.  Back off
-     * instead - quick retries at first, then one every 15 s - and start over
-     * whenever anything that could explain the failure changes (the depth
-     * asked for, LiveView, or the zoom). */
-    /* Apply the chosen depth once per (depth, zoom) state.  No timer and no
-     * try counter: the memo is cleared the moment the depth in effect matches,
-     * so a state that has been attempted is not attempted again until it
-     * changes, and a depth that later slips back (LiveView restart, a mode
-     * change) is picked up again on the next pass.  That is what the old
-     * three-strikes counter was reaching for, without the lockout it caused.
-     *
-     * The bounce only works while ML owns the display - with the ML menu open
-     * Canon does not rebuild the raw path at all, which is what v69 got wrong
-     * (the DMAC stayed at the 14-bit pitch and the switch reported failure). */
-    if (is_camera("6D2", "*") && raw_video_active && raw_lv_is_enabled())
-    {
-        static int tried_for = -1;
-        if (raw_info.bits_per_pixel == BPP)
-        {
-            tried_for = -1;                     /* in sync - forget the attempt */
-        }
-        else if (lv_ours)
-        {
-            int state = BPP * 16 + lv_dispsize;
-            if (tried_for != state)
-            {
-                tried_for = state;
-                take_semaphore(settings_sem, 0);
-                raw_lv_request_bpp(BPP);
-                give_semaphore(settings_sem);
-            }
-        }
-    }
-
-    /* crop mode: hold Canon's 5x zoom while RAW video is on in movie LV.
-     * It is a mode, not a shortcut: if the magnify button (or Canon) drops
-     * the view back to 1x, it is re-requested about a second later, so the
-     * resolution list and framing never silently change under you.  10x is
-     * left alone (focus check).  Released when the option is switched off. */
+     * One request per event - crop mode switched on, LiveView / RAW video
+     * starting, the view dropping back to 1x - made once Canon has finished the
+     * mode change in progress.  It used to ask again every ~1 s for as long as
+     * it saw 1x, and when Canon refuses the zoom (Face+Tracking AF on an AF
+     * lens) every refusal held the shoot task for a second, for ever. */
     {
         static int crop_applied = 0;
-        static int crop_wait = 0;
+        static int crop_pending = 1;
+        static int crop_prev_zoom = 0;
         if (!lv) crop_applied = 0;
-        if (crop_zoom && raw_video_active && lv_ours
-            && !raw_lv_bpp_bouncing())      /* the bit-depth bounce owns the zoom */
+        if (!crop_zoom || !raw_video_active) crop_pending = 1;
+        if (lv_dispsize != crop_prev_zoom)
         {
+            if (lv_dispsize == 1) crop_pending = 1;
+            crop_prev_zoom = lv_dispsize;
+        }
+
+        if (crop_zoom && raw_video_active && lv_ours && crop_pending
+            && raw_lv_path_settled())
+        {
+            crop_pending = 0;
             if (lv_dispsize == 1)
             {
-                if (crop_wait > 0) crop_wait--;
-                else { set_lv_zoom(5); crop_applied = 1; crop_wait = 10; }
+                set_lv_zoom(5);
+                crop_applied = 1;
+                crop_refused = (lv_dispsize == 1);
             }
-            else crop_wait = 0;
         }
-        else if (!crop_zoom && crop_applied && !raw_lv_bpp_bouncing())
+        else if (!crop_zoom && crop_applied)
         {
             if (lv && lv_dispsize > 1 && !RAW_IS_RECORDING) set_lv_zoom(1);
             crop_applied = 0;
+            crop_refused = 0;
+        }
+        if (lv_dispsize > 1) crop_refused = 0;
+    }
+
+    /* 6D2 bit depth, in two parts.
+     *
+     * Arming - the ROM patch that tells Canon which depth to build next - is
+     * invisible, so it just follows the menu setting.  Every rebuild Canon does
+     * on its own (each zoom change, a LiveView restart) then comes up at that
+     * depth with no help from us.
+     *
+     * Applying it now takes a zoom bounce, which is visible, so it happens only
+     * on the user's say-so: once each time the ML menu closes (the depth can
+     * only be changed in there) and once when RAW video / LiveView starts.
+     * Never because the zoom changed: v71 keyed its retries on (depth, zoom),
+     * so a bounce that ended on a different zoom set off another one, and so
+     * did every press of the magnify button.  Nothing is retried here - a
+     * failure is reported in the menu and waits for the next time you close it.
+     *
+     * Consumed only once Canon has finished any mode change in progress, so
+     * the bounce never starts on top of one - including a crop mode request
+     * just above, which is itself a rebuild and usually makes the bounce
+     * unnecessary. */
+    if (is_camera("6D2", "*"))
+    {
+        static int bpp_apply_pending = 1;
+        if (!raw_video_active || gui_menu_shown()) bpp_apply_pending = 1;
+
+        int armed = raw_lv_bpp_armed();         /* -1: no depth switch on this firmware */
+        if (raw_video_active && raw_lv_is_enabled() && armed > 0)
+        {
+            if (armed != BPP)
+            {
+                take_semaphore(settings_sem, 0);
+                raw_lv_request_bpp(BPP);        /* arm */
+                give_semaphore(settings_sem);
+            }
+
+            /* raw_lv_apply_bpp() reads the DMAC itself and does nothing when
+             * the depth is already there - raw_info may be a poll behind */
+            if (bpp_apply_pending && lv_ours && raw_lv_path_settled())
+            {
+                bpp_apply_pending = 0;
+                raw_lv_apply_bpp();
+            }
         }
     }
 
@@ -3805,8 +3860,10 @@ void raw_video_rec_task(uint32_t card_index)
              * the switch worked and something else disagrees, got == the
              * 14-bit figure means Canon never rebuilt the path, got == 0 means
              * the shadow register read came back empty */
-            NotifyBox(8000, "%d-bit not ready (at %d)\nDMAC %d want %d zoom %d res %d",
-                      BPP, raw_info.bits_per_pixel, got, want, zoom, res);
+            NotifyBox(8000, "%d-bit not live yet (sensor at %d)\n%s",
+                      BPP, raw_info.bits_per_pixel,
+                      res == -2 ? "Face AF blocks 5x: set lens to MF"
+                                : "Open and close the ML menu");
             printf("bpp %d not ready: at %d, DMAC %d want %d zoom %d res %d\n",
                    BPP, raw_info.bits_per_pixel, got, want, zoom, res);
             goto cleanup;
@@ -4477,6 +4534,7 @@ static struct menu_entry raw_video_menu[] =
                 .priv = &crop_zoom,
                 .max = 1,
                 .choices = CHOICES("OFF", "1:1 (5x zoom)"),
+                .update = crop_zoom_update,
                 .help  = "1:1 window via Canon's 5x zoom: 3164x926 max, no binning, ALWAYS 30p.",
                 .help2 = "Held while RAW video is on (magnify still gives 10x). Enables dual ISO.",
             },

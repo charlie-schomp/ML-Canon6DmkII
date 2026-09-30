@@ -2,7 +2,7 @@
 
 Raw video, focus peaking and the rest of the monitoring overlays, working on a DIGIC 7 body.
 
-    Build:     v71, 2026-09-28
+    Build:     v72, 2026-09-30
     Base:      magiclantern_simplified @ 40c0a133b
     Platforms: 6D2.111 (primary, tested on hardware over four weeks)
                6D2.120 (parallel build, boot-tested in qemu only)
@@ -395,6 +395,61 @@ Nothing in ML's key chain consumes the main dial or unknown keys outside the ML 
 magic zoom, module handlers incl. mlv_lite, flexinfo, held-button tracker), and ML cannot write
 `PROP_ISO` anyway. To settle it from the camera, `gui.c` now keeps the last 128 button events with
 ML's verdict and the ISO at the time; d7probe dumps them (`[keys]`).
+
+---
+
+## v72 - the depth switch stops reacting to the zoom
+
+Field report on v71: with Face+Tracking AF on an AF lens the switch failed (`DMAC 3724, wanted
+3192`) and reopening the menu did nothing. Then with the lens on MF the view cycled 1x/5x several
+times, landed at 5x with alternating lines, and every magnify press set off another round.
+
+- **The lines were Dual ISO.** `dual_iso.hdr = 1` was on the card. On this body the module acts in
+  the 1:1 readout, so whenever the view is at 5x or 10x, crop mode or not. It behaved exactly as
+  designed. The bounce stranding the view at 5x is what made it look like cross-talk.
+- **Why it cycled.** v70 memoised attempts per *(depth, zoom)*. A failed bounce can end on a
+  different zoom, which is a new state, which triggers another bounce. The retry fed itself, and the
+  magnify button was a new state on every press. The second zoom request of a bounce could also
+  land while Canon was still building the first mode and be dropped. That is how the view got
+  stranded at 5x.
+- **Why Face AF failed.** Canon refuses magnification in Face+Tracking with the lens on AF. The
+  bounce went ahead anyway, "failed", and removed the patch.
+
+The redesign splits the switch in two:
+
+| | what | when |
+|---|---|---|
+| **arm** | the two ROM immediates Canon builds the Mem1 path from | follows the menu setting, invisibly; kept after a failure, and held across LiveView stopping while RAW is on in movie mode |
+| **apply** | one zoom bounce, so Canon rebuilds now | once each time the ML menu closes, once when RAW video / LiveView starts; **never** because the zoom changed |
+
+Canon rebuilds the path on every zoom change and every LiveView start anyway. With the patch left
+armed, those rebuilds pick up the depth without help: a magnify press, or coming back from Canon's
+menu, needs no bounce. The bounce itself now:
+- reads the DMAC first and does nothing if the depth is already there;
+- stops at once if Canon refuses the zoom (`-2`): nothing moved, so there is nothing to undo, and
+  the menu says why;
+- asks for the way back only once `raw_lv_path_settled()` shows Canon has finished the first mode.
+  That check compares the DMAC's readout width (2128 binned / 3264 crop) against the zoom, and it
+  replaces the 150 ms guess;
+- reports `-3` rather than retrying if the zoom does not come back;
+- does not bounce at all on a readout it does not recognise, because it could not check the result.
+
+Record start only checks now, never bounces. If the depth isn't live it refuses and says why in
+words.
+
+**Crop hold, same treatment.** It asked for 5x again every ~1 s for as long as it saw 1x, and with
+Face AF every refused request held the shoot task for a second, indefinitely. It now makes one
+request per event (crop mode on, LiveView start, the view dropping to 1x), once Canon has settled.
+It also runs before the depth step, because a crop request is itself a rebuild and usually makes
+the bounce unnecessary.
+
+**Crop mode menu entry** now says when Dual ISO is on (and what it will do) and when Face AF
+blocked the zoom.
+
+`raw_lv_bpp_status()`, `raw_lv_apply_bpp()`, `raw_lv_path_settled()` and `raw_lv_bpp_armed()` have
+stubs on bodies without the Mem1 patch. mlv_lite was referencing the first two unconditionally, so
+it could not have linked on 1.2.0. The build's missing-symbol check only compared against the 1.1.1
+table; it now checks both.
 
 ---
 

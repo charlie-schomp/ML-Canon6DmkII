@@ -1,6 +1,7 @@
 # Shelved in the v67 revert — queue for re-introduction
 
-**Status: items 1 and 2 are back as of v71.** Items 3–5 remain shelved.
+**Status: items 1 and 2 are back as of v71.** Items 3–5 remain shelved. (v72 was a fix release -
+the bit-depth switch no longer reacts to the zoom - and brought nothing back.)
 
 Everything here worked on the bench and some of it worked on the camera; it was removed because
 it shipped alongside the overlay regression and I could not tell which part was at fault. The
@@ -26,6 +27,9 @@ recording). That is what the audio meter got wrong and what the zoom bounce was 
   upstream and should stay that way.
 
 ## Still open, unrelated to the revert
+- **Face AF blocks the depth switch and crop mode.** Canon refuses 5x in Face+Tracking with the
+  lens on AF. v72 reports it instead of fighting it. If a LiveView restart (Canon's MENU and back)
+  applies the armed depth - TEST-v72 step 2 asks - that is the workaround for Face AF users.
 - **Trash button reaching Canon instead of ML.** Untouched v63 code: `handle_ml_menu_erase()`
   opens the ML menu only when `gui_state == GUISTATE_IDLE` (0). This body does not always report 0
   in LiveView. d7probe dumps the value; the fix is one condition once we know it.

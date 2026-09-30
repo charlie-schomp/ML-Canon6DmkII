@@ -751,8 +751,8 @@ static void raw_lv_bounce_redraw(void)
 
 /* What the last depth switch asked for and what it got, so a failure can be
  * diagnosed from the camera instead of guessed at: want/got are the write
- * DMAC's bytes per line (expected vs the shadow's final value), zoom is
- * lv_dispsize when we gave up, and result is 1 ok / -1 gave up / 0 not run. */
+ * DMAC's bytes per line (expected vs what it carried when we stopped), zoom is
+ * lv_dispsize at that point, and the result is raw_lv_apply_bpp()'s. */
 static int lv_bpp_want = 0, lv_bpp_got = 0, lv_bpp_zoom = 0, lv_bpp_result = 0;
 int raw_lv_bpp_status(int * want, int * got, int * zoom)
 {
@@ -762,10 +762,66 @@ int raw_lv_bpp_status(int * want, int * got, int * zoom)
     return lv_bpp_result;
 }
 
+/* The two raw readouts: 3x-binned at 1x zoom, 1:1 crop at 5x/10x. */
+static const int lv_readout_widths[] = { 2128, 3264 };
+
+static int lv_dmac_pitch(void)
+{
+    return shamem_read((uint32_t)&(raw_lv_edmac->yb_xb)) & 0xFFFF;
+}
+
+/* What the raw write DMAC is programmed for right now, from its pitch alone.
+ * Exactly one of 14/12/10 divides the pitch out to a known readout width
+ * (checked: no pitch fits two), so this is unambiguous.  Returns the width and
+ * sets *bpp, or returns 0 when the pitch fits none (other video modes, tap off). */
+static int lv_dmac_geometry(int * bpp)
+{
+    static const int depths[] = { 14, 12, 10 };
+    int pitch = lv_dmac_pitch();
+    for (int d = 0; d < (int)COUNT(depths); d++)
+    {
+        if ((pitch * 8) % depths[d]) continue;
+        int w = pitch * 8 / depths[d];
+        for (int k = 0; k < (int)COUNT(lv_readout_widths); k++)
+        {
+            if (w == lv_readout_widths[k])
+            {
+                if (bpp) *bpp = depths[d];
+                return w;
+            }
+        }
+    }
+    return 0;
+}
+
+/* True once Canon has finished the last LiveView mode change: the raw DMAC is
+ * programmed for the readout that goes with the current zoom.  PROP_LV_DISPSIZE
+ * changes as soon as a zoom request is accepted, well before the new path is
+ * running, and a second request made in that gap can be dropped - which is how
+ * a bounce could strand the view at 5x.  With a geometry we do not recognise
+ * there is nothing to compare, so that counts as settled. */
+int raw_lv_path_settled(void)
+{
+    int w = lv_dmac_geometry(0);
+    if (!w) return 1;
+    return (w == 3264) == (lv_dispsize > 1);
+}
+
+/* The depth Canon will build at its next path rebuild. */
+int raw_lv_bpp_armed(void)
+{
+    return lv_bpp_patched ? lv_bpp_patched : 14;
+}
+
+/* Arm the depth: patch (or restore) the two ROM immediates Canon builds the
+ * Mem1 path from.  Invisible and instant - nothing changes on the DMAC until
+ * Canon next rebuilds the path, which it does on every zoom change, LiveView
+ * restart and video mode change.  raw_lv_apply_bpp() forces one. */
 static void raw_lv_set_bpp_6d2(int bpp)
 {
     if (bpp != 10 && bpp != 12) bpp = 14;
-    if (bpp == lv_bpp_6d2 && (bpp == 14 ? !lv_bpp_patched : lv_bpp_patched == bpp)) return;
+    int patch = (bpp == 14) ? 0 : bpp;
+    if (patch == lv_bpp_patched) return;
 
     if (lv_bpp_patched)
     {
@@ -773,7 +829,7 @@ static void raw_lv_set_bpp_6d2(int bpp)
         unpatch_memory(LV_BPP_PATCH_ADDR_CODE);
         lv_bpp_patched = 0;
     }
-    if (bpp != 14)
+    if (patch)
     {
         /* mov.w r0, #imm8 (T2): imm8 sits in the low byte of the second halfword */
         struct patch p[2] = {
@@ -787,78 +843,117 @@ static void raw_lv_set_bpp_6d2(int bpp)
         if (apply_patches(p, 2))
         {
             printf("LV bpp %d: patch refused\n", bpp);
-            bpp = 14;
         }
         else
         {
             lv_bpp_patched = bpp;
         }
     }
-    lv_bpp_6d2 = bpp;
+}
 
-    /* Make Canon run the Mem1 path update with the new constants.  Only a
-     * LiveView mode change does that (the update is part of the CapDev path
-     * setup, callers 0xe00d1b46 / 0xe00d26ae - toggling the raw tap does NOT
-     * reach it, which is why the earlier tap-toggle attempts only ever worked
-     * through their zoom fallback).  So bounce the zoom right away, with short
-     * waits, and confirm through shadow memory that the write-DMAC carries the
-     * new byte count (yb_xb low half = bytes/line) before returning. */
+/* Make Canon rebuild the LiveView path now, so the armed depth takes effect:
+ * one zoom bounce, out and back.  It is visible, so it is only done on the
+ * user's behalf (mlv_lite: when the ML menu closes, when RAW video starts) and
+ * never in reaction to a zoom change - Canon rebuilds the path on every zoom
+ * change anyway and picks the armed depth up by itself.  Reacting to zoom
+ * states is what made v71 cycle: a failed bounce could leave a different zoom,
+ * which looked like a new state, which set off another bounce.
+ *
+ * Only Canon state is waited on - the zoom property, the DMAC geometry, frames -
+ * and every wait is bounded.  Returns, and records for raw_lv_bpp_status():
+ *    1  the DMAC carries the armed depth (already did: no bounce)
+ *   -1  bounced, but Canon kept the old depth in this mode (still armed)
+ *   -2  Canon refused the zoom - Face+Tracking AF on an AF lens does that.
+ *       Nothing moved, so there is nothing to undo.
+ *   -3  the zoom did not come back to where it was
+ *    0  not possible now (no LiveView, raw tap off, recording) */
+int raw_lv_apply_bpp(void)
+{
     extern int lv_raw_enabled_6d2_peek(void);
-    if (lv && lv_raw_enabled_6d2_peek() == 1)
+    extern void set_lv_zoom(int zoom);
+    if (!lv || lv_raw_enabled_6d2_peek() != 1 || !NOT_RECORDING) return 0;
+
+    int target = lv_bpp_patched ? lv_bpp_patched : 14;
+    int cur = 0;
+    int w = lv_dmac_geometry(&cur);
+    int z = lv_dispsize;
+    lv_bpp_want = (w ? w : raw_info.width) * target / 8;
+    lv_bpp_got = lv_dmac_pitch();
+    lv_bpp_zoom = z;
+    if (!w)
     {
-        extern void set_lv_zoom(int zoom);
-        uint32_t want = raw_info.width * bpp / 8;
-        lv_bpp_want = want; lv_bpp_got = 0; lv_bpp_result = 0;
-        lv_bpp_bouncing = 1;
+        /* a readout we do not recognise: the result could not be checked,
+         * so a bounce would only disturb the view */
+        return lv_bpp_result = 0;
+    }
+    if (cur == target)
+    {
+        lv_bpp_6d2 = cur;
+        return lv_bpp_result = 1;
+    }
 
-        /* One bounce, using ML's own primitives rather than a poll:
-         * set_lv_zoom() already waits on PROP_LV_DISPSIZE (prop_request_change_wait,
-         * 1 s) and settles afterwards, so retrying the request by hand added
-         * nothing; wait_lv_frames() is a real frame sync, so the DMAC check is
-         * counted in frames instead of milliseconds.  Canon programs the new
-         * path during the mode change, so it is there within a frame or two -
-         * eight is generous and bounded. */
-        int z = lv_dispsize;
-        set_lv_zoom(z == 1 ? 5 : 1);
-        set_lv_zoom(z);
+    int other = (z == 1) ? 5 : 1;
+    int result = -1;
+    lv_bpp_bouncing = 1;
 
-        for (int i = 0; i < 8; i++)
+    set_lv_zoom(other);
+    if (lv_dispsize != other)
+    {
+        result = -2;
+        goto done;
+    }
+
+    /* the way back only once Canon has finished building the other mode */
+    for (int i = 0; i < 16 && lv && !raw_lv_path_settled(); i++)
+    {
+        wait_lv_frames(1);
+    }
+    set_lv_zoom(z);
+    if (lv_dispsize != z)
+    {
+        result = -3;
+        goto done;
+    }
+
+    for (int i = 0; i < 16 && lv; i++)
+    {
+        int d = 0;
+        if (raw_lv_path_settled() && lv_dmac_geometry(&d) && d == target)
         {
-            lv_bpp_got = shamem_read((uint32_t)&(raw_lv_edmac->yb_xb)) & 0xFFFF;
-            if ((uint32_t)lv_bpp_got == want && lv_dispsize == z)
-            {
-                lv_bpp_zoom = lv_dispsize;
-                lv_bpp_result = 1;
-                lv_bpp_bouncing = 0;
-                printf("LV bpp %d: DMAC %d bytes/line\n", bpp, lv_bpp_got);
-                raw_lv_bounce_redraw();
-                return;
-            }
-            wait_lv_frames(1);
+            result = 1;
+            break;
         }
+        wait_lv_frames(1);
+    }
 
-        lv_bpp_zoom = lv_dispsize;
-        lv_bpp_result = -1;
-        lv_bpp_bouncing = 0;
-        printf("LV bpp %d: DMAC did not follow (%d, want %d)\n", bpp, lv_bpp_got, (int)want);
+done:
+    lv_bpp_got = lv_dmac_pitch();
+    lv_bpp_zoom = lv_dispsize;
+    lv_bpp_result = result;
+    if (lv_dmac_geometry(&cur)) lv_bpp_6d2 = cur;
+    lv_bpp_bouncing = 0;
+    printf("LV bpp %d: result %d, DMAC %d (want %d), zoom %d->%d\n",
+           target, result, lv_bpp_got, lv_bpp_want, z, lv_dispsize);
 
-        if (lv_bpp_patched)
-        {
-            unpatch_memory(LV_BPP_PATCH_ADDR_BPP);
-            unpatch_memory(LV_BPP_PATCH_ADDR_CODE);
-            lv_bpp_patched = 0;
-        }
-        /* whatever Canon is really sending now is what raw_lv_get_resolution()
-         * will derive from the pitch on the next update; do not assume 14 */
-        lv_bpp_6d2 = 14;
+    /* the view changed mode under ML's layer; put the display back together
+     * (not after a refusal - nothing moved) */
+    if (result != -2)
+    {
         raw_lv_bounce_redraw();
     }
+    return result;
 }
 
 int raw_lv_get_bpp(void)
 {
     return lv_bpp_6d2;
 }
+#else
+int raw_lv_bpp_bouncing(void) { return 0; }
+int raw_lv_bpp_status(int * want, int * got, int * zoom) { return 0; }
+int raw_lv_path_settled(void) { return 1; }
+int raw_lv_apply_bpp(void) { return 0; }
+int raw_lv_bpp_armed(void) { return -1; }     /* no depth switch on this firmware */
 #endif
 
 /* our default LiveView buffer (which can be DEFAULT_RAW_BUFFER or allocated) */
@@ -2904,8 +2999,14 @@ void raw_lv_request_bpp(int bpp)
 
 #ifdef CONFIG_LV_BPP_MEM1_PATCH
     /* 6D2: go through Canon's own Mem1 path instead of poking PACK32 (see
-     * raw_lv_set_bpp_6d2()); here we only track what depth is in effect */
+     * raw_lv_set_bpp_6d2()).  This only arms the depth; raw_info reports
+     * what the DMAC carries now, which changes at Canon's next path rebuild
+     * (raw_lv_apply_bpp() makes one happen). */
     raw_lv_set_bpp_6d2(bpp);
+    {
+        int d = 0;
+        if (lv && lv_dmac_geometry(&d)) lv_bpp_6d2 = d;
+    }
     raw_info.bits_per_pixel = lv_bpp_6d2;
     raw_info.pitch = raw_info.width * raw_info.bits_per_pixel / 8;
     raw_info.frame_size = raw_info.pitch * raw_info.height;
