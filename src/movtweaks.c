@@ -1272,21 +1272,18 @@ void wav_scratch_stop(void)
  *
  * Returns 1 if the file was moved. Failing is harmless: the audio is still on
  * the card under its original name. */
-int wav_scratch_rename(const char * mlv_path)
+/* Find the take Canon just closed (B:/ first, then A:/) and wait until
+ * Canon has really finished writing it - see below.  1 = ready in src. */
+static int wav_last_take_ready(char * src, int len)
 {
-    if (wav_last_number < 0) return 0;
-
-    /* Find the file. Canon writes B:/ and falls back to A:/. */
-    char src[32];
     uint32_t size = 0;
-    snprintf(src, sizeof(src), "B:/Sample%d.wav", wav_last_number);
+    snprintf(src, len, "B:/Sample%d.wav", wav_last_number);
     if (FIO_GetFileSize(src, &size) != 0)
     {
-        snprintf(src, sizeof(src), "A:/Sample%d.wav", wav_last_number);
+        snprintf(src, len, "A:/Sample%d.wav", wav_last_number);
         if (FIO_GetFileSize(src, &size) != 0)
         {
             NotifyBox(2000, "WAV: Sample%d.wav not found", wav_last_number);
-            wav_last_number = -1;
             return 0;
         }
     }
@@ -1313,6 +1310,31 @@ int wav_scratch_rename(const char * mlv_path)
     if (stable < 3)
     {
         NotifyBox(2000, "WAV still busy, kept as Sample%d.wav", wav_last_number);
+        return 0;
+    }
+    return 1;
+}
+
+/* A raw take that stopped before it wrote a clip ("12-bit not live", raw
+ * detect error) still started the recorder, and left a fraction of a second of
+ * audio from its own setup.  Nothing to keep - remove it rather than file a
+ * stub (v73 filed one as W30-1234.WAV). */
+int wav_scratch_discard(void)
+{
+    if (wav_last_number < 0) return 0;
+    char src[32];
+    int ok = wav_last_take_ready(src, sizeof(src)) && FIO_RemoveFile(src) == 0;
+    wav_last_number = -1;
+    return ok;
+}
+
+int wav_scratch_rename(const char * mlv_path)
+{
+    if (wav_last_number < 0) return 0;
+
+    char src[32];
+    if (!wav_last_take_ready(src, sizeof(src)))
+    {
         wav_last_number = -1;
         return 0;
     }

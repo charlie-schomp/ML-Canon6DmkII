@@ -121,8 +121,9 @@ int raw_lv_bpp_armed(void);
  * 1 arrived, 0 Canon never moved (refused), -1 moved but not arrived in time. */
 int raw_lv_zoom_to(int to);
 
-/* 6D2: the last bounce, per leg: lv_dispsize right after the request, frames
- * to arrive (-1 = did not) - t[4] */
+/* 6D2: the last bounce, per leg (out t[0..3], back t[4..7]): lv_dispsize right
+ * after the first request, requests sent, frames to arrive (-1 = did not),
+ * readout changed */
 void raw_lv_bpp_trace(int * t);
 
 /* get a red/green/blue pixel near the specified coords (approximate) */

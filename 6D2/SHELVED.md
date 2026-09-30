@@ -28,8 +28,12 @@ recording). That is what the audio meter got wrong and what the zoom bounce was 
 
 ## Still open, unrelated to the revert
 - **Face AF blocks the depth switch and crop mode.** Canon refuses 5x in Face+Tracking with the
-  lens on AF. v72 reports it instead of fighting it. If a LiveView restart (Canon's MENU and back)
-  applies the armed depth - TEST-v72 step 2 asks - that is the workaround for Face AF users.
+  lens on AF. Confirmed v73: Canon's MENU and back applies the armed depth with no zoom at all -
+  that is the workaround, and the message says so. An ML-driven LiveView restart
+  (`PROP_LV_ACTION`) could do the same automatically, but that property is not whitelisted on
+  this body and writing it is a new risk - not without a reason.
+- **Frame guides in crop mode.** Upstream drops the recorded-area guide in zoom. Needs the v74
+  probe measurement (how much of the 1:1 window the 5x view shows) before designing one.
 - **Trash button reaching Canon instead of ML.** Untouched v63 code: `handle_ml_menu_erase()`
   opens the ML menu only when `gui_state == GUISTATE_IDLE` (0). This body does not always report 0
   in LiveView. d7probe dumps the value; the fix is one condition once we know it.

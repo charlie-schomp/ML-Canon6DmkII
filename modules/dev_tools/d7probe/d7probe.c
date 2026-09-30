@@ -28,6 +28,7 @@
 #include <bmp.h>
 #include <menu.h>
 #include <config.h>
+#include <vram.h>
 #include <patch.h>
 #include <raw.h>
 #include <fps.h>
@@ -262,11 +263,19 @@ static void d7probe_dump(void)
         int res = raw_lv_bpp_status(&want, &got, &zoom);
         my_fprintf(f, "[bpp] in effect=%d  last switch: DMAC got=%d want=%d zoom=%d result=%d\n",
                    raw_info.bits_per_pixel, got, want, zoom, res);
-        int t[4];
+        int t[8];
         raw_lv_bpp_trace(t);
-        my_fprintf(f, "[bpp] armed=%d  bounce out: dispsize=%d arrived after %d frames;"
-                      " back: dispsize=%d arrived after %d frames (-1 = did not)\n",
-                   raw_lv_bpp_armed(), t[0], t[1], t[2], t[3]);
+        my_fprintf(f, "[bpp] armed=%d  last bounce, out: dispsize=%d sent=%d arrived=%d frames readout_changed=%d;"
+                      " back: dispsize=%d sent=%d arrived=%d frames readout_changed=%d (-1 = did not)\n",
+                   raw_lv_bpp_armed(), t[0], t[1], t[2], t[3], t[4], t[5], t[6], t[7]);
+        /* how much of the raw window the view shows: in 5x/10x the HD buffer
+         * is (about) 1:1 with the sensor, see raw.c's zoom preview rect */
+        struct vram_info * lvv = get_yuv422_vram();
+        struct vram_info * hdv = get_yuv422_hd_vram();
+        my_fprintf(f, "[vram] lv %dx%d  hd %dx%d  raw %dx%d  dispsize=%d\n",
+                   lvv ? lvv->width : 0, lvv ? lvv->height : 0,
+                   hdv ? hdv->width : 0, hdv ? hdv->height : 0,
+                   raw_info.width, raw_info.height, lv_dispsize);
     }
 
     /* audio: SoundDevice state (*(0x5300+8)), gain + peak registers, and the

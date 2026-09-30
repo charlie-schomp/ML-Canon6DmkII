@@ -856,71 +856,74 @@ static void raw_lv_set_bpp_6d2(int bpp)
     }
 }
 
-/* Make Canon rebuild the LiveView path now, so the armed depth takes effect:
- * one zoom bounce, out and back.  It is visible, so it is only done on the
- * user's behalf (mlv_lite: when the ML menu closes, when RAW video starts) and
- * never in reaction to a zoom change - Canon rebuilds the path on every zoom
- * change anyway and picks the armed depth up by itself.  Reacting to zoom
- * states is what made v71 cycle: a failed bounce could leave a different zoom,
- * which looked like a new state, which set off another bounce.
- *
- * Only Canon state is waited on - the zoom property, the DMAC geometry, frames -
- * and every wait is bounded.  Returns, and records for raw_lv_bpp_status():
- *    1  the DMAC carries the armed depth (already did: no bounce)
- *   -1  bounced, but Canon kept the old depth in this mode (still armed)
- *   -2  Canon refused the zoom - Face+Tracking AF on an AF lens does that.
- *       Nothing moved, so there is nothing to undo.
- *   -3  the zoom did not come back to where it was
- *    0  not possible now (no LiveView, raw tap off, recording) */
-/* Trace of the last bounce, for d7probe: for each leg, lv_dispsize read right
- * after the request and the frames it took to arrive (-1 = did not). */
-static int lv_zoom_trace[4] = { 0, 0, 0, 0 };
-static int lv_zoom_trace_leg = 0;
+/* Trace of the last bounce, for d7probe.  Per leg (out, back): lv_dispsize
+ * right after the first request, requests sent, frames to arrive (-1 = did
+ * not), and whether the readout changed at all. */
+static int lv_bounce_trace[8];
 void raw_lv_bpp_trace(int * t)
 {
-    for (int i = 0; i < 4; i++) t[i] = lv_zoom_trace[i];
+    for (int i = 0; i < 8; i++) t[i] = lv_bounce_trace[i];
 }
 
 /* Ask Canon for a LiveView zoom and wait until the view has really arrived:
  * PROP_LV_DISPSIZE at the target AND the raw DMAC programmed for that readout
- * (binned at 1x, 1:1 at 5x/10x).  set_lv_zoom() returns on Canon's FIRST
- * broadcast of the property, and that is not the end of the change - newer
- * bodies broadcast an intermediate 0x81 before zooming in, and the readout is
- * rebuilt after that.  v72 judged the request from one read 150 ms later, took
- * "not there yet" for "refused", skipped the way back, and Canon then finished
- * the zoom: the view was left at 5x.
+ * (binned at 1x, 1:1 at 5x/10x).  set_lv_zoom() returns on Canon's first
+ * broadcast of the property, which is not the end of the change.
  *
- * Returns 1 arrived, 0 Canon never moved off the old zoom (refused - Face AF),
- * -1 it moved but had not arrived within the bound.  Bounded in frames. */
-int raw_lv_zoom_to(int to)
+ * Refusal is judged by the readout, not the property: with Face AF, Canon
+ * moves PROP_LV_DISPSIZE (the 0x81 pre-zoom screen, it seems) but never
+ * changes the readout.
+ *
+ * Canon also silently DROPS a request that arrives while it is still settling
+ * from the previous change - v68 knew ("Canon ignores requests while it is
+ * still busy") and re-sent each step; v70 removed that as redundant, and the
+ * way back from the bounce started going missing.  `tries` > 1 re-sends until
+ * the view arrives; only the way back uses it, because the first request of a
+ * bounce is made with Canon idle, where no reaction means a real refusal.
+ *
+ * Returns 1 arrived, 0 the readout never changed, -1 it changed but the view
+ * did not arrive.  Every wait is bounded in frames. */
+static int lv_zoom_request(int to, int tries, int * trace)
 {
     extern void set_lv_zoom(int zoom);
     int from = lv_dispsize;
-    if (from == to) return 1;
+    int w0 = lv_dmac_geometry(0);
+    int strict = w0 != 0;       /* a readout we recognise: arrival includes the DMAC */
+    int changed = 0;
+    int sent = 0;
 
-    /* with a readout we recognise, arrival also means the DMAC shows it */
-    int strict = lv_dmac_geometry(0) != 0;
-    set_lv_zoom(to);
-
-    int leg = lv_zoom_trace_leg & 1;
-    lv_zoom_trace[leg * 2] = lv_dispsize;
-    lv_zoom_trace[leg * 2 + 1] = -1;
-    lv_zoom_trace_leg++;
-
-    for (int i = 0; i < 32 && lv; i++)
+    if (trace) { trace[0] = from; trace[1] = 0; trace[2] = -1; trace[3] = 0; }
+    if (from == to && (!strict || (w0 == 3264) == (to > 1)))
     {
-        if (lv_dispsize == to)
+        return 1;
+    }
+
+    int frames = 0;
+    for (int t = 0; t < tries && lv; t++)
+    {
+        set_lv_zoom(to);
+        sent++;
+        if (trace && t == 0) trace[0] = lv_dispsize;
+
+        for (int i = 0; i < 32 && lv; i++, frames++)
         {
             int w = lv_dmac_geometry(0);
-            if (strict ? (w && (w == 3264) == (to > 1)) : 1)
+            if (w != w0) changed = 1;
+            if (lv_dispsize == to && (strict ? (w && (w == 3264) == (to > 1)) : 1))
             {
-                lv_zoom_trace[leg * 2 + 1] = i;
+                if (trace) { trace[1] = sent; trace[2] = frames; trace[3] = changed; }
                 return 1;
             }
+            wait_lv_frames(1);
         }
-        wait_lv_frames(1);
     }
-    return (lv_dispsize == from) ? 0 : -1;
+    if (trace) { trace[1] = sent; trace[3] = changed; }
+    return changed ? -1 : 0;
+}
+
+int raw_lv_zoom_to(int to)
+{
+    return lv_zoom_request(to, 1, 0);
 }
 
 /* Make Canon rebuild the LiveView path now, so the armed depth takes effect:
@@ -962,18 +965,24 @@ int raw_lv_apply_bpp(void)
 
     int result = -1;
     lv_bpp_bouncing = 1;
-    lv_zoom_trace_leg = 0;
+    for (int i = 0; i < 8; i++) lv_bounce_trace[i] = 0;
 
-    int out = raw_lv_zoom_to(z == 1 ? 5 : 1);
+    int out = lv_zoom_request(z == 1 ? 5 : 1, 1, &lv_bounce_trace[0]);
     if (out == 0)
     {
+        /* the readout never changed: refused (Face AF).  Canon may still
+         * have moved the zoom property (its pre-zoom screen) - put it back. */
+        if (lv_dispsize != z)
+        {
+            lv_zoom_request(z, 4, &lv_bounce_trace[4]);
+        }
         result = -2;
         goto done;
     }
 
-    /* Canon moved (whether or not it arrived in time): always go back, so the
-     * view is never left at the other zoom */
-    if (raw_lv_zoom_to(z) != 1)
+    /* Canon moved: always go back, re-sending while Canon is still busy with
+     * the first change, so the view is never left at the other zoom */
+    if (lv_zoom_request(z, 4, &lv_bounce_trace[4]) != 1)
     {
         result = -3;
         goto done;
@@ -1000,8 +1009,8 @@ done:
            target, result, lv_bpp_got, lv_bpp_want, z, lv_dispsize);
 
     /* the view changed mode under ML's layer; put the display back together
-     * (not after a refusal - nothing moved) */
-    if (result != -2)
+     * (not after a clean refusal - nothing moved) */
+    if (result != -2 || lv_bounce_trace[5])
     {
         raw_lv_bounce_redraw();
     }
@@ -1018,7 +1027,7 @@ int raw_lv_bpp_status(int * want, int * got, int * zoom) { return 0; }
 int raw_lv_path_settled(void) { return 1; }
 int raw_lv_apply_bpp(void) { return 0; }
 int raw_lv_bpp_armed(void) { return -1; }     /* no depth switch on this firmware */
-void raw_lv_bpp_trace(int * t) { for (int i = 0; i < 4; i++) t[i] = 0; }
+void raw_lv_bpp_trace(int * t) { for (int i = 0; i < 8; i++) t[i] = 0; }
 int raw_lv_zoom_to(int to)
 {
     extern void set_lv_zoom(int zoom);

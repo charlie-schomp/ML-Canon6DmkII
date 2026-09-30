@@ -2,7 +2,7 @@
 
 Raw video, focus peaking and the rest of the monitoring overlays, working on a DIGIC 7 body.
 
-    Build:     v73, 2026-09-30
+    Build:     v74, 2026-09-30
     Base:      magiclantern_simplified @ 40c0a133b
     Platforms: 6D2.111 (primary, tested on hardware over four weeks)
                6D2.120 (parallel build, boot-tested in qemu only)
@@ -395,6 +395,54 @@ Nothing in ML's key chain consumes the main dial or unknown keys outside the ML 
 magic zoom, module handlers incl. mlv_lite, flexinfo, held-button tracker), and ML cannot write
 `PROP_ISO` anyway. To settle it from the camera, `gui.c` now keeps the last 128 button events with
 ML's verdict and the ISO at the time; d7probe dumps them (`[keys]`).
+
+---
+
+## v74 - a data-loss bug, and the zoom request Canon ignores
+
+v73 field test: the switch works at 1x, Canon's MENU-and-back applies the armed depth with no zoom
+at all (the Face AF workaround), crop mode holds 5x/10x, dual ISO still records. Clips, WAVs and
+the two probe dumps showed the rest:
+
+- **Data loss, latent since v68.** `raw_movie_filename` is assigned late in take start, after raw
+  detection and the bit-depth check, but `written_total` is zeroed at the top. A take that
+  stopped before its file existed reached cleanup with `written_total == 0` and the *previous*
+  take's name, and `FIO_RemoveFile()` deleted the previous clip. v68's "12-bit not live" refusal is
+  exactly such an early stop. Only a take that recorded a clip, then hit a refusal in the same
+  power-on session, was exposed (the name lives in RAM). Cleanup now removes only a file the take
+  created (`created_file`). Upstream mlv_lite has the same structure; its early exits are rarer.
+- **Canon ignores a zoom request that arrives while it is still settling.** Both probe dumps show
+  the bounce's first leg landing after 0-1 frames and the way back never registering. v68's
+  bounce said as much ("Canon ignores requests while it is still busy") and re-sent each step;
+  v70 removed that as redundant. The way back is re-sent until it lands (4 tries, bounded in
+  frames). The first leg is still sent once: Canon is idle then, so no reaction is a real refusal.
+- **Refusal judged by the readout.** With Face AF, v73 reported "Canon kept 12-bit" (-1) instead of
+  -2: Canon moved `PROP_LV_DISPSIZE` (its pre-zoom screen, it seems) without changing the readout.
+  `lv_zoom_request()` now tracks whether the DMAC readout changed at all, and puts the zoom
+  property back if only that moved. The Face AF message gives the workaround.
+- **Aborted takes discard their scratch WAV** instead of filing a stub (`W30-1234.WAV`, 0.63 s).
+  `wav_scratch_discard()` can only remove the `SampleN.wav` this take created (the number is
+  picked as one with no existing file).
+- **Crop mode 24p compiled out** (`CONFIG_CROP24_EXPERIMENT`). v73 clips M30-1242/1243 measured
+  29.968/29.969 with both variants: four rounds, no effect. It also ran its own zoom-bounce task,
+  outside the bounce / crop-hold coordination.
+- The bounce trace belongs to the bounce only (crop hold was overwriting it); d7probe also logs
+  the YUV buffer sizes.
+
+**Frame guides in crop mode.** Upstream mlv_lite drops the recorded-area guide whenever
+`lv_dispsize > 1`, on the grounds that the zoomed preview doesn't map onto the recorded area. So
+crop mode never had its own guide. Earlier builds only *looked* as if they did because nothing
+cleared the 1x guide off ML's layer; v73's `redraw()` after the crop zoom removed it. At 5x, the
+view probably shows much less than the 3264-wide window. If so, a 1920-wide recording would not
+even fit on screen, and a guide would have to be a different kind of indicator. The v74 probe dump
+at 5x measures it.
+
+**Audio.** Every WAV is structurally sound and filed as `<clip>.WAV`. Five run 0.6-0.85 s longer
+than their clip (start latency plus stop); M30-1242's is 0.57 s *shorter*, which the files alone
+can't explain. Clap-at-both-ends takes will show whether audio goes missing inside a take.
+
+**Dual ISO** confirmed in M30-1244 (10-bit crop): row pairs 0-1 vs 2-3 differ 0.73 EV above black;
+control clips are flat. The old `disoscan.py` only unpacked 14-bit; the new one handles 14/12/10.
 
 ---
 

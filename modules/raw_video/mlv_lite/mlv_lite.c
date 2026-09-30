@@ -92,6 +92,7 @@ extern void wav_scratch_start(void);
 extern void wav_scratch_stop(void);
 extern int  wav_scratch_auto_enabled(void);
 extern int  wav_scratch_rename(const char * mlv_path);
+extern int  wav_scratch_discard(void);
 /* src/zebra.c - weak so the module still loads on bodies without it */
 extern WEAK_FUNC(ret_0) int clean_hdmi_active(void);
 extern WEAK_FUNC(ret_0) int dual_iso_is_enabled(void);
@@ -1352,7 +1353,7 @@ static MENU_UPDATE_FUNC(crop_zoom_update)
     if (crop_zoom && crop_refused && lv && lv_dispsize == 1)
     {
         MENU_SET_WARNING(MENU_WARN_ADVICE,
-                         "Face AF blocked the 5x zoom. Lens to MF, then close the menu.");
+                         "Face AF blocks the 5x zoom. Lens to MF, then close the menu.");
     }
     else if (dual_iso_is_enabled())
     {
@@ -1389,12 +1390,12 @@ static MENU_UPDATE_FUNC(output_format_bpp_update)
     if (res == -2)
     {
         MENU_SET_WARNING(MENU_WARN_ADVICE,
-                         "Face AF blocked the 5x zoom this needs. Lens to MF, close menu.");
+                         "Face AF blocks the zoom. Canon MENU and back applies it.");
     }
     else if (res == -3)
     {
         MENU_SET_WARNING(MENU_WARN_ADVICE,
-                         "Zoom did not return to %dx. Magnify back; depth applies then.",
+                         "Zoom did not return to %dx. Magnify back; the depth applies.",
                          zoom);
     }
     else if (res == -1)
@@ -1406,8 +1407,7 @@ static MENU_UPDATE_FUNC(output_format_bpp_update)
     else
     {
         MENU_SET_WARNING(MENU_WARN_ADVICE,
-                         "Applies when you close the menu (sensor is at %d-bit now).",
-                         raw_info.bits_per_pixel);
+                         "Applies when you close the menu (or Canon MENU and back).");
     }
 }
 
@@ -3741,6 +3741,7 @@ void raw_video_rec_task(uint32_t card_index)
     int last_write_timestamp = 0; /* last FIO_WriteFile call */
     int last_processed_frame = 0;
     int fps = 1;
+    int created_file = 0;   /* raw_movie_filename is THIS take's file (see cleanup) */
 
     written_total[card_index] = 0; /* in bytes */
     writing_time[card_index] = 0;
@@ -3866,8 +3867,8 @@ void raw_video_rec_task(uint32_t card_index)
              * the shadow register read came back empty */
             NotifyBox(8000, "%d-bit not live yet (sensor at %d)\n%s",
                       BPP, raw_info.bits_per_pixel,
-                      res == -2 ? "Face AF blocks 5x: set lens to MF"
-                                : "Open and close the ML menu");
+                      res == -2 ? "Face AF: Canon MENU and back applies it"
+                                : "Close the ML menu, or Canon MENU and back");
             printf("bpp %d not ready: at %d, DMAC %d want %d zoom %d res %d\n",
                    BPP, raw_info.bits_per_pixel, got, want, zoom, res);
             goto cleanup;
@@ -3886,6 +3887,7 @@ void raw_video_rec_task(uint32_t card_index)
             NotifyBox(5000, "File create error");
             goto cleanup;
         }
+        created_file = 1;
 
         /* Need to start the recording of audio before the init of the mlv chunk */
         mlv_rec_call_cbr(MLV_REC_EVENT_STARTING, NULL);
@@ -4403,7 +4405,14 @@ cleanup:
 
     if (f)
         finish_chunk(f, card_index);
-    if (!written_total[card_index]
+
+    /* Only ever remove a file THIS take created.  raw_movie_filename is set
+     * late (after raw detection and the bit-depth check), so a take that stops
+     * before that still has the previous take's name in it - and removing it
+     * whenever written_total was 0 deleted the previous clip.  The 6D2's
+     * "12-bit not live" refusal is exactly such an early stop. */
+    int clip_kept = created_file && written_total[card_index];
+    if (created_file && !written_total[card_index]
         && raw_movie_filename != NULL)
     {
         FIO_RemoveFile(raw_movie_filename);
@@ -4458,7 +4467,10 @@ cleanup:
              * move it next to the clip as <clip>.WAV. raw_movie_filename is
              * cleared above when nothing was written, and the callee treats an
              * empty name as "nothing to do". */
-            wav_scratch_rename(raw_movie_filename);
+            /* A take that produced no clip only recorded its own setup:
+             * discard that audio rather than file a stub. */
+            if (clip_kept) wav_scratch_rename(raw_movie_filename);
+            else           wav_scratch_discard();
         }
         mlv_rec_call_cbr(MLV_REC_EVENT_STOPPED, NULL);
     }
