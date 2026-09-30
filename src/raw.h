@@ -116,6 +116,15 @@ int raw_lv_path_settled(void);
  * (-1 where this firmware has no depth switch) */
 int raw_lv_bpp_armed(void);
 
+/* 6D2: request a LiveView zoom and wait until the view has really arrived
+ * (property at the target and the raw DMAC programmed for that readout).
+ * 1 arrived, 0 Canon never moved (refused), -1 moved but not arrived in time. */
+int raw_lv_zoom_to(int to);
+
+/* 6D2: the last bounce, per leg: lv_dispsize right after the request, frames
+ * to arrive (-1 = did not) - t[4] */
+void raw_lv_bpp_trace(int * t);
+
 /* get a red/green/blue pixel near the specified coords (approximate) */
 int raw_red_pixel(int x, int y);
 int raw_green_pixel(int x, int y);

@@ -770,14 +770,13 @@ static int lv_dmac_pitch(void)
     return shamem_read((uint32_t)&(raw_lv_edmac->yb_xb)) & 0xFFFF;
 }
 
-/* What the raw write DMAC is programmed for right now, from its pitch alone.
- * Exactly one of 14/12/10 divides the pitch out to a known readout width
- * (checked: no pitch fits two), so this is unambiguous.  Returns the width and
- * sets *bpp, or returns 0 when the pitch fits none (other video modes, tap off). */
-static int lv_dmac_geometry(int * bpp)
+/* Readout width and depth from a raw DMAC pitch alone.  Exactly one of
+ * 14/12/10 divides the pitch out to a known readout width (checked: no pitch
+ * fits two), so this is unambiguous.  Returns the width and sets *bpp, or
+ * returns 0 when the pitch fits none (other video modes, tap off, mid-change). */
+static int lv_pitch_geometry(int pitch, int * bpp)
 {
     static const int depths[] = { 14, 12, 10 };
-    int pitch = lv_dmac_pitch();
     for (int d = 0; d < (int)COUNT(depths); d++)
     {
         if ((pitch * 8) % depths[d]) continue;
@@ -792,6 +791,12 @@ static int lv_dmac_geometry(int * bpp)
         }
     }
     return 0;
+}
+
+/* ... and for what the DMAC is programmed with right now */
+static int lv_dmac_geometry(int * bpp)
+{
+    return lv_pitch_geometry(lv_dmac_pitch(), bpp);
 }
 
 /* True once Canon has finished the last LiveView mode change: the raw DMAC is
@@ -867,10 +872,73 @@ static void raw_lv_set_bpp_6d2(int bpp)
  *       Nothing moved, so there is nothing to undo.
  *   -3  the zoom did not come back to where it was
  *    0  not possible now (no LiveView, raw tap off, recording) */
+/* Trace of the last bounce, for d7probe: for each leg, lv_dispsize read right
+ * after the request and the frames it took to arrive (-1 = did not). */
+static int lv_zoom_trace[4] = { 0, 0, 0, 0 };
+static int lv_zoom_trace_leg = 0;
+void raw_lv_bpp_trace(int * t)
+{
+    for (int i = 0; i < 4; i++) t[i] = lv_zoom_trace[i];
+}
+
+/* Ask Canon for a LiveView zoom and wait until the view has really arrived:
+ * PROP_LV_DISPSIZE at the target AND the raw DMAC programmed for that readout
+ * (binned at 1x, 1:1 at 5x/10x).  set_lv_zoom() returns on Canon's FIRST
+ * broadcast of the property, and that is not the end of the change - newer
+ * bodies broadcast an intermediate 0x81 before zooming in, and the readout is
+ * rebuilt after that.  v72 judged the request from one read 150 ms later, took
+ * "not there yet" for "refused", skipped the way back, and Canon then finished
+ * the zoom: the view was left at 5x.
+ *
+ * Returns 1 arrived, 0 Canon never moved off the old zoom (refused - Face AF),
+ * -1 it moved but had not arrived within the bound.  Bounded in frames. */
+int raw_lv_zoom_to(int to)
+{
+    extern void set_lv_zoom(int zoom);
+    int from = lv_dispsize;
+    if (from == to) return 1;
+
+    /* with a readout we recognise, arrival also means the DMAC shows it */
+    int strict = lv_dmac_geometry(0) != 0;
+    set_lv_zoom(to);
+
+    int leg = lv_zoom_trace_leg & 1;
+    lv_zoom_trace[leg * 2] = lv_dispsize;
+    lv_zoom_trace[leg * 2 + 1] = -1;
+    lv_zoom_trace_leg++;
+
+    for (int i = 0; i < 32 && lv; i++)
+    {
+        if (lv_dispsize == to)
+        {
+            int w = lv_dmac_geometry(0);
+            if (strict ? (w && (w == 3264) == (to > 1)) : 1)
+            {
+                lv_zoom_trace[leg * 2 + 1] = i;
+                return 1;
+            }
+        }
+        wait_lv_frames(1);
+    }
+    return (lv_dispsize == from) ? 0 : -1;
+}
+
+/* Make Canon rebuild the LiveView path now, so the armed depth takes effect:
+ * one zoom bounce, out and back.  It is visible, so it is only done on the
+ * user's behalf (mlv_lite: when the ML menu closes, when RAW video starts) and
+ * never in reaction to a zoom change - Canon rebuilds the path on every zoom
+ * change anyway and picks the armed depth up by itself.
+ *
+ * Returns, and records for raw_lv_bpp_status():
+ *    1  the DMAC carries the armed depth (already did: no bounce)
+ *   -1  bounced, but Canon kept the old depth in this mode (still armed)
+ *   -2  Canon never moved off the current zoom - Face+Tracking AF on an AF
+ *       lens refuses magnification.  Nothing to undo.
+ *   -3  the zoom did not come back to where it was
+ *    0  not possible now (no LiveView, raw tap off, recording, unknown readout) */
 int raw_lv_apply_bpp(void)
 {
     extern int lv_raw_enabled_6d2_peek(void);
-    extern void set_lv_zoom(int zoom);
     if (!lv || lv_raw_enabled_6d2_peek() != 1 || !NOT_RECORDING) return 0;
 
     int target = lv_bpp_patched ? lv_bpp_patched : 14;
@@ -880,10 +948,10 @@ int raw_lv_apply_bpp(void)
     lv_bpp_want = (w ? w : raw_info.width) * target / 8;
     lv_bpp_got = lv_dmac_pitch();
     lv_bpp_zoom = z;
-    if (!w)
+    if (!w || (z != 1 && z != 5 && z != 10))
     {
-        /* a readout we do not recognise: the result could not be checked,
-         * so a bounce would only disturb the view */
+        /* a readout we do not recognise, or mid-change: the result could not
+         * be checked, so a bounce would only disturb the view */
         return lv_bpp_result = 0;
     }
     if (cur == target)
@@ -892,24 +960,20 @@ int raw_lv_apply_bpp(void)
         return lv_bpp_result = 1;
     }
 
-    int other = (z == 1) ? 5 : 1;
     int result = -1;
     lv_bpp_bouncing = 1;
+    lv_zoom_trace_leg = 0;
 
-    set_lv_zoom(other);
-    if (lv_dispsize != other)
+    int out = raw_lv_zoom_to(z == 1 ? 5 : 1);
+    if (out == 0)
     {
         result = -2;
         goto done;
     }
 
-    /* the way back only once Canon has finished building the other mode */
-    for (int i = 0; i < 16 && lv && !raw_lv_path_settled(); i++)
-    {
-        wait_lv_frames(1);
-    }
-    set_lv_zoom(z);
-    if (lv_dispsize != z)
+    /* Canon moved (whether or not it arrived in time): always go back, so the
+     * view is never left at the other zoom */
+    if (raw_lv_zoom_to(z) != 1)
     {
         result = -3;
         goto done;
@@ -918,7 +982,7 @@ int raw_lv_apply_bpp(void)
     for (int i = 0; i < 16 && lv; i++)
     {
         int d = 0;
-        if (raw_lv_path_settled() && lv_dmac_geometry(&d) && d == target)
+        if (lv_dmac_geometry(&d) && d == target)
         {
             result = 1;
             break;
@@ -954,6 +1018,14 @@ int raw_lv_bpp_status(int * want, int * got, int * zoom) { return 0; }
 int raw_lv_path_settled(void) { return 1; }
 int raw_lv_apply_bpp(void) { return 0; }
 int raw_lv_bpp_armed(void) { return -1; }     /* no depth switch on this firmware */
+void raw_lv_bpp_trace(int * t) { for (int i = 0; i < 4; i++) t[i] = 0; }
+int raw_lv_zoom_to(int to)
+{
+    extern void set_lv_zoom(int zoom);
+    int from = lv_dispsize;
+    set_lv_zoom(to);
+    return lv_dispsize == to ? 1 : lv_dispsize == from ? 0 : -1;
+}
 #endif
 
 /* our default LiveView buffer (which can be DEFAULT_RAW_BUFFER or allocated) */
@@ -1043,19 +1115,13 @@ static int raw_lv_get_resolution(int* width, int* height)
      * exactly one of 14/12/10 divides out to a known width.  Track that as
      * the depth in effect, so raw_info never lies about the data. */
     {
-        static const int widths[] = { 2128, 3264 };
-        int found = 0;
-        int cands[3] = { lv_bpp_6d2, 14, 12 };
-        cands[2] = (lv_bpp_6d2 == 12) ? 10 : (lv_bpp_6d2 == 10) ? 12 : 10;
-        for (int c = 0; c < 3 && !found; c++)
-        {
-            int b = cands[c];
-            if ((pitch * 8) % b) continue;
-            int w = pitch * 8 / b;
-            for (int k = 0; k < (int)COUNT(widths); k++)
-                if (w == widths[k]) { *width = w; lv_bpp_6d2 = b; found = 1; break; }
-        }
-        if (!found) *width = pitch * 8 / lv_bpp_6d2;
+        /* (the old candidate list here was {current, 14, other}, i.e.
+         * {14, 14, 10} at 14-bit: a switch to 12 was never recognised and
+         * read as a 1824-wide frame) */
+        int b = 0;
+        int w = lv_pitch_geometry(pitch, &b);
+        if (w) { *width = w; lv_bpp_6d2 = b; }
+        else   { *width = pitch * 8 / lv_bpp_6d2; }
     }
 #else
     *width = pitch * 8 / 14;
@@ -1558,19 +1624,33 @@ int raw_update_params_work()
     }
 #endif
 
-    /* black and white autodetection are time-consuming */
-    /* only refresh once per second or if dirty, but never while recording */
-    static int bw_aux = INT_MIN;
-    int recompute_black_and_white = 
-        NOT_RECORDING &&
-        raw_info.bits_per_pixel == 14 &&
-        (raw_info.black_level == 0 || dirty || should_run_polling_action(1000, &bw_aux));
+#ifdef CONFIG_LV_BPP_MEM1_PATCH
+    /* 6D2: the depth can change without the size changing (Canon rebuilds the
+     * path at the armed depth on its own zoom changes and restarts).  Treat it
+     * like a size change, so pitch and frame size are recomputed with it. */
+    if (lv && raw_info.bits_per_pixel != lv_bpp_6d2)
+    {
+        dirty = 1;
+    }
+#endif
 
+    /* Refresh the geometry BEFORE deciding anything from raw_info: on the 6D2
+     * raw_set_geometry() also brings in the depth in effect, and deciding from
+     * the stale one tripped the 14-bit assert below at 12/10-bit (v72). */
+    int was_dirty = dirty;
     if (dirty)
     {
         raw_set_geometry(width, height, skip_left, skip_right, skip_top, skip_bottom);
         dirty = 0;
     }
+
+    /* black and white autodetection are time-consuming */
+    /* only refresh once per second or if dirty, but never while recording */
+    static int bw_aux = INT_MIN;
+    int recompute_black_and_white =
+        NOT_RECORDING &&
+        raw_info.bits_per_pixel == 14 &&
+        (raw_info.black_level == 0 || was_dirty || should_run_polling_action(1000, &bw_aux));
 
 #if defined(CONFIG_6D2) && defined(BLACK_LEVEL)
     /* 6D2 LiveView: Canon clamps the raw black to 2047 in every readout, ISO

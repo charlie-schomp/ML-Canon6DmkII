@@ -2320,9 +2320,13 @@ unsigned int raw_rec_polling_cbr(unsigned int unused)
             crop_pending = 0;
             if (lv_dispsize == 1)
             {
-                set_lv_zoom(5);
+                /* waits for the view to arrive, and tells a refusal (Face AF)
+                 * from a change that is still in progress */
+                int r = raw_lv_zoom_to(5);
                 crop_applied = 1;
-                crop_refused = (lv_dispsize == 1);
+                crop_refused = (r == 0);
+                /* the view changed mode under ML's layer (see the bounce) */
+                if (r != 0) redraw();
             }
         }
         else if (!crop_zoom && crop_applied)

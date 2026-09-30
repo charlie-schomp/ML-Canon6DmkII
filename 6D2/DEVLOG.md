@@ -2,7 +2,7 @@
 
 Raw video, focus peaking and the rest of the monitoring overlays, working on a DIGIC 7 body.
 
-    Build:     v72, 2026-09-30
+    Build:     v73, 2026-09-30
     Base:      magiclantern_simplified @ 40c0a133b
     Platforms: 6D2.111 (primary, tested on hardware over four weeks)
                6D2.120 (parallel build, boot-tested in qemu only)
@@ -395,6 +395,36 @@ Nothing in ML's key chain consumes the main dial or unknown keys outside the ML 
 magic zoom, module handlers incl. mlv_lite, flexinfo, held-button tracker), and ML cannot write
 `PROP_ISO` anyway. To settle it from the camera, `gui.c` now keeps the last 128 button events with
 ML's verdict and the ISO at the time; d7probe dumps them (`[keys]`).
+
+---
+
+## v73 - three bugs v72 exposed
+
+v72 could not be tested: choosing 12 or 10-bit "forced zoom mode", and ML's console popped up
+(two `ASSERT` logs). All three causes are in the switch, and v72's design made them reachable,
+because the depth now changes *under* ML instead of being announced first.
+
+- **ASSERT `raw_info.bits_per_pixel == 14`** (raw.c, `livev_hiprio_task`). `raw_update_params_work()`
+  decided whether to re-measure black/white from `raw_info`'s depth, *then* refreshed the geometry
+  (`raw_set_geometry()` copies in the depth in effect), *then* asserted 14. It decided on a stale 14
+  and asserted on the fresh 12. Now it refreshes first and decides after. A depth change on its own
+  also marks the geometry dirty, so pitch and frame size are recomputed with it.
+- **12-bit was unrecognisable from the pitch at 14.** `raw_lv_get_resolution()` tried the candidate
+  depths `{current, 14, other}`, which is `{14, 14, 10}` at 14-bit. A rebuild to 12 read as a
+  1824-wide frame (3192 × 8 / 14), so the recorded-area guides shrank. v70/71 hid it by setting the
+  depth before the bounce. It now uses the same pitch table as `lv_dmac_geometry()`, which has one
+  answer per pitch.
+- **Parked at 5x.** `set_lv_zoom()` returns on Canon's *first* broadcast of `PROP_LV_DISPSIZE`, and
+  v72 judged the request from one read 150 ms after that. Newer bodies broadcast an intermediate
+  `0x81` before zooming in, and the readout is rebuilt later still. "Not there yet" was taken for
+  "refused", so the way back was skipped, and then Canon finished the zoom. v71's "landed in 5x" fits
+  the same flaw. The new `raw_lv_zoom_to()` waits for the view to *arrive*: the property at the
+  target and the DMAC programmed for that readout, bounded in frames. It calls a request refused
+  only if Canon never moved at all. The bounce always goes back unless Canon never moved.
+
+Crop hold uses `raw_lv_zoom_to()` too, and calls `redraw()` after its zoom like the bounce does
+(the v69 rule: anything that changes the LiveView mode redraws). d7probe records each bounce leg:
+`lv_dispsize` right after the request, and frames to arrive.
 
 ---
 

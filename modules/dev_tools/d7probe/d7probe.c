@@ -262,6 +262,11 @@ static void d7probe_dump(void)
         int res = raw_lv_bpp_status(&want, &got, &zoom);
         my_fprintf(f, "[bpp] in effect=%d  last switch: DMAC got=%d want=%d zoom=%d result=%d\n",
                    raw_info.bits_per_pixel, got, want, zoom, res);
+        int t[4];
+        raw_lv_bpp_trace(t);
+        my_fprintf(f, "[bpp] armed=%d  bounce out: dispsize=%d arrived after %d frames;"
+                      " back: dispsize=%d arrived after %d frames (-1 = did not)\n",
+                   raw_lv_bpp_armed(), t[0], t[1], t[2], t[3]);
     }
 
     /* audio: SoundDevice state (*(0x5300+8)), gain + peak registers, and the
