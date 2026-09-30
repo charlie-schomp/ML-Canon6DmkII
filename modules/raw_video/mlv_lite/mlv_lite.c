@@ -125,12 +125,15 @@ static int cam_5d3_123 = 0;
  * use roughly 10% increments
  **/
 
-static const int resolution_presets_x[] = {  640,  960,  1280,  1600,  1920,  2240,  2560,  2880,  3072,  3520,  4096,  5796 };
-#define  RESOLUTION_CHOICES_X CHOICES("640","960","1280","1600","1920","2240","2560","2880","3072","3520","4096","5796")
+static const int resolution_presets_x[] = {  640,  960,  1280,  1600,  1920,  2048,  2240,  2560,  2880,  3072,  3520,  4096,  5796 };
+#define  RESOLUTION_CHOICES_X CHOICES("640","960","1280","1600","1920","2048","2240","2560","2880","3072","3520","4096","5796")
 
-static const int aspect_ratio_presets_num[]      = {   5,    4,    3,       8,      25,     239,     235,      22,    2,     185,     16,    5,    3,    4,    12,    1175,    1,    1 };
-static const int aspect_ratio_presets_den[]      = {   1,    1,    1,       3,      10,     100,     100,      10,    1,     100,      9,    3,    2,    3,    10,    1000,    1,    2 };
-static const char * aspect_ratio_choices[] =       {"5:1","4:1","3:1","2.67:1","2.50:1","2.39:1","2.35:1","2.20:1","2:1","1.85:1", "16:9","5:3","3:2","4:3","1.2:1","1.175:1","1:1","1:2"};
+/* "1.90:1 (DCI)" = 256:135, i.e. 2048x1080 / 4096x2160.  Appended rather than
+ * sorted in: the saved setting is an index, and inserting would silently
+ * change every saved choice after it. */
+static const int aspect_ratio_presets_num[]      = {   5,    4,    3,       8,      25,     239,     235,      22,    2,     185,     16,    5,    3,    4,    12,    1175,    1,    1,   256 };
+static const int aspect_ratio_presets_den[]      = {   1,    1,    1,       3,      10,     100,     100,      10,    1,     100,      9,    3,    2,    3,    10,    1000,    1,    2,   135 };
+static const char * aspect_ratio_choices[] =       {"5:1","4:1","3:1","2.67:1","2.50:1","2.39:1","2.35:1","2.20:1","2:1","1.85:1", "16:9","5:3","3:2","4:3","1.2:1","1.175:1","1:1","1:2","1.90:1 (DCI)"};
 
 /* config variables */
 
@@ -1224,13 +1227,15 @@ static MENU_UPDATE_FUNC(resolution_update)
 
     if (res_menu_entry)
     {
-        /* 6D2: offer only presets the current readout can deliver - 1920 in
-         * the 2028-wide 1080p modes, wider in the 3164-wide 5x/10x zoom */
+        /* 6D2: offer only presets the current readout can deliver - up to
+         * 2048 in the 2080-wide 1080p modes, wider in the 3164-wide 5x/10x
+         * zoom.  The saved pick is NOT clamped: opening this menu in 1080p
+         * used to throw away a crop-mode choice (2240+).  A preset wider than
+         * the readout records at its maximum (update_resolution_params). */
         int mx = 0;
         while (mx + 1 < (int)COUNT(resolution_presets_x) && resolution_presets_x[mx + 1] <= max_res_x) mx++;
-        mx = MAX(mx, 4);
+        mx = MAX(mx, 5);
         res_menu_entry->max = mx;
-        if (resolution_index_x > mx) resolution_index_x = mx;
     }
 
     /* Show the aspect the clip will deliver, not just the pixel count. With
@@ -1353,7 +1358,7 @@ static MENU_UPDATE_FUNC(crop_zoom_update)
     if (crop_zoom && crop_refused && lv && lv_dispsize == 1)
     {
         MENU_SET_WARNING(MENU_WARN_ADVICE,
-                         "Face AF blocks the 5x zoom. Lens to MF, then close the menu.");
+                         "Lens AF blocks the 5x zoom. Set the lens to MF.");
     }
     else if (dual_iso_is_enabled())
     {
@@ -1390,7 +1395,7 @@ static MENU_UPDATE_FUNC(output_format_bpp_update)
     if (res == -2)
     {
         MENU_SET_WARNING(MENU_WARN_ADVICE,
-                         "Face AF blocks the zoom. Canon MENU and back applies it.");
+                         "Lens AF blocks the zoom. Canon MENU and back applies it.");
     }
     else if (res == -3)
     {
@@ -2306,8 +2311,15 @@ unsigned int raw_rec_polling_cbr(unsigned int unused)
         static int crop_applied = 0;
         static int crop_pending = 1;
         static int crop_prev_zoom = 0;
+        static int crop_prev_af = -1;
         if (!lv) crop_applied = 0;
-        if (!crop_zoom || !raw_video_active) crop_pending = 1;
+        /* Canon refuses the zoom with the lens on AF; after switching to MF
+         * the request must be made again.  Re-armed by the switch itself
+         * (af_mode, if this body reports it) and by closing the ML menu, so
+         * a crop mode toggle is never needed. */
+        if (!crop_zoom || !raw_video_active || gui_menu_shown() || af_mode != crop_prev_af)
+            crop_pending = 1;
+        crop_prev_af = af_mode;
         if (lv_dispsize != crop_prev_zoom)
         {
             if (lv_dispsize == 1) crop_pending = 1;
@@ -2360,7 +2372,12 @@ unsigned int raw_rec_polling_cbr(unsigned int unused)
     if (is_camera("6D2", "*"))
     {
         static int bpp_apply_pending = 1;
-        if (!raw_video_active || gui_menu_shown()) bpp_apply_pending = 1;
+        static int bpp_prev_af = -1;
+        /* also the lens AF/MF switch: Canon refuses the zoom with the lens
+         * on AF, so switching to MF is the moment it can work */
+        if (!raw_video_active || gui_menu_shown() || af_mode != bpp_prev_af)
+            bpp_apply_pending = 1;
+        bpp_prev_af = af_mode;
 
         int armed = raw_lv_bpp_armed();         /* -1: no depth switch on this firmware */
         if (raw_video_active && raw_lv_is_enabled() && armed > 0)
@@ -3867,7 +3884,7 @@ void raw_video_rec_task(uint32_t card_index)
              * the shadow register read came back empty */
             NotifyBox(8000, "%d-bit not live yet (sensor at %d)\n%s",
                       BPP, raw_info.bits_per_pixel,
-                      res == -2 ? "Face AF: Canon MENU and back applies it"
+                      res == -2 ? "Lens AF: Canon MENU and back applies it"
                                 : "Close the ML menu, or Canon MENU and back");
             printf("bpp %d not ready: at %d, DMAC %d want %d zoom %d res %d\n",
                    BPP, raw_info.bits_per_pixel, got, want, zoom, res);
@@ -5133,11 +5150,13 @@ static unsigned int raw_rec_init()
 
     if (is_camera("6D2", "*"))
     {
-        /* start with the 1080p cap (2028-wide readout: nothing above 1920);
-         * resolution_update() raises it in the 3164-wide crop readout */
+        /* start with the 1080p cap (2080-wide readout: up to 2048);
+         * resolution_update() raises it in the 3164-wide crop readout.  The
+         * saved choice is not clamped here: that reset crop-mode picks
+         * (2240 / 2560 / 3072) to 1920 on every boot. */
         res_menu_entry = raw_video_submenu_entry(&resolution_index_x);
-        if (res_menu_entry) res_menu_entry->max = 4;
-        resolution_index_x = MIN(resolution_index_x, 4);
+        if (res_menu_entry) res_menu_entry->max = 5;
+        resolution_index_x = COERCE(resolution_index_x, 0, (int)COUNT(resolution_presets_x) - 1);
 
         /* 14/12/10-bit uncompressed: raw.c switches the depth through Canon's
          * own raw-tap driver (CONFIG_LV_BPP_MEM1_PATCH); lossless stays hidden */

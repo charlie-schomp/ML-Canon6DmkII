@@ -1501,6 +1501,15 @@ static MENU_UPDATE_FUNC(wav_gain_update)
 }
 #endif
 
+static MENU_UPDATE_FUNC(wav_scratch_main_update)
+{
+    static const char * modes[] = { "OFF", "Manual", "Auto with RAW" };
+    if (wav_is_recording)
+        MENU_SET_VALUE("REC");
+    else
+        MENU_SET_VALUE("%s", modes[COERCE(wav_scratch_audio, 0, 2)]);
+}
+
 static MENU_UPDATE_FUNC(wav_scratch_update)
 {
     if (wav_is_recording)
@@ -1522,81 +1531,10 @@ static MENU_UPDATE_FUNC(wav_scratch_update)
 #endif /* FEATURE_WAV_AUDIO */
 
 static struct menu_entry mov_menus[] = {
-    #ifdef FEATURE_WAV_AUDIO
-    {
-        .name       = "Scratch audio (WAV)",
-        .priv       = &wav_scratch_audio,
-        .max        = 2,
-        .choices    = CHOICES("OFF", "Manual", "Auto with RAW"),
-        /* No .update here on purpose. An .update that calls MENU_SET_VALUE on
-         * an entry that already has .choices makes the two fight over the same
-         * cell, and the value alternates between them on successive redraws -
-         * the reported flashing. Live status lives on the entry below. */
-        .help       = "Record audio to a WAV via Canon's own recorder. ~0.19 MB/s.",
-        .help2      = "Auto follows raw rec, and names the WAV after the clip.",
-        .submenu_width = 700,
-        .children =  (struct menu_entry[]) {
-            {
-                .name       = "Input",
-                .priv       = &wav_input,
-                .max        = 2,
-                .update     = wav_input_update,
-                .choices    = CHOICES("Auto (jack)", "Internal mic", "External mic"),
-                .help       = "Mic for the WAV. Canon's recorder ignores the jack by itself,",
-                .help2      = "so Auto checks it at each start. Both channels share one source.",
-            },
-            #ifdef SOUNDDEV_SET_VOLUME_IN
-            {
-                .name       = "Gain",
-                .priv       = &wav_gain_mode,
-                .max        = 1,
-                .select     = wav_gain_mode_select,
-                .choices    = CHOICES("Factory default", "Manual"),
-                .help       = "Factory default is quiet (peaks ~ -41 dBFS measured).",
-                .help2      = "Manual sets the audio IC level per channel. RAM only.",
-            },
-            {
-                .name       = "Left gain",
-                .priv       = &wav_gain_l,
-                .max        = WAV_GAIN_STOPS - 1,
-                .choices    = WAV_GAIN_CHOICES,
-                .select     = wav_gain_select,
-                .update     = wav_gain_update,
-                .help       = "Left input gain, in 3 dB stops. Changes apply live.",
-                .help2      = "Mute silences the take. Keep peaks below about -6 dBFS.",
-            },
-            {
-                .name       = "Right channel",
-                .priv       = &wav_gain_rmode,
-                .max        = 5,
-                .select     = wav_gain_rmode_select,
-                .update     = wav_gain_update,
-                .choices    = CHOICES("Same as left", "Own level", "Safety -6 dB", "Safety -12 dB", "Safety -18 dB", "Safety -24 dB"),
-                .help       = "Safety: R records the same source N dB lower - a backup for",
-                .help2      = "clipped peaks (merge in post: 6D2/tools/wav_dualgain.py).",
-            },
-            {
-                .name       = "Right gain",
-                .priv       = &wav_gain_r,
-                .max        = WAV_GAIN_STOPS - 1,
-                .choices    = WAV_GAIN_CHOICES,
-                .select     = wav_gain_select,
-                .update     = wav_gain_update,
-                .help       = "Right input gain, used when Right channel = Own level.",
-            },
-            #endif
-            MENU_EOL,
-        },
-    },
-    {
-        .name       = "Record WAV now",
-        .select     = wav_scratch_now,
-        .update     = wav_scratch_now_update,
-        .icon_type  = IT_ACTION,
-        .help       = "Start/stop Canon's WAV recorder by hand, right now.",
-        .help2      = "Writes SampleN.wav to the card root. Independent of RAW.",
-    },
-    #endif
+    /* RAW video first: mlv_lite's entry fills this slot when the module loads
+     * (the same placeholder mechanism upstream uses for Dual ISO, Silent
+     * Picture and Cropmarks).  Hidden if no raw recorder is loaded. */
+    MENU_PLACEHOLDER("RAW video"),
     #ifdef FEATURE_MOVIE_RECORDING_50D
     {
         .name       = "Movie Record",
@@ -1661,7 +1599,7 @@ static struct menu_entry mov_menus[] = {
         .max = 180,
         .help = "Change 29:59 movie recording limit",
         .help2 = "Too long recording makes empty files on ExFAT, ok on FAT32",
-    }
+    },
     #endif
     #ifdef FEATURE_GRADUAL_EXPOSURE
     {
@@ -1683,6 +1621,85 @@ static struct menu_entry mov_menus[] = {
                 .help = "How fast the exposure transitions should be.",
             },
             MENU_EOL
+        },
+    },
+    #endif
+    #ifdef FEATURE_WAV_AUDIO
+    /* All audio in one submenu, at the end of the Movie tab. */
+    {
+        .name       = "Scratch audio",
+        .select     = menu_open_submenu,
+        .update     = wav_scratch_main_update,
+        .help       = "Record audio to a WAV via Canon's own recorder. ~0.19 MB/s.",
+        .help2      = "Auto follows RAW recording and names the WAV after the clip.",
+        .submenu_width = 700,
+        .children =  (struct menu_entry[]) {
+            {
+                .name       = "Mode",
+                .priv       = &wav_scratch_audio,
+                .max        = 2,
+                .choices    = CHOICES("OFF", "Manual", "Auto with RAW"),
+                .help       = "Auto: starts and stops with RAW recording, WAV named after the clip.",
+                .help2      = "Manual: use Record WAV now. Files go to DCIM/AUDIO.",
+            },
+            {
+                .name       = "Record WAV now",
+                .select     = wav_scratch_now,
+                .update     = wav_scratch_now_update,
+                .icon_type  = IT_ACTION,
+                .help       = "Start/stop Canon's WAV recorder by hand, right now.",
+                .help2      = "Filed as DCIM/AUDIO/W<day>-<hhmm>.WAV. Independent of RAW.",
+            },
+            {
+                .name       = "Input",
+                .priv       = &wav_input,
+                .max        = 2,
+                .update     = wav_input_update,
+                .choices    = CHOICES("Auto (jack)", "Internal mic", "External mic"),
+                .help       = "Mic for the WAV. Canon's recorder ignores the jack by itself,",
+                .help2      = "so Auto checks it at each start. Both channels share one source.",
+            },
+            #ifdef SOUNDDEV_SET_VOLUME_IN
+            {
+                .name       = "Gain",
+                .priv       = &wav_gain_mode,
+                .max        = 1,
+                .select     = wav_gain_mode_select,
+                .choices    = CHOICES("Factory default", "Manual"),
+                .help       = "Factory default is quiet (peaks ~ -41 dBFS measured).",
+                .help2      = "Manual sets the audio IC level per channel. RAM only.",
+            },
+            {
+                .name       = "Left gain",
+                .priv       = &wav_gain_l,
+                .max        = WAV_GAIN_STOPS - 1,
+                .choices    = WAV_GAIN_CHOICES,
+                .select     = wav_gain_select,
+                .update     = wav_gain_update,
+                .help       = "Left input gain, in 3 dB stops. Changes apply live.",
+                .help2      = "Mute silences the take. Keep peaks below about -6 dBFS.",
+            },
+            {
+                .name       = "Right channel",
+                .priv       = &wav_gain_rmode,
+                .max        = 5,
+                .select     = wav_gain_rmode_select,
+                .update     = wav_gain_update,
+                .choices    = CHOICES("Same as left", "Own level", "Safety -6 dB", "Safety -12 dB", "Safety -18 dB", "Safety -24 dB"),
+                .help       = "Safety: R records the same source N dB lower - a backup for",
+                .help2      = "clipped peaks (merge in post: 6D2/tools/wav_dualgain.py).",
+            },
+            {
+                .name       = "Right gain",
+                .priv       = &wav_gain_r,
+                .max        = WAV_GAIN_STOPS - 1,
+                .choices    = WAV_GAIN_CHOICES,
+                .select     = wav_gain_select,
+                .update     = wav_gain_update,
+                .help       = "Right input gain, used when Right channel = Own level.",
+            },
+            #endif
+            MENU_EOL,
         },
     },
     #endif

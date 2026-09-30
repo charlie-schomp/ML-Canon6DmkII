@@ -2,7 +2,7 @@
 
 Raw video, focus peaking and the rest of the monitoring overlays, working on a DIGIC 7 body.
 
-    Build:     v74, 2026-09-30
+    Build:     v75, 2026-09-30
     Base:      magiclantern_simplified @ 40c0a133b
     Platforms: 6D2.111 (primary, tested on hardware over four weeks)
                6D2.120 (parallel build, boot-tested in qemu only)
@@ -395,6 +395,38 @@ Nothing in ML's key chain consumes the main dial or unknown keys outside the ML 
 magic zoom, module handlers incl. mlv_lite, flexinfo, held-button tracker), and ML cannot write
 `PROP_ISO` anyway. To settle it from the camera, `gui.c` now keeps the last 128 button events with
 ML's verdict and the ISO at the time; d7probe dumps them (`[keys]`).
+
+---
+
+## v75 - wider 1080p and the Movie tab order, back
+
+v74 field notes: most things work. With the lens on AF (any AF method, not only Face AF) Canon
+will not give crop mode its 5x, which is fine, but switching to MF then needed a crop mode toggle.
+v74 session data: no asserts or crashes; `M30-1403` survived later takes and no stub WAV was filed
+(the data-loss fix and the discard doing their jobs); four WAVs +0.69..1.27 s over their clips,
+including a 57.8 MB/s crop take, so M30-1242's shortfall has not come back. The 5x probe shows
+Canon's HD YUV buffer is not reported here (`hd 0x1`), so it cannot be used to size a crop-mode
+guide. It also recorded the lens-AF case as designed: Canon moved the zoom property to 5x without
+changing the readout, the switch called that a refusal and put the property back.
+
+- **Shelved item 3, 2048-wide 1080p** (from v64 `d6f4f60`). `skip_left` 44 / `skip_right` 4 in
+  the binned readout, which is 2080 active columns (max width 2072). The preview rect stays on the
+  old 100-column reference, so peaking and overlays do not move. A 2048 preset (inserted, so a
+  saved crop-mode pick above 1920 moves one step), a `1.90:1 (DCI)` aspect (appended, so saved
+  indices are unchanged), and a 1080p cap of 2048. The resolution menu no longer discards a
+  crop-mode pick when it is opened in 1080p; a too-wide preset records at the readout's maximum.
+- **Shelved item 5, the Movie tab.** `MENU_PLACEHOLDER("RAW video")` is the first entry (upstream's
+  mechanism for Dual ISO, Silent Picture and Cropmarks; mlv_lite only edits its top-level entry
+  before `menu_add`, so the placeholder copy is complete). All audio sits in one "Scratch audio"
+  container at the end of the same array: Mode, Record WAV now, Input, Gain, Left/Right. There is
+  no second array and no extra init hook. The container's status comes from an `.update` on an
+  entry with no `.priv`/`.choices`, so nothing fights it for the value cell.
+- **Crop mode re-arms** on the lens AF/MF switch (`af_mode`, if this body reports it) and on
+  closing the ML menu. The depth bounce re-arms on the switch too. d7probe logs `af_mode` to
+  settle whether the switch is reported.
+
+Items 3 and 5 went in together because the user asked for both. The test gates on the menu first:
+menu/INFO/Canon-screen trouble points at item 5, and guides or peaking moving points at item 3.
 
 ---
 

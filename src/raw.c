@@ -1420,8 +1420,16 @@ int raw_update_params_work()
         // darktable source says:
         // Vertical x="2" width="116"
         // Horizontal y="8" height="32"
+        // Those are full-resolution CR2 columns.  The 1080p LiveView raw is
+        // the 6384-column readout binned 3x across (2128 = 6384 / 3), so its
+        // optical black is only ~118/3 = 40 columns; skip_left 100 threw
+        // away ~60 columns of image.  44 keeps a 4-column margin past the OB
+        // edge, 4 on the right for the last partial bin: 2080 active, DCI 2K
+        // fits (v64 M25-0906: 2048x1108, clean to all four edges).  The 1:1
+        // zoom window has no OB at the left and keeps its validated geometry.
         skip_top    = 16;
-        skip_left   = 100;
+        skip_left   = zoom ? 100 : 44;
+        skip_right  = zoom ? 0 : 4;
         #endif
 
         #if defined(CONFIG_70D)
@@ -1958,6 +1966,20 @@ raw_set_geometry(int width, int height, int skip_left, int skip_right, int skip_
     int preview_skip_top = skip_top + 8;
     int preview_width = raw_info.jpeg.width - 28;
     int preview_height = raw_info.jpeg.height - 16;
+
+#ifdef CONFIG_6D2
+    /* The raw->screen mapping (peaking, raw overlays, the recorded-area
+     * guide) was aligned on hardware against the old 1080p geometry (skip
+     * 100 / 0).  Widening what can be recorded must not move it: keep the
+     * preview rect on that reference.  A recording wider than Canon's
+     * preview maps past the screen edge and the guide clamps to it, which is
+     * the truth - the clip holds more than the LiveView shows. */
+    if (lv && lv_dispsize == 1 && width == 2128)
+    {
+        preview_skip_left = 100 + 14;
+        preview_width = (width - 100) - 28;
+    }
+#endif
 
 #ifdef CONFIG_RAW_LIVEVIEW
     if (lv_dispsize > 1)

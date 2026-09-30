@@ -255,8 +255,9 @@ static void d7probe_dump(void)
         extern int job_state_ready_to_take_pic(void);
         my_fprintf(f, "\n[gui] gui_state=%d (GUISTATE_IDLE=0) gui_mode=%d halfshutter=%d dofpreview=%d\n",
                    gui_state, (int)MEM(0x6760), (int)MEM(0x53f8), dofpreview);
-        my_fprintf(f, "[gui] lv=%d lv_dispsize=%d display_idle=%d ready_to_take_pic=%d\n",
-                   lv, lv_dispsize, liveview_display_idle(), job_state_ready_to_take_pic());
+        extern int af_mode;
+        my_fprintf(f, "[gui] lv=%d lv_dispsize=%d display_idle=%d ready_to_take_pic=%d af_mode=%d\n",
+                   lv, lv_dispsize, liveview_display_idle(), job_state_ready_to_take_pic(), af_mode);
     }
     {
         int want = 0, got = 0, zoom = 0;
