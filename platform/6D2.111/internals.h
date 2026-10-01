@@ -54,10 +54,6 @@
 // 0xe014xxxx, SD clock hooks in 0xe029xxxx, ...).  See patch_mmu.c.
 #define CONFIG_MMU_EXTRA_PAGES
 
-// Crop mode 24p experiment (Movie menu): patches the zoom timing list in ROM.
-// Parked in v74: four rounds, all measured 29.97 (last: v73 clips M30-1242/1243),
-// and it ran its own zoom-bounce task outside the bounce/crop-hold coordination.
-//#define CONFIG_CROP24_EXPERIMENT
 
 // Vari-angle screen: when it is flipped to face forward, Canon mirrors the
 // LiveView image horizontally but leaves the UI layer alone - and ML's overlay

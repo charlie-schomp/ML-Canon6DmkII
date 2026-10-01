@@ -720,15 +720,6 @@ static int raw_lv_buffer_size = 0;
 static int lv_bpp_6d2 = 14;         /* depth in effect on the DMAC (see raw_lv_get_resolution) */
 static int lv_bpp_patched = 0;      /* depth the ROM constants are patched to, 0 = stock (14) */
 
-/* Set while the zoom bounce below is running.  mlv_lite's crop mode holds
- * Canon's 5x zoom by re-requesting it whenever it sees 1x, so without this
- * the two fight over PROP_LV_DISPSIZE: the bounce drops to 1x, the crop hold
- * immediately asks for 5x again, and the bounce never sees the zoom it asked
- * for.  Canon's LV job manager does not survive that for long either
- * (ASSERT g_LvJob[..].fEnableInstance, LvJob.c:203, killing the Evf task). */
-static volatile int lv_bpp_bouncing = 0;
-int raw_lv_bpp_bouncing(void) { return lv_bpp_bouncing; }
-
 /* Put the display back together after a zoom bounce.
  *
  * On DIGIC 6/7/8 (FEATURE_VRAM_RGBA) ML does not draw into Canon's bitmap: it
@@ -963,8 +954,9 @@ int raw_lv_apply_bpp(void)
         return lv_bpp_result = 1;
     }
 
+    /* mlv_lite's crop hold also drives PROP_LV_DISPSIZE; it runs in the same
+     * polling task, before this, so the two can never interleave */
     int result = -1;
-    lv_bpp_bouncing = 1;
     for (int i = 0; i < 8; i++) lv_bounce_trace[i] = 0;
 
     int out = lv_zoom_request(z == 1 ? 5 : 1, 1, &lv_bounce_trace[0]);
@@ -988,15 +980,12 @@ int raw_lv_apply_bpp(void)
         goto done;
     }
 
-    for (int i = 0; i < 16 && lv; i++)
+    /* arrival was judged from the same DMAC pitch that carries the depth,
+     * so one read is the answer: Canon either built the path at the armed
+     * depth or it did not */
     {
         int d = 0;
-        if (lv_dmac_geometry(&d) && d == target)
-        {
-            result = 1;
-            break;
-        }
-        wait_lv_frames(1);
+        if (lv_dmac_geometry(&d) && d == target) result = 1;
     }
 
 done:
@@ -1004,7 +993,6 @@ done:
     lv_bpp_zoom = lv_dispsize;
     lv_bpp_result = result;
     if (lv_dmac_geometry(&cur)) lv_bpp_6d2 = cur;
-    lv_bpp_bouncing = 0;
     printf("LV bpp %d: result %d, DMAC %d (want %d), zoom %d->%d\n",
            target, result, lv_bpp_got, lv_bpp_want, z, lv_dispsize);
 
@@ -1022,7 +1010,6 @@ int raw_lv_get_bpp(void)
     return lv_bpp_6d2;
 }
 #else
-int raw_lv_bpp_bouncing(void) { return 0; }
 int raw_lv_bpp_status(int * want, int * got, int * zoom) { return 0; }
 int raw_lv_path_settled(void) { return 1; }
 int raw_lv_apply_bpp(void) { return 0; }

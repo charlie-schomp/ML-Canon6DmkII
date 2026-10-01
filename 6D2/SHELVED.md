@@ -1,6 +1,7 @@
 # Shelved in the v67 revert — queue for re-introduction
 
 **Status: items 1 and 2 back in v71, items 3 and 5 in v75. Only item 4 (the level meter) remains.**
+(v76: the resolution list now keeps one pick per readout - see DEVLOG.)
 
 Everything here worked on the bench and some of it worked on the camera; it was removed because
 it shipped alongside the overlay regression and I could not tell which part was at fault. The

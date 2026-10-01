@@ -32,5 +32,3 @@ int get_fps_register_b(void)
     return _get_fps_register_b();
 }
 
-/* Crop mode 24p lives in the 1.1.1 platform file (needs 1.1.1 RAM addresses) */
-int fps_crop24_active(void) { return 0; }

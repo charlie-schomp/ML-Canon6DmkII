@@ -144,6 +144,9 @@ static int is_card_spanning_possible = 0;
 static CONFIG_INT("raw.card_spanning", card_spanning, 0);
 
 static CONFIG_INT("raw.res_x", resolution_index_x, 4);
+/* 6D2: the 1:1 (5x/10x, crop mode) readout keeps its own pick - its list goes
+ * up to 3072, the binned 1080p one stops at 2048 (see res_index()) */
+static CONFIG_INT("raw.res_x.crop", resolution_index_crop, 4);
 static CONFIG_INT("raw.res_x_fine", res_x_fine, 0);
 static CONFIG_INT("raw.aspect.ratio", aspect_ratio_index, 10);
 /* When the chosen aspect needs more rows than the sensor readout has at the
@@ -152,6 +155,18 @@ static CONFIG_INT("raw.aspect.ratio", aspect_ratio_index, 10);
  * help text admits it. 1 = shrink the width instead so the ratio is honoured
  * and the recorded-area guide tells the truth. */
 static CONFIG_INT("raw.aspect.fit", aspect_fit_width, 1);
+
+static int default_lv_raw_width(void);  /* below */
+
+/* Which resolution pick is in effect.  6D2: the binned 1080p readout and the
+ * 1:1 zoom readout offer different widths, so each keeps its own - otherwise
+ * one readout's choice lands outside the other's list (v75: presets that were
+ * hidden but still selectable, with no cursor).  Other bodies: the one pick. */
+static int * res_index(void)
+{
+    return (is_camera("6D2", "*") && raw_info.width > default_lv_raw_width())
+        ? &resolution_index_crop : &resolution_index_x;
+}
 /* 6D2 crop mode.  There are no readout-window registers we can drive on this
  * body, but Canon's 5x/10x LiveView magnification IS a 1:1 sensor window
  * (3264x942 raw, 3164x926 active, measured), and mlv_lite records from it
@@ -784,7 +799,7 @@ void update_resolution_params()
     squeeze_factor = sampling_y * 1.0 / sampling_x;
 
     /* res X */
-    res_x = MIN(resolution_presets_x[resolution_index_x] + res_x_fine, max_res_x);
+    res_x = MIN(resolution_presets_x[*res_index()] + res_x_fine, max_res_x);
     if (is_camera("7D2", "1.1.2"))
     {
         // We don't know how to do EDMAC rect copies yet on this cam.
@@ -1229,9 +1244,9 @@ static MENU_UPDATE_FUNC(resolution_update)
     {
         /* 6D2: offer only presets the current readout can deliver - up to
          * 2048 in the 2080-wide 1080p modes, wider in the 3164-wide 5x/10x
-         * zoom.  The saved pick is NOT clamped: opening this menu in 1080p
-         * used to throw away a crop-mode choice (2240+).  A preset wider than
-         * the readout records at its maximum (update_resolution_params). */
+         * zoom - and show/edit that readout's own pick, which was only ever
+         * set within this same range. */
+        res_menu_entry->priv = res_index();
         int mx = 0;
         while (mx + 1 < (int)COUNT(resolution_presets_x) && resolution_presets_x[mx + 1] <= max_res_x) mx++;
         mx = MAX(mx, 5);
@@ -1248,7 +1263,7 @@ static MENU_UPDATE_FUNC(resolution_update)
     int crop_factor = calc_crop_factor();
     if (crop_factor) MENU_SET_RINFO("%s%d.%02dx", FMT_FIXEDPOINT2( crop_factor ));
 
-    int selected_x = resolution_presets_x[resolution_index_x] + res_x_fine;
+    int selected_x = resolution_presets_x[*res_index()] + res_x_fine;
     if (aspect_fit_width && res_x < selected_x && res_x < max_res_x)
     {
         MENU_SET_WARNING(MENU_WARN_INFO, "Width reduced from %d to keep %s (max %d rows).",
@@ -1291,15 +1306,20 @@ static MENU_SELECT_FUNC(resolution_change_fine_value)
         return;
     }
     
+    int * idx = res_index();
+
     if (get_menu_edit_mode()) {
-        /* pickbox: select a preset */
-        resolution_index_x = COERCE(resolution_index_x + delta, 0, COUNT(resolution_presets_x) - 1);
+        /* pickbox: select a preset - within the menu's range, which on the
+         * 6D2 is capped to what the current readout delivers (res_menu_entry,
+         * set by resolution_update); elsewhere every preset is offered */
+        int top = res_menu_entry ? res_menu_entry->max : (int)COUNT(resolution_presets_x) - 1;
+        *idx = COERCE(*idx + delta, 0, top);
         res_x_fine = 0;
         return;
     }
     
     /* fine-tune resolution in small increments */
-    int cur_res = ((resolution_presets_x[resolution_index_x] + res_x_fine) + 15) & ~15;
+    int cur_res = ((resolution_presets_x[*idx] + res_x_fine) + 15) & ~15;
     cur_res = COERCE(cur_res + delta * 16, resolution_presets_x[0], max_res_x); 
 
     /* select the closest preset */
@@ -1310,11 +1330,11 @@ static MENU_SELECT_FUNC(resolution_change_fine_value)
         int delta = MAX(cur_res * 1024 / preset_res, preset_res * 1024 / cur_res);
         if (delta < max_delta)
         {
-            resolution_index_x = i;
+            *idx = i;
             max_delta = delta;
         }
     }
-    res_x_fine = cur_res - resolution_presets_x[resolution_index_x];
+    res_x_fine = cur_res - resolution_presets_x[*idx];
 }
 
 static MENU_UPDATE_FUNC(aspect_ratio_update)
@@ -3845,20 +3865,12 @@ void raw_video_rec_task(uint32_t card_index)
             msleep(100);
         }
 
-        /* detect raw parameters (geometry, black level etc)
-         *
-         * This can fail transiently right after the post-take reallocation or
-         * a display-mode change, while Canon is still re-establishing the LV
-         * raw stream. One attempt was turning those moments into aborted
-         * takes ("Raw detect error"). Try a few times, a frame apart, before
-         * concluding it is really unavailable. */
-        int raw_ok = 0;
-        for (int attempt = 0; attempt < 5 && !raw_ok; attempt++)
-        {
-            if (attempt) msleep(100);
-            raw_set_dirty();
-            raw_ok = raw_update_params_any_bpp();
-        }
+        /* detect raw parameters (geometry, black level etc) - any bit depth,
+         * since the 6D2 holds 12/10-bit between clips.  raw_update_params
+         * retries across frames by itself; the take-start race it used to
+         * lose is the buffer reallocation, waited out just above. */
+        raw_set_dirty();
+        int raw_ok = raw_update_params_any_bpp();
         if (!raw_ok)
         {
             NotifyBox(5000, "Raw detect error");
@@ -5156,7 +5168,14 @@ static unsigned int raw_rec_init()
          * (2240 / 2560 / 3072) to 1920 on every boot. */
         res_menu_entry = raw_video_submenu_entry(&resolution_index_x);
         if (res_menu_entry) res_menu_entry->max = 5;
-        resolution_index_x = COERCE(resolution_index_x, 0, (int)COUNT(resolution_presets_x) - 1);
+        /* v75 kept one pick for both readouts; a crop-mode width saved then
+         * belongs to the crop pick now (5 = 2048, the widest 1080p preset) */
+        if (resolution_index_x > 5)
+        {
+            resolution_index_crop = resolution_index_x;
+            resolution_index_x = 5;
+        }
+        resolution_index_crop = COERCE(resolution_index_crop, 0, (int)COUNT(resolution_presets_x) - 1);
 
         /* 14/12/10-bit uncompressed: raw.c switches the depth through Canon's
          * own raw-tap driver (CONFIG_LV_BPP_MEM1_PATCH); lossless stays hidden */
@@ -5221,6 +5240,7 @@ MODULE_CBRS_END()
 MODULE_CONFIGS_START()
     MODULE_CONFIG(raw_video_enabled)
     MODULE_CONFIG(resolution_index_x)
+    MODULE_CONFIG(resolution_index_crop)
     MODULE_CONFIG(res_x_fine)
     MODULE_CONFIG(aspect_ratio_index)
     MODULE_CONFIG(crop_zoom)

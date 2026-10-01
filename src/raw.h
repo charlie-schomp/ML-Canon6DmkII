@@ -95,10 +95,6 @@ int raw_update_params();
 /* like raw_update_params(), but also valid below 14-bit (for raw recorders) */
 int raw_update_params_any_bpp();
 
-/* 6D2: true while raw.c is bouncing the LiveView zoom to change bit depth -
- * nothing else may touch PROP_LV_DISPSIZE until it clears */
-int raw_lv_bpp_bouncing(void);
-
 /* 6D2: what the last bit-depth switch asked of the write DMAC (bytes per line)
  * and what it saw; returns raw_lv_apply_bpp()'s last result (0 = never ran) */
 int raw_lv_bpp_status(int * want, int * got, int * zoom);

@@ -1236,12 +1236,7 @@ void wav_scratch_start(void)
     if (wav_gain_mode)
     {
         uint8_t * st = wav_sounddev_state();
-        for (int i = 0; i < 20 && st && !*(uint32_t *)(st + 0x44); i++) msleep(10);
-        wav_apply_gain();
-        /* Canon re-applies its own (left-only) level while the recorder
-         * settles, so put ours back once more.  Two writes, rather than a
-         * watchdog task polling for ever. */
-        msleep(200);
+        for (int i = 0; i < 20 && st && !*(volatile uint32_t *)(st + 0x44); i++) msleep(10);
         wav_apply_gain();
     }
 #endif

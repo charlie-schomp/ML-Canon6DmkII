@@ -984,9 +984,9 @@ int fps_get_current_x1000()
             zoom_readout = (raw_info.width == 3264);
         if (zoom_readout)
         {
-            /* Crop mode 24p experiments do not (yet) change the real rate -
-             * measured 29.97 with every register variant - so report what
-             * the sensor does; a wrong header only breaks playback speed */
+            /* the 1:1 readout is sensor-fixed at 29.97 (25 in PAL) - four
+             * rounds of 24p experiments measured nothing else - so report
+             * what the sensor does; a wrong header breaks playback speed */
             return video_system_pal ? 25000 : 29970;
         }
         if (nominal_x1000 > 0)

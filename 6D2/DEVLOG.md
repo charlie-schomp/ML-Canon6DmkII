@@ -2,7 +2,7 @@
 
 Raw video, focus peaking and the rest of the monitoring overlays, working on a DIGIC 7 body.
 
-    Build:     v75, 2026-09-30
+    Build:     v76, 2026-10-01
     Base:      magiclantern_simplified @ 40c0a133b
     Platforms: 6D2.111 (primary, tested on hardware over four weeks)
                6D2.120 (parallel build, boot-tested in qemu only)
@@ -395,6 +395,53 @@ Nothing in ML's key chain consumes the main dial or unknown keys outside the ML 
 magic zoom, module handlers incl. mlv_lite, flexinfo, held-button tracker), and ML cannot write
 `PROP_ISO` anyway. To settle it from the camera, `gui.c` now keeps the last 128 button events with
 ML's verdict and the ISO at the time; d7probe dumps them (`[keys]`).
+
+---
+
+## v76 - the resolution list, an audit, and a fast-card test suite
+
+v75 field test: everything behaved as an ML user would expect except one thing. In 1x, the
+Resolution list could be scrolled past 2048 into the crop-only presets, with no cursor visible
+until you scrolled back up.
+
+- **Cause.** The pick-list select used `COERCE(idx + delta, 0, COUNT - 1)`. That is right upstream,
+  where every preset is shown; the 6D2 cap lives in the entry's `max`. v63 got away with it because
+  `resolution_update()` clamped the value back on every redraw, and v75 removed that clamp so 1080p
+  would stop discarding a crop-mode pick. **Fix:** the select honours the cap, and each readout
+  keeps its own pick (`raw.res_x` for the binned 1080p readout, `raw.res_x.crop` for the 1:1 one),
+  so neither value can sit outside its own list and nothing needs clamping. A crop width saved
+  under v75 moves to the crop pick on first boot.
+
+**Audit of timers, retries and checks.** Each one was kept only with something concrete behind it:
+
+| | kept / removed | why |
+|---|---|---|
+| raw-detect retry at take start (5 attempts, 100 ms) | **removed** | v29 belt-and-braces for a symptom that v25's buffer wait had already fixed (traced with `REC_TRACE`); it failed all five times identically on the 12/10-bit bug; `raw_update_params` retries 3x itself |
+| second gain write after `msleep(200)` | **removed** | v71 guess; the hardware-proven v65 path wrote once after waiting for the input (+0x44) |
+| `raw_lv_bpp_bouncing()` flag | **removed** | no callers since v72, when the crop hold and the bounce moved into the same task |
+| 16-frame depth loop after the zoom arrives | **removed** | arrival is judged from the DMAC pitch, which carries the depth; one read is the answer |
+| crop 24p experiment (own zoom-bounce task, 600 ms sleeps) | **removed** | compiled out since v74; four rounds measured 29.97; code is in git history |
+| buffer-realloc wait at take start | kept | the race `REC_TRACE` found (v23-v25) |
+| WAV settle loop before filing | kept | renaming a file Canon still holds asserts in FileIO.c:119 (hardware) |
+| zoom arrival wait, way back re-sent | kept | v74 probe dumps: property before readout; second request dropped |
+| bounce / crop request re-armed on menu close and lens switch | kept | v73-v75 field reports |
+| `raw_lv_path_settled()` before starting a bounce | kept | Canon drops zoom requests made mid-change (v74) |
+| `REC_TRACE` logger | kept | compiled out (`0`); it found the realloc bug |
+
+**Build integrity.** From-clean builds of both platforms and all three modules; no undefined
+module symbols against either `6D2_111.sym` or `6D2_120.sym`; QEMU boots both at the baseline
+(9 asserts, 0 aborts); staged release files identical to the build output; the repo history
+carries no camera dumps (the only ROM-like blobs are upstream's ghidra test fixtures).
+
+**Fast-card test suite.** `TEST-fastcard.md` (also published as a fillable page) walks a tester
+through the card benchmark, a 13-row data-rate ladder (55.5 to 106.6 MB/s, computed with
+mlv_lite's own `calc_res_y` and fit rules, so each row names the exact size that records),
+stability takes and scratch audio. `cardcheck.py` reads the card afterwards and reports every clip:
+block structure (truncation), missing or duplicated frames across `.MLV/.M00…` parts, real fps
+against the header, data rate, black level for the bit depth, dark edge columns on wide 1080p
+clips, and the WAV (intact, covers the clip, clipping). `test_cardcheck.py` builds a fake card
+with one example of each fault and checks every one is caught: 21/21. The 1.1.1 zip now includes
+the official `ML-SETUP.FIR`.
 
 ---
 
