@@ -32,7 +32,7 @@ What does not (yet), and why, is in [6D2/DEVLOG.md](6D2/DEVLOG.md).
 | `6D2/DEVLOG.md` | technical write-up: findings, ROM addresses, change history, roadmap |
 | `6D2/builds/` | ready-to-copy zips for 1.1.1 and 1.2.0 (`autoexec.bin` + `ML/`, checksums) |
 | `6D2/TEST-v76.md` | short re-test |
-| `6D2/TEST-fastcard.md` | full procedure for testing a fast SD card |
+| `6D2/TEST-fastcard.md` / `.pdf` | full procedure for testing a fast SD card (the PDF is a fillable form; `tools/make_fastcard_pdf.py` regenerates it) |
 | `6D2/SHELVED.md` | what the v67 revert removed, and the order to bring it back |
 | `6D2/tools/` | `cardcheck.py` (post-session card report; `test_cardcheck.py` is its self-test), `fix_mlv_black.py` (repairs pre-v62 black levels), `wav_dualgain.py` (safety-track WAV -> 32-bit float), `rawframe.py` (reads d7probe raw dumps), `disoscan.py` (dual ISO line pattern, any bit depth), `mlvwalk.py`, `blackcheck.py` |
 | `platform/6D2.111`, `platform/6D2.120` | camera ports |
