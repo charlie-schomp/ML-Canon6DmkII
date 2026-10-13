@@ -399,8 +399,95 @@ static MENU_UPDATE_FUNC(sd_exp_update)
     MENU_SET_WARNING(MENU_WARN_ADVICE, "WRITES the SD clock. Spare card, nothing on it you need.");
 }
 
+/* ---- State logger (read-only) ---------------------------------------------
+ *
+ * Every condition liveview_display_idle() checks, sampled every 20 ms; a row is
+ * kept whenever any of them changes.  Written to ML/LOGS/STATELOG.TXT when the
+ * logger is switched off.  Built to find which gate stays shut after a photo in
+ * LiveView (peaking left frozen until the ML menu is opened and closed) - the
+ * menu itself resets Canon's GUI state, so a probe dump taken from the menu
+ * cannot see it.  Off by default; nothing is stored in a file while it runs. */
+#define SL_ROWS 512
+#define SL_COLS 11
+static int statelog_on = 0;
+static int sl_n = 0, sl_lost = 0;
+static int sl_rows[SL_ROWS][SL_COLS];
+
+static void statelog_sample(int * v)
+{
+    extern int gui_state, lv_paused, mirror_down;
+    extern int liveview_display_idle(void);
+    extern int job_state_ready_to_take_pic(void);
+    extern int gui_menu_shown(void);
+    v[0] = get_ms_clock();
+    v[1] = gui_state;           v[2] = (int)MEM(0x6760);   /* CURRENT_GUI_MODE */
+    v[3] = lv;                  v[4] = lv_paused;
+    v[5] = display_is_on();     v[6] = job_state_ready_to_take_pic();
+    v[7] = mirror_down;         v[8] = gui_menu_shown();
+    v[9] = (int)MEM(0x53f8);    /* half-shutter */
+    v[10] = liveview_display_idle();
+}
+
+static void statelog_write(void)
+{
+    FILE * f = FIO_CreateFile("ML/LOGS/STATELOG.TXT");
+    if (!f) return;
+    my_fprintf(f, "d7probe state log: %d rows%s\n", sl_n, sl_lost ? " (buffer full, later changes lost)" : "");
+    my_fprintf(f, "    ms  gui_state gui_mode lv lv_paused display_on ready_to_shoot mirror_down ml_menu halfshutter => display_idle\n");
+    for (int i = 0; i < sl_n; i++)
+    {
+        int * v = sl_rows[i];
+        my_fprintf(f, "%6d  %9d %8d %2d %9d %10d %14d %11d %7d %11d => %d\n",
+                   v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10]);
+    }
+    FIO_CloseFile(f);
+}
+
+static void statelog_task(void * unused)
+{
+    int prev[SL_COLS] = {0};
+    sl_n = 0; sl_lost = 0;
+    while (statelog_on)
+    {
+        int v[SL_COLS];
+        statelog_sample(v);
+        int changed = (sl_n == 0);
+        for (int k = 1; k < SL_COLS && !changed; k++)
+            if (v[k] != prev[k]) changed = 1;
+        if (changed)
+        {
+            if (sl_n < SL_ROWS) { memcpy(sl_rows[sl_n++], v, sizeof(v)); }
+            else sl_lost = 1;
+            memcpy(prev, v, sizeof(v));
+        }
+        msleep(20);
+    }
+    statelog_write();
+    NotifyBox(3000, "STATELOG.TXT written (%d rows)", sl_n);
+}
+
+static MENU_SELECT_FUNC(statelog_select)
+{
+    statelog_on = !statelog_on;
+    if (statelog_on)
+        task_create("d7state", 0x1e, 0x1000, statelog_task, 0);
+}
+
+static MENU_UPDATE_FUNC(statelog_update)
+{
+    MENU_SET_VALUE(statelog_on ? "ON (%d rows)" : "OFF", sl_n);
+    MENU_SET_HELP(statelog_on ? "Recording. Switch OFF to write ML/LOGS/STATELOG.TXT."
+                              : "ON, close menu, take a photo in LiveView, wait 10 s, reopen, OFF.");
+}
+
 static struct menu_entry d7probe_menu[] =
 {
+    {
+        .name   = "State logger",
+        .select = statelog_select,
+        .update = statelog_update,
+        .help2  = "Logs what keeps ML's overlays off (read-only; written when switched off).",
+    },
     {
         .name = "SD clock experiment",
         .select = menu_open_submenu,
