@@ -1,4 +1,6 @@
-"""Render TEST-fastcard as a fillable PDF form (checkboxes + text fields). python make_fastcard_pdf.py"""
+"""Render 6D2/testing/fast-card-test.md as a fillable PDF form (checkboxes + text fields).
+Usage: python make_fastcard_pdf.py   (writes ../../testing/fast-card-test.pdf; needs reportlab and Windows fonts)"""
+import os
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from reportlab.platypus import Paragraph
@@ -101,7 +103,7 @@ class Sheet:
         self.y -= 36
 
 
-s = Sheet("TEST-fastcard.pdf")
+s = Sheet(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "testing", "fast-card-test.pdf"))
 c = s.c
 
 # ---------------------------------------------------------------- header
@@ -121,7 +123,7 @@ s.check("A 6D Mark II on firmware 1.1.1, and the fast card (details below).", "n
 s.check("A lens with an <b>AF/MF switch</b>, set to <b>MF</b>. With the lens on AF, Canon refuses the 5x zoom "
         "that the bit-depth switch and crop mode use.", "need")
 s.check("About <b>70 GB free</b> for the ladder. The stability takes come after a fresh format.", "need")
-s.check("A computer with Python 3, for " + code("cardcheck.py") + " (it's in the package).", "need")
+s.check("A computer with Python 3, for " + code("cardcheck.py") + " (in the zip, under extras/tools).", "need")
 s.labelled_fields([("Card brand and model", 210), ("Size (GB)", 70), ("Speed class", 90), ("Camera serial (optional)", 104)])
 
 s.section("01", "Install")

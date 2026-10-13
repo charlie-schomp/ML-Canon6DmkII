@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Self-test for cardcheck.py: builds a fake card with one example of every problem the
 checker is meant to catch, runs it, and asserts each one is reported (and nothing on the
-good clips).  Usage: python test_cardcheck.py   (needs cardcheck.py beside it)"""
+good clips).  Usage: python test_cardcheck.py   (finds cardcheck.py one folder up)"""
 import os, struct, subprocess, sys, tempfile, shutil
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -131,7 +131,7 @@ def main():
     tmp = tempfile.mkdtemp(prefix='cardcheck-test-')
     try:
         card = os.path.join(tmp, 'card'); build(card)
-        r = subprocess.run([sys.executable, os.path.join(HERE, 'cardcheck.py'), card], cwd=tmp,
+        r = subprocess.run([sys.executable, os.path.join(HERE, '..', 'cardcheck.py'), card], cwd=tmp,
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
         out = r.stdout
         print(out)

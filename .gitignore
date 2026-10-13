@@ -78,5 +78,5 @@ developer_guide/developer_guide.pdf
 
 syntax: regexp
 
-# 6D2 release builds are part of this repo
-!6D2/builds/*.zip
+# 6D2 install zips are part of this repo
+!6D2/download/*.zip

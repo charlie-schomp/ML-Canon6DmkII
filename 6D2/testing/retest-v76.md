@@ -21,5 +21,5 @@ Lens on MF.
 - [ ] Crop mode clip, ~5 s.
 
 ## Send me
-Anything that failed, and any `CRASH*/ASSERT*.LOG`. Or run `python cardcheck.py <card>` and send
+Anything that failed, and any `CRASH*/ASSERT*.LOG`. Or run `python cardcheck.py <card>` (in `6D2/tools`, or `extras/tools` in the zip) and send
 the report.

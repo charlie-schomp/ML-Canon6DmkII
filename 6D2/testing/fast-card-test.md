@@ -12,7 +12,7 @@ hour. Nothing here touches Canon settings or factory data.
 - A lens with an **AF/MF switch**. The bit-depth switch and crop mode need the lens on **MF**:
   with the lens on AF, Canon refuses the 5x zoom they use.
 - About 70 GB free for the ladder. The stability takes come after a fresh format.
-- A computer with Python 3, for `cardcheck.py` (it's in the package).
+- A computer with Python 3, for `cardcheck.py` (in the zip, under `extras/tools`).
 
 ## 0. Install
 - **ML already installed on this camera:** copy `autoexec.bin` and the `ML/` folder from the zip
@@ -87,7 +87,7 @@ clapping once near the start and once near the end. A `.WAV` named after the cli
 `DCIM/AUDIO`, and nothing new in the card root.
 
 ## 6. Run the checker
-Card in the computer, then:
+Card in the computer; in a terminal, go to the zip's `extras/tools` folder and run:
 
 ```
 python cardcheck.py E:\

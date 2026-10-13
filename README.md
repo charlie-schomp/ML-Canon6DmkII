@@ -1,59 +1,104 @@
-# ML-Canon6DmkII
+# Magic Lantern for the Canon EOS 6D Mark II
 
-Experimental Magic Lantern development tree for the **Canon EOS 6D Mark II** (DIGIC 7), firmware
-1.1.1 (tested on hardware) and 1.2.0 (built and boot-tested in QEMU only).
+Raw video, focus peaking and the full set of monitoring tools for the **Canon EOS 6D Mark II**,
+built on [Magic Lantern](https://www.magiclantern.fm/).
+
+> [!WARNING]
+> This is experimental, unofficial software that runs on your camera. It has been used on a real
+> 6D Mark II for weeks without harm, but it can crash, freeze or misbehave, and it comes with no
+> warranty. If the camera ever locks up, take the battery out.
+
+## Download
+
+| Your camera's firmware | Download | Status |
+|---|---|---|
+| **1.1.1** | [**ML-6D2-fw1.1.1-v76.zip**](6D2/download/ML-6D2-fw1.1.1-v76.zip) | Tested on a camera |
+| 1.2.0 | [ML-6D2-fw1.2.0-v76-untested.zip](6D2/download/ML-6D2-fw1.2.0-v76-untested.zip) | Never run on a camera; there is no installer for 1.2.0 |
+
+To check your firmware: Canon menu → Wrench (setup) tab → **Firmware**. If it says 1.1.1, use the
+first download.
+
+## Install
+
+You only need three things from the zip: **`autoexec.bin`**, the **`ML`** folder and
+**`ML-SETUP.FIR`**. Everything under `extras` stays on your computer.
+
+**First time on this camera**
+1. Format the card **in the camera**.
+2. Copy `autoexec.bin`, `ML` and `ML-SETUP.FIR` to the root of the card.
+3. Canon menu → Wrench tab → **Firmware** → update from the card. This only marks the card as
+   bootable; it does not change Canon's firmware.
+4. Restart the camera. The **Trash** button opens the Magic Lantern menu.
+
+**Updating from an older version:** replace `autoexec.bin` and the `ML` folder on the card (keep
+`ML/SETTINGS` if you want your settings), then restart the camera.
+
+**Then:** Magic Lantern menu → **Modules**, turn on `mlv_lite` (raw video), plus `dual_iso`,
+`mlv_play` and `silent` if you want them, and restart.
+
+## What it does
+
+The official Magic Lantern build for this camera only boots and shows the menu. This one adds:
+
+- **Raw video** (MLV files) at 14, 12 or 10 bit, in 1080p up to **2048 wide** (DCI 2K), or a
+  **1:1 crop mode** up to 3072×926.
+- **Scratch audio**: a WAV recorded alongside every raw clip and named after it, with per-channel
+  gain and a backup "safety" channel for loud sound.
+- **Focus peaking, zebras, false colour, waveform, vectorscope, histograms, magic zoom**, frame
+  guides for the area you're recording, clean HDMI out.
+- **Dual ISO** for photos, and for video in crop mode.
+
+The [user guide](6D2/docs/user-guide.md) covers where everything is in the menus, which card
+speeds you need, and shooting tips.
+
+## Good to know
+
+- **Your SD card decides the resolution.** A card that really writes ~65 MB/s records
+  1920×804 at 12-bit without stopping; a ~90 MB/s card handles full 1080p at 12-bit. The user
+  guide has the table.
+- **Use a lens with an AF/MF switch, set to MF**, for crop mode and when changing bit depth. With
+  the lens on autofocus, Canon blocks the zoom these use.
+- Raw clips play in [MLV App](https://mlv.app/). Your computer's normal video player can't open them.
+- Not possible on this camera so far: 24p in crop mode, higher frame rates, lossless compression
+  and 4K.
+
+## Problems and feedback
+
+Open an issue on this repository with what you did, what happened, and any `CRASH*.LOG` or
+`ASSERT*.LOG` files from the root of the card. `extras/tools/cardcheck.py` in the zip checks a
+card full of clips and writes a report you can attach.
+
+## What's in this repository
+
+Most of what you see at the top level is the Magic Lantern source code, which is needed to build
+the software. Everything specific to the 6D Mark II is in [`6D2/`](6D2/):
+
+| Folder | |
+|---|---|
+| [`6D2/download`](6D2/download) | the ready-to-install zips |
+| [`6D2/docs`](6D2/docs) | user guide, development log, roadmap |
+| [`6D2/tools`](6D2/tools) | scripts for checking and repairing clips |
+| [`6D2/testing`](6D2/testing) | test procedures for people helping to test |
+
+<details>
+<summary><b>For developers</b></summary>
 
 Based on [magiclantern_simplified](https://github.com/reticulatedpines/magiclantern_simplified)
-@ `40c0a133b`; the upstream history is kept, with the 6D2 work as commits on top. The upstream
-README is in [README.upstream.md](README.upstream.md).
-
-> **This is experimental software for your camera. It may crash, lock up or damage it. No
-> warranty.** Read the upstream warnings before installing.
-
-## What works
-
-- RAW video (MLV) at **14, 12 and 10 bit** - 1080p (3x3 binned, full sensor width, up to
-  2048 wide) and a held **5x crop mode** (1:1 sensor window, 3160x926)
-- **Video dual ISO** in crop mode; photo dual ISO
-- Focus peaking, zebras, false colour (YUV + raw), waveform, vectorscope, histograms, magic zoom,
-  cropmarks / framing guides, clean HDMI, shutter angle
-- **Scratch audio** to WAV via Canon's factory recorder, filed in `DCIM/AUDIO` and named after the
-  clip; input select, gain in dB stops per channel, with a safety-track mode for clip-proof takes
-  (per-channel gain verified on hardware)
-- **2048-wide 1080p** (DCI 2K: 2048x1080, 2048x856 at 2.39:1)
-
-What does not (yet), and why, is in [6D2/DEVLOG.md](6D2/DEVLOG.md).
-
-## Layout
-
-| path | |
-|---|---|
-| `6D2/README.md` | user guide: install, where things are, card-speed table |
-| `6D2/DEVLOG.md` | technical write-up: findings, ROM addresses, change history, roadmap |
-| `6D2/builds/` | ready-to-copy zips for 1.1.1 and 1.2.0 (`autoexec.bin` + `ML/`, checksums) |
-| `6D2/TEST-v76.md` | short re-test |
-| `6D2/TEST-fastcard.md` / `.pdf` | full procedure for testing a fast SD card (the PDF is a fillable form; `tools/make_fastcard_pdf.py` regenerates it) |
-| `6D2/SHELVED.md` | what the v67 revert removed, and the order to bring it back |
-| `6D2/tools/` | `cardcheck.py` (post-session card report; `test_cardcheck.py` is its self-test), `fix_mlv_black.py` (repairs pre-v62 black levels), `wav_dualgain.py` (safety-track WAV -> 32-bit float), `rawframe.py` (reads d7probe raw dumps), `disoscan.py` (dual ISO line pattern, any bit depth), `mlvwalk.py`, `blackcheck.py` |
-| `platform/6D2.111`, `platform/6D2.120` | camera ports |
-| `modules/dev_tools/d7probe` | read-only DIGIC 7 research probe |
-
-## Building
+@ `40c0a133b`, with upstream history kept and the 6D2 work as commits on top. The camera ports
+are `platform/6D2.111` and `platform/6D2.120`; `modules/dev_tools/d7probe` is a read-only DIGIC 7
+research probe. The [development log](6D2/docs/devlog.md) has the findings, ROM addresses and
+change history.
 
 ```sh
-cd platform/6D2.111 && make          # or 6D2.120
+cd platform/6D2.111 && make          # or platform/6D2.120
 cd modules/raw_video/mlv_lite && make clean && make
+python 6D2/tools/dev/package.py      # builds the zips in 6D2/download (see the script)
 ```
 
-The 1.1.1 zip in `6D2/builds/` carries the official `ML-SETUP.FIR` (the same file as
-`platform/6D2.111/ML-SETUP.FIR`). There is no 1.2.0 installer.
-
-## Testing a build
-
-`python 6D2/tools/test_cardcheck.py` runs the card checker's self-test. After a session on the
-camera, `python 6D2/tools/cardcheck.py <card>` reports every clip.
+The upstream README is in [README.upstream.md](README.upstream.md).
+</details>
 
 ## License
 
-Magic Lantern is licensed under the GNU GPL v2 (see [COPYING](COPYING)); this tree is a derivative
-of it and is distributed under the same terms.
+Magic Lantern is free software under the GNU GPL v2 (see [COPYING](COPYING)). This port is a
+derivative of it and is distributed under the same terms. It is not affiliated with Canon.
