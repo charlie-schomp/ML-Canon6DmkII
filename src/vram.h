@@ -143,10 +143,25 @@ extern struct vram_info vram_lv;
 
  // offsets on one axis, in pixels
 #define BM2LV_Xu(x) ((((x) * bm2lv.sx) >> 10) + bm2lv.tx)
+#ifdef CONFIG_MIRROR_OVERLAYS
+/* Flipped-screen support: reflect the screen y about the image centre before
+ * mapping, when asked. Plain exported ints (no struct access) so the modules
+ * that use this macro - dual_iso, silent - resolve them at load. See vram.c. */
+extern int overlay_mirror_y;
+extern int overlay_mirror_y_sum;    /* os.y0 + os.y_max - 1, kept current by vram.c */
+#define BM2LV_Y(y) ((((overlay_mirror_y ? (overlay_mirror_y_sum - (y)) : (y)) * bm2lv.sy) >> 10) + bm2lv.ty)
+#else
 #define BM2LV_Y(y) ((((y) * bm2lv.sy) >> 10) + bm2lv.ty)
+#endif
 
 extern int bm2lv_x_cache[];
 #define BM2LV_X(x) bm2lv_x_cache[(x) - BMP_W_MINUS]
+
+/* The plain screen -> LiveView mapping, never mirrored.  BM2LV_X / BM2LV_Y
+ * answer "which image pixel is under this screen pixel", which the flip-screen
+ * option reflects; geometry (where the image area starts, a row range) must
+ * use these instead, or a reflected edge turns the whole mapping inside out. */
+#define BM2LV_Yu(y) ((((y) * bm2lv.sy) >> 10) + bm2lv.ty)
 
 #define LV2BM_X(x) (((x) << 10) / bm2lv.sx - (bm2lv.tx << 10) / bm2lv.sx)
 #define LV2BM_Y(y) (((y) << 10) / bm2lv.sy - (bm2lv.ty << 10) / bm2lv.sy)
