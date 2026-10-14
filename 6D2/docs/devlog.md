@@ -398,6 +398,17 @@ ML's verdict and the ISO at the time; d7probe dumps them (`[keys]`).
 
 ---
 
+## Repository history (2026-10-14)
+
+The repository history was rebuilt as a clean sequence of feature commits on
+top of upstream `40c0a133b`, each of which builds on its own. The code is the
+v78 build that was tested, with one correction found by that per-commit
+build (`crop_guide_names` is now inside `#ifdef FEATURE_CROPMARKS`, so bodies
+without cropmarks compile). Commit hashes quoted in the entries below refer
+to the previous history and no longer exist.
+
+---
+
 ## v77 - peaking after a photo, flip-screen overlays, a frame-rate experiment
 
 - **Frozen peaking after a LiveView photo.** During quick review, `trigger_zebras_for_qr()` runs the
