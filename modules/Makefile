@@ -52,6 +52,8 @@ ML_MODULES = \
     adv_int \
     crop_rec \
     dev_tools/edmac \
+    dev_tools/adtglog2 \
+    dev_tools/d7probe \
     sd_uhs \
     raw_video/raw_vidx \
     yolo
