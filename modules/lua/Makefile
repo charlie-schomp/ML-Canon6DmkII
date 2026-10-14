@@ -33,6 +33,10 @@ MODULE_OBJS = $(BUILD_DIR)/$(LUA_SRC)/ml-lua-shim.o \
               $(UMM_O)
 MODULE_CFLAGS += -DLUA_32BITS -DLUA_COMPAT_FLOATSTRING -Idietlibc/include/ \
                  -Wno-undef
+# -Idietlibc/include/ shadows sys/cdefs.h, so newlib's setjmp.h finds no __dead2 /
+# __returns_twice and ldo.c fails under -Werror on newer arm-none-eabi/newlib.
+# Host toolchain workaround only; nothing to do with the 6D2 port.
+MODULE_CFLAGS += '-D__dead2=__attribute__((__noreturn__))' '-D__returns_twice=__attribute__((__returns_twice__))'
 
 # include modules environment
 include $(TOP_DIR)/modules/Makefile
