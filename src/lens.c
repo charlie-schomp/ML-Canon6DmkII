@@ -3039,6 +3039,39 @@ static LVINFO_UPDATE_FUNC(av_update)
     }
 }
 
+#ifdef FEATURE_SHUTTER_ANGLE_DISPLAY
+/* Shutter angle = 360 * shutter_time * fps.
+ *
+ * Useful where ML cannot change the frame rate (D678X cams, where FPS override
+ * writes through _EngDrvOut() and that is a stub), so the only way to hit a
+ * given angle is to pick the matching shutter speed by hand in Canon's UI.
+ *
+ * Depends on fps_get_current_x1000() being right - see the TG_FREQ_BASE note in
+ * fps-engio.c, which was calibrated against measured MLV frame timestamps.
+ */
+static LVINFO_UPDATE_FUNC(shutter_angle_update)
+{
+    LVINFO_BUFFER(12);
+
+    if (!lv || !is_movie_mode())
+        return;
+
+    int fps_x1000   = fps_get_current_x1000();
+    int recip_x1000 = get_current_shutter_reciprocal_x1000();
+
+    if (fps_x1000 <= 0 || recip_x1000 <= 0)
+        return;
+
+    /* 3600 rather than 360 so we keep one decimal place */
+    int angle_x10 = (int)((3600LL * fps_x1000) / recip_x1000);
+
+    if (angle_x10 <= 0 || angle_x10 > 3600)
+        return;
+
+    snprintf(buffer, sizeof(buffer), "%d.%d" SYM_DEGREE, angle_x10 / 10, angle_x10 % 10);
+}
+#endif
+
 static LVINFO_UPDATE_FUNC(tv_update)
 {
     LVINFO_BUFFER(16);
@@ -3374,6 +3407,14 @@ static struct lvinfo_item info_items[] = {
         .update = tv_update,
         .priority = 1,
     },
+#ifdef FEATURE_SHUTTER_ANGLE_DISPLAY
+    {
+        .name = "Shutter angle",
+        .which_bar = LV_BOTTOM_BAR_ONLY,
+        .update = shutter_angle_update,
+        .priority = 1,
+    },
+#endif
     {
         .name = "ISO",
         .which_bar = LV_BOTTOM_BAR_ONLY,
