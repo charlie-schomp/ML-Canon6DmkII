@@ -23,8 +23,9 @@ recording). That is what the audio meter got wrong and what the zoom bounce was 
 
 ## Dropped for good
 - **The button-event ring in `gui.c` (v64).** 2.5 KB of static data in the core on a body with
-  ~11 KB of `user_mem` headroom. Diagnostics belong in a module. `gui.c` carries only one
-  4-byte optional hook (`gui_event_spy`, v79) that d7probe uses to see every GUI event.
+  ~11 KB of `user_mem` headroom. Diagnostics belong in a module. `gui.c` is byte-identical to
+  upstream and should stay that way (a v79 read-only hook for d7probe was removed again once the
+  top buttons were mapped).
 
 ## Open list (as of v79, 2026-10-16)
 
