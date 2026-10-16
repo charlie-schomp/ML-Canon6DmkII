@@ -427,10 +427,12 @@ PROP_HANDLER(PROP_LCD_POSITION)
  * never reached ML at all. */
 static volatile int sl_key = -1, sl_key_n = 0, sl_key_gs = -1, sl_key_arg = 0, sl_key_obj = 0;
 
-static int obj_readable(uint32_t o)
-{
-    return o >= 0x1000 && o < 0x40000000 && !(o & 3);
-}
+/* The sampled rows above keep only the last button per 20 ms, so presses that
+ * arrive together (press + release + Canon's top-LCD update) get lost.  Every
+ * event is also kept here, in order, for the button list in the log. */
+#define KL_ROWS 256
+static int kl_rows[KL_ROWS][6];     /* ms, param, arg, obj[0], obj[1], gui_state */
+static volatile int kl_n = 0;
 
 static unsigned int statelog_keypress(unsigned int raw_event)
 {
@@ -443,47 +445,21 @@ static unsigned int statelog_keypress(unsigned int raw_event)
         /* buttons Canon has no dedicated code for share one param and differ
          * only in arg / the first word of obj */
         uint32_t o = (uint32_t)event->obj;
-        sl_key_obj = obj_readable(o) ? (int)MEM(o) : 0;
+        int obj_ok = (o >= 0x1000 && o < 0x40000000 && !(o & 3));
+        sl_key_obj = obj_ok ? (int)MEM(o) : 0;
         sl_key_gs = gui_state;
         sl_key_n++;
-    }
-    return 1;   /* never consumes the button */
-}
-
-/* The sampled rows above keep only the last button per 20 ms, and modules are
- * only shown type-0 (button) events.  The top-plate buttons arrive only as
- * a generic "button pressed" (0x4b) followed by Canon's reaction, so this list
- * takes EVERY GUI event, of every type, in order, through the core's
- * gui_event_spy hook.  A run of identical events is one row with a count. */
-#define KL_ROWS 512
-#define KL_COLS 10                  /* ms, type, param, arg, obj[0..3], gui_state, count */
-static int kl_rows[KL_ROWS][KL_COLS];
-static volatile int kl_n = 0, kl_lost = 0;
-
-static void statelog_event_spy(struct event * event)
-{
-    extern int gui_state;
-    if (!statelog_on) return;
-    uint32_t o = (uint32_t)event->obj;
-    int w[4] = {0};
-    if (obj_readable(o))
-        for (int i = 0; i < 4; i++) w[i] = (int)MEM(o + 4 * i);
-    if (kl_n > 0)
-    {
-        int * p = kl_rows[kl_n - 1];
-        if (p[1] == event->type && p[2] == event->param && p[3] == event->arg &&
-            p[4] == w[0] && p[5] == w[1] && p[6] == w[2] && p[7] == w[3])
+        if (kl_n < KL_ROWS)
         {
-            p[9]++;
-            return;
+            int * k = kl_rows[kl_n];
+            k[0] = get_ms_clock();      k[1] = event->param;
+            k[2] = event->arg;          k[3] = sl_key_obj;
+            k[4] = obj_ok ? (int)MEM(o + 4) : 0;
+            k[5] = gui_state;
+            kl_n++;
         }
     }
-    if (kl_n >= KL_ROWS) { kl_lost = 1; return; }
-    int * k = kl_rows[kl_n];
-    k[0] = get_ms_clock();  k[1] = event->type;  k[2] = event->param;  k[3] = event->arg;
-    k[4] = w[0];  k[5] = w[1];  k[6] = w[2];  k[7] = w[3];
-    k[8] = gui_state;       k[9] = 1;
-    kl_n++;
+    return 1;   /* never consumes the button */
 }
 
 static void statelog_sample(int * v)
@@ -526,13 +502,12 @@ static void statelog_write(void)
                    v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11], v[12],
                    v[13], v[14], v[15], v[16], v[17], v[18]);
     }
-    my_fprintf(f, "\nEvery GUI event, all types, in order: %d rows%s\n", kl_n, kl_lost ? " (list full, later ones lost)" : "");
-    my_fprintf(f, "    ms type    param      arg   obj[0]   obj[1]   obj[2]   obj[3] gs count\n");
+    my_fprintf(f, "\nEvery button event, in order: %d%s\n", kl_n, kl_n >= KL_ROWS ? " (list full, later ones lost)" : "");
+    my_fprintf(f, "    ms    param      arg   obj[0]   obj[1]  gui_state\n");
     for (int i = 0; i < kl_n; i++)
     {
         int * k = kl_rows[i];
-        my_fprintf(f, "%6d %4d %8x %8x %8x %8x %8x %8x %2d %d\n",
-                   k[0], k[1], k[2], k[3], k[4], k[5], k[6], k[7], k[8], k[9]);
+        my_fprintf(f, "%6d %8x %8x %8x %8x  %d\n", k[0], k[1], k[2], k[3], k[4], k[5]);
     }
     FIO_CloseFile(f);
 }
@@ -540,10 +515,7 @@ static void statelog_write(void)
 static void statelog_task(void * unused)
 {
     int prev[SL_COLS] = {0};
-    extern void (*gui_event_spy)(struct event * event);
-    sl_n = 0; sl_lost = 0; sl_key = -1; sl_key_n = 0; sl_key_gs = -1; sl_key_arg = 0; sl_key_obj = 0;
-    kl_n = 0; kl_lost = 0;
-    gui_event_spy = statelog_event_spy;
+    sl_n = 0; sl_lost = 0; sl_key = -1; sl_key_n = 0; sl_key_gs = -1; sl_key_arg = 0; sl_key_obj = 0; kl_n = 0;
     while (statelog_on)
     {
         int v[SL_COLS];
@@ -559,7 +531,6 @@ static void statelog_task(void * unused)
         }
         msleep(20);
     }
-    gui_event_spy = 0;
     statelog_write();
     NotifyBox(3000, "STATELOG.TXT written (%d rows)", sl_n);
 }
