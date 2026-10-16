@@ -283,6 +283,7 @@ int handle_flexinfo_keys(struct event * event);
 int handle_picoc_keys(struct event * event);
 //int handle_digital_zoom_shortcut(struct event * event);
 int handle_upside_down(struct event * event);
+int handle_top_buttons(struct event * event);
 int handle_swap_menu_erase(struct event * event);
 int handle_swap_info_play(struct event * event);
 int handle_ml_menu_keys(struct event * event);

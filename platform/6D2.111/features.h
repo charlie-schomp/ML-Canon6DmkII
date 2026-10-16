@@ -94,6 +94,9 @@
 // playback-zoom code in tweaks.c, not by cropmark drawing.
 #define FEATURE_CROPMARKS
 
+// AF, ISO and DRIVE/metering toggle overlays in movie LiveView (src/topbuttons.c)
+#define FEATURE_TOP_BUTTON_SHORTCUTS
+
 #define CONFIG_PROP_REQUEST_CHANGE
 #define CONFIG_STATE_OBJECT_HOOKS
 #define CONFIG_LIVEVIEW

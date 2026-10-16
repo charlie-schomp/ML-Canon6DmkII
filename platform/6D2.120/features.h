@@ -81,6 +81,9 @@
 // playback-zoom code in tweaks.c, which is now guarded separately.
 #define FEATURE_CROPMARKS
 
+// AF, ISO and DRIVE/metering toggle overlays in movie LiveView (src/topbuttons.c)
+#define FEATURE_TOP_BUTTON_SHORTCUTS
+
 // Show shutter angle in the LiveView bottom bar.  ML cannot change the frame
 // rate on this cam (FPS override writes via the _EngDrvOut() stub), so knowing
 // the angle for a given shutter speed is the only way to hit 180 deg by hand.

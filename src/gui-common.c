@@ -515,6 +515,10 @@ int handle_common_events_by_feature(struct event * event)
     #ifdef FEATURE_UPSIDE_DOWN
     if (handle_upside_down(event) == 0) return 0;
     #endif
+
+    #ifdef FEATURE_TOP_BUTTON_SHORTCUTS
+    if (handle_top_buttons(event) == 0) return 0;
+    #endif
     
     #ifdef FEATURE_SWAP_MENU_ERASE
     if (handle_swap_menu_erase(event) == 0) return 0;
