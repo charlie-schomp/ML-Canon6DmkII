@@ -23,34 +23,44 @@ recording). That is what the audio meter got wrong and what the zoom bounce was 
 
 ## Dropped for good
 - **The button-event ring in `gui.c` (v64).** 2.5 KB of static data in the core on a body with
-  ~11 KB of `user_mem` headroom. Diagnostics belong in a module. `gui.c` is byte-identical to
-  upstream and should stay that way.
+  ~11 KB of `user_mem` headroom. Diagnostics belong in a module. `gui.c` carries only one
+  4-byte optional hook (`gui_event_spy`, v79) that d7probe uses to see every GUI event.
 
-## Still open, unrelated to the revert
-- **Face AF blocks the depth switch and crop mode.** Canon refuses 5x in Face+Tracking with the
-  lens on AF. Confirmed v73: Canon's MENU and back applies the armed depth with no zoom at all -
-  that is the workaround, and the message says so. An ML-driven LiveView restart
-  (`PROP_LV_ACTION`) could do the same automatically, but that property is not whitelisted on
-  this body and writing it is a new risk - not without a reason.
-- **Frame guides in crop mode.** Upstream drops the recorded-area guide in zoom. The v74 probe at
-  5x shows Canon's HD buffer is not reported on this body (`hd 0x1`), so the zoom preview rect in
-  raw.c (which divides by `vram_hd.width`) has nothing to work from either. Needs another way to
-  learn how much of the 1:1 window the 5x view shows (e.g. a RAWFRAME dump at 5x against a
-  screenshot of the same scene).
+## Open list (as of v79, 2026-10-16)
+
+Settled on the camera and removed from the list: photo-mode peaking after a shot (v77), hot-shoe
+flash in LiveView photo mode (it was Silent mode, not ML), flip-screen overlays in both positions
+(v79: pos 1 Mirror, pos 2 None, now defaults with the settings under Debug), Trash in position 1
+(it was the blackout), AF blocking crop mode / the depth switch, cropmarks vanishing while
+focusing, top-button overlay shortcuts (v79; the ISO button keeps Canon's ISO screen open until
+it closes - kept on purpose, so ISO stays adjustable there).
+
+**Next updates, each on its own**
+1. **Playback (high priority).** v79 plays 10/12-bit clips (they drew nothing before) and has a
+   playback tone curve (blacks were crushed). The frame counter shows card read vs draw time per
+   frame; those numbers decide the speed work: frame skipping by default, a cheaper draw path, or a
+   small H.264 proxy recorded alongside the raw (data-rate cost still to measure).
+2. **Audio level meter** - the last shelved item (table above), as an isolated update.
+3. **Frame guides in crop mode.** Upstream drops the recorded-area guide in zoom, and Canon does
+   not report its HD buffer at 5x on this body (`hd 0x1`), so the mapping from the 5x view to the
+   1:1 raw window has to be measured: a screen capture and a short clip of the same static scene
+   at two crop-mode resolutions give the scale and the offset.
+
+**Waiting for results**
 - **Higher frame rates in 1080p**: v77 experiment (timer B through Canon's own store and apply).
   The ceiling is the sensor readout time: roughly 36-37 fps for the full 1208-line 1080p readout,
   low 60s for the 59.94p readout. Results decide whether it becomes a menu option.
-- **Lens AF blocks crop mode and the depth bounce** (any AF method, not only Face AF): Canon moves
-  the zoom property to 5x but keeps the binned readout. v75 re-arms crop mode and the bounce on the
-  AF/MF switch (`af_mode`, if reported) and on ML-menu close.
-- **Trash button reaching Canon instead of ML.** Untouched v63 code: `handle_ml_menu_erase()`
-  opens the ML menu only when `gui_state == GUISTATE_IDLE` (0). This body does not always report 0
-  in LiveView. d7probe dumps the value; the fix is one condition once we know it.
-- **Cropmarks vanishing while focusing** is stock ML (overlays stop while
-  `job_state_ready_to_take_pic()` is false) and the 20 fps compositor makes the return slow.
-  Can be changed deliberately if you want the guides to persist.
+- **Firmware 1.2.0** has never run on a camera.
+
+**Future**
+- **Tell DRIVE, metering and the AF-point button apart** (all three toggle the same top-button
+  slot), and use the light button. None of them sends anything ML can see beyond a generic
+  "button pressed" and Canon's identical warning; the identity stays between the MPU and Canon's
+  GUI. Needs MPU message research.
+- **Merge upstream** (12 newer commits on dev, including their own 6D2 second-take fix).
+- **Anamorphic** desqueeze guide / 1x3 readouts (low priority).
+
+**Not possible so far**
 - **8-bit** is not reachable (Canon's depth field only ever carries 10/12/14, plus a separate
   16-bit path) and would posterise badly at base ISO.
-- **Higher frame rates:** 59.94p exists in the binned readout and is bandwidth-limited
-  (1920×432 12-bit ≈ 74.6 MB/s); the crop readout is sensor-fixed at 29.97. A real FPS override in
-  the binned readout is plausible — `_EngDrvOut` is already whitelisted for the timer registers.
+- **Higher frame rates in crop mode**: the 1:1 readout is sensor-fixed at 29.97.
