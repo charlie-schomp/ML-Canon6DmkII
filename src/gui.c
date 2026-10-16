@@ -63,6 +63,10 @@
 
 struct semaphore * gui_sem;
 
+/* Read-only research hook: when set (by a module), sees every GUI event -
+ * buttons and all other types - before ML or Canon handles it. */
+void (*gui_event_spy)(struct event * event) = 0;
+
 // return 0 if you want to block this event
 static int handle_buttons(struct event * event)
 {
@@ -131,6 +135,10 @@ void ml_gui_main_task()
 
         if (event == NULL) {
             continue;
+        }
+
+        if (gui_event_spy) {
+            gui_event_spy(event);
         }
 
         index = event->type;
