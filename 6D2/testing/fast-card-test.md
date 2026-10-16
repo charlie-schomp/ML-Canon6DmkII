@@ -1,14 +1,15 @@
-# 6D Mark II ML — fast-card test (v76)
+# 6D Mark II ML — fast-card test (v79)
 
 Thanks for testing. The goal is to find which raw video formats a fast SD card can record
 **continuously** on the 6D Mark II with this build, and whether long takes are stable. About an
-hour. Nothing here touches Canon settings or factory data.
+hour and a half. Nothing here touches Canon settings or factory data.
 
 **Firmware 1.1.1 only.** If the camera ever locks up, pull the battery and keep any
 `CRASH*.LOG` / `ASSERT*.LOG` from the card root.
 
 ## What you need
 - A 6D Mark II on firmware 1.1.1, and the fast card. Note its brand, model, size and speed class.
+  If you have two of the same card, benchmark both (section 1) and use either for the rest.
 - A lens with an **AF/MF switch**. The bit-depth switch and crop mode need the lens on **MF**:
   with the lens on AF, Canon refuses the 5x zoom they use.
 - About 70 GB free for the ladder. The stability takes come after a fresh format.
@@ -21,7 +22,8 @@ hour. Nothing here touches Canon settings or factory data.
   `ML-SETUP.FIR` (all in the zip) to the card root, then Wrench menu → Firmware → update from the
   card, and restart.
 
-The **Trash** button opens ML. ML → Modules: enable `mlv_lite` and `bench`, then restart.
+The **Trash** button opens ML. ML → Modules: enable `mlv_lite`, `bench`, `mlv_play` and `silent`
+(`mlv_play` needs `silent` loaded; leave Silent Picture itself OFF), then restart.
 
 If you use a Mac, run the checker from Terminal and avoid browsing the card in Finder: Finder's
 `._` files corrupted this card's directory once.
@@ -31,7 +33,8 @@ If you use a Mac, run the checker from Terminal and avoid browsing the card in F
 
 ## 1. Card speed
 ML → Debug → Benchmarks → Card Benchmarks → **Quick R/W benchmark (1 min)**. Note write and read
-(MB/s).
+(MB/s), for each card if you have two. For comparison, a SanDisk Extreme Plus (U3) writes about
+65 MB/s in this camera.
 
 ## 2. Setting a format
 Movie tab → **RAW video** (the first entry) → SET:
@@ -70,7 +73,7 @@ by itself. Within each block, once two rows in a row stop early, skip the rest o
 1080p rows record at 23.976 fps, crop rows at 29.97. As a rule of thumb, a format runs
 continuously when its MB/s is at most about 90 % of the card's benchmark write speed.
 
-**Then run the checker** (section 6) before freeing the card for section 4.
+**Then run the checker** (section 7) before freeing the card for section 4.
 
 ## 4. Stability
 Format the card in the camera first.
@@ -86,7 +89,21 @@ Movie tab → **Scratch audio** (the last entry) → Mode **Auto with RAW**. Rec
 clapping once near the start and once near the end. A `.WAV` named after the clip should appear in
 `DCIM/AUDIO`, and nothing new in the card root.
 
-## 6. Run the checker
+## 6. Playback (new in v79)
+With RAW video on, press **PLAY** in movie LiveView: ML's player opens on the latest clip
+(the top dial switches clips, PLAY pauses). The top right reads `rd 41ms dr 30ms  12/240`: the time to **r**ead
+each frame from the card and to **d**raw it (INFO hides and shows it). **SET** opens the player's
+controls, where *color/fast* and *all/exact* are.
+
+Play one clip of each depth from the ladder: **14-bit** (row H or I), **12-bit** (A, B, E or F),
+**10-bit** (C, D or J). For each, note:
+- Is there a picture? (10/12-bit clips showed nothing before v79.)
+- Do the shadows look right, or crushed to black?
+- The `rd` and `dr` numbers while it plays (not paused).
+- Then switch the playback quality between *color* and *fast*, and the mode between *all* and
+  *exact*, and note what changes (smoothness, rd/dr).
+
+## 7. Run the checker
 Card in the computer; in a terminal, go to the zip's `extras/tools` folder and run:
 
 ```
@@ -104,10 +121,15 @@ logs. Clips are only needed if the report lists a **PROBLEM** for them.
 
 ```
 card: brand/model ____________  size ____ GB  class ______
-benchmark: write ____ MB/s   read ____ MB/s
+benchmark card 1: write ____ MB/s   read ____ MB/s
+benchmark card 2: write ____ MB/s   read ____ MB/s
 A ____  B ____  C ____  D ____  E ____  F ____  G ____  H ____  I ____
 J ____  K ____  L ____  M ____
 10-minute take: ______   five back-to-back: ______   crop 2-minute: ______
 audio WAV in DCIM/AUDIO: ____
+playback 14-bit: picture __ shadows ____ rd ____ dr ____
+playback 12-bit: picture __ shadows ____ rd ____ dr ____
+playback 10-bit: picture __ shadows ____ rd ____ dr ____
+color vs fast, all vs exact: ____
 anything odd:
 ```

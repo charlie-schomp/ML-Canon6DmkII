@@ -34,7 +34,7 @@ def code(t):
 class Sheet:
     def __init__(self, path):
         self.c = canvas.Canvas(path, pagesize=letter)
-        self.c.setTitle("6D2 Fast-Card Test (v76)")
+        self.c.setTitle("6D2 Fast-Card Test (v79)")
         self.c.setAuthor("6D Mark II Magic Lantern port")
         self.c.setSubject("Fillable test sheet for the fast-SD-card tester")
         self.page = 1; self.n = 0
@@ -43,7 +43,7 @@ class Sheet:
     def top(self):
         self.y = H - M
         self.c.setFont("Body", 7.5); self.c.setFillColor(MUTED)
-        self.c.drawString(M, 30, "6D Mark II Magic Lantern v76 - fast-card test")
+        self.c.drawString(M, 30, "6D Mark II Magic Lantern v79 - fast-card test")
         self.c.drawRightString(W - M, 30, "page %d" % self.page)
 
     def need(self, h):
@@ -108,7 +108,7 @@ c = s.c
 
 # ---------------------------------------------------------------- header
 c.setFillColor(REC); c.setFont("Mono", 8)
-c.drawString(M, s.y - 8, "RAW   EOS 6D MARK II   FIRMWARE 1.1.1   MAGIC LANTERN v76   ~1 HOUR")
+c.drawString(M, s.y - 8, "RAW   EOS 6D MARK II   FIRMWARE 1.1.1   MAGIC LANTERN v79   ~1.5 HOURS")
 s.y -= 16
 s.para("6D2 Fast-Card Test", h1, gap=6)
 s.para("Thanks for testing. The goal is to find which raw video formats a fast SD card can record "
@@ -119,7 +119,8 @@ s.para("<b>Firmware 1.1.1 only.</b> If the camera ever locks up, pull the batter
        + code("CRASH*.LOG") + " / " + code("ASSERT*.LOG") + " from the card root.", gap=2)
 
 s.section("00", "What you need")
-s.check("A 6D Mark II on firmware 1.1.1, and the fast card (details below).", "need")
+s.check("A 6D Mark II on firmware 1.1.1, and the fast card (details below). If you have two of the same "
+        "card, benchmark both (section 02) and use either for the rest.", "need")
 s.check("A lens with an <b>AF/MF switch</b>, set to <b>MF</b>. With the lens on AF, Canon refuses the 5x zoom "
         "that the bit-depth switch and crop mode use.", "need")
 s.check("About <b>70 GB free</b> for the ladder. The stability takes come after a fresh format.", "need")
@@ -132,17 +133,20 @@ s.check("<b>ML already on this camera:</b> copy " + code("autoexec.bin") + " and
 s.check("<b>Or, first time on this camera:</b> format the card in the camera, copy " + code("autoexec.bin") + ", "
         + code("ML/") + " and " + code("ML-SETUP.FIR") + " (all in the zip) to the card root, then Wrench menu "
         "→ Firmware → update from the card, and restart.", "install")
-s.check("The <b>Trash</b> button opens ML. ML → Modules: enable " + code("mlv_lite") + " and " + code("bench") +
-        ", then restart.", "install")
+s.check("The <b>Trash</b> button opens ML. ML → Modules: enable " + code("mlv_lite") + ", " + code("bench") +
+        ", " + code("mlv_play") + " and " + code("silent") + " (" + code("mlv_play") + " needs " + code("silent") +
+        " loaded; leave Silent Picture itself OFF), then restart.", "install")
 s.check("Camera: Movie mode, <b>FHD 23.98p</b> (NTSC), M exposure, ISO 100–800, shutter 1/48, lens on <b>MF</b>.", "install")
 s.para("On a Mac, run the checker from Terminal and avoid browsing the card in Finder: Finder's " + code("._") +
        " files corrupted this card's directory once.", small)
 
 s.section("02", "Card speed")
 s.check("ML → Debug → Benchmarks → Card Benchmarks → <b>Quick R/W benchmark (1 min)</b>.", "bench")
-s.labelled_fields([("Write (MB/s)", 100), ("Read (MB/s)", 100)])
-s.para("Rule of thumb: a format runs continuously when its MB/s is at most about 90 % of the write speed. "
-       "Mark the ladder rows you expect to fit before you start, if you like.", small)
+s.labelled_fields([("Card 1 write (MB/s)", 100), ("Card 1 read (MB/s)", 100),
+                   ("Card 2 write (MB/s)", 100), ("Card 2 read (MB/s)", 100)])
+s.para("For comparison, a SanDisk Extreme Plus (U3) writes about 65 MB/s in this camera. Rule of thumb: a "
+       "format runs continuously when its MB/s is at most about 90 % of the write speed. Mark the ladder rows "
+       "you expect to fit before you start, if you like.", small)
 
 s.section("03", "Setting a format")
 s.para("Movie tab → <b>RAW video</b> (the first entry) → SET.")
@@ -219,7 +223,7 @@ for r in rows:
     s.y -= RH
     c.setStrokeColor(LINE); c.setLineWidth(0.4); c.line(M, s.y + 1, W - M, s.y + 1)
 s.y -= 6
-s.check("<b>Then run the checker</b> (section 07) before formatting the card for section 05.", "ladder")
+s.check("<b>Then run the checker</b> (section 08) before formatting the card for section 05.", "ladder")
 
 # ---------------------------------------------------------------- stability, audio, checker
 s.section("05", "Stability")
@@ -236,14 +240,28 @@ s.check("Movie tab → <b>Scratch audio</b> (the last entry) → Mode <b>Auto wi
 s.check("A .WAV named after the clip appeared in " + code("DCIM/AUDIO") + ", and nothing new in the card root.",
         "audio", field_ph="Notes")
 
-s.section("07", "Run the checker")
+s.section("07", "Playback (new in v79)")
+s.para("With RAW video on, press <b>PLAY</b> in movie LiveView: ML's player opens on the latest clip (the top dial "
+       "switches clips, PLAY pauses). The top right reads " + code("rd 41ms dr 30ms  12/240") + ": the time to "
+       "<b>r</b>ead each frame from the card and to <b>d</b>raw it (INFO hides and shows it). <b>SET</b> opens the "
+       "player's controls, where <i>color/fast</i> and <i>all/exact</i> are.")
+s.para("Play one clip of each depth from the ladder. Note whether there is a picture (10/12-bit clips showed "
+       "nothing before v79), how the shadows look, and the rd / dr numbers while it plays.", gap=6)
+for depth, rows_hint in (("14-bit", "row H or I"), ("12-bit", "row A, B, E or F"), ("10-bit", "row C, D or J")):
+    s.check("<b>%s</b> (%s)" % (depth, rows_hint), "play")
+    s.labelled_fields([("Picture? (y/n)", 80), ("Shadows (ok / crushed)", 120), ("rd (ms)", 70), ("dr (ms)", 70),
+                       ("Clip", 124)])
+s.check("Switch <i>color</i> / <i>fast</i> and <i>all</i> / <i>exact</i> in the player's controls: what changes "
+        "(smoothness, rd/dr)?", "play", field_ph="What changed", field_w=200)
+
+s.section("08", "Run the checker")
 s.para("With the card in the computer: " + code("python cardcheck.py E:\\") + "   (macOS: " +
        code("python3 cardcheck.py /Volumes/EOS_DIGITAL") + "). It only reads the card and saves "
        + code("cardcheck-report-&lt;date&gt;-&lt;time&gt;.txt") + " in the current folder.")
 s.check("Ran it after the ladder (section 04).", "checker")
 s.check("Ran it again at the end.", "checker")
 
-s.section("08", "Send back")
+s.section("09", "Send back")
 s.para("This filled-in PDF, both " + code("cardcheck-report-*.txt") + " files, and any " + code("CRASH*") + " / " +
        code("ASSERT*") + " logs. Clips are only needed if a report lists a <b>PROBLEM</b> for them.")
 s.need(110)
