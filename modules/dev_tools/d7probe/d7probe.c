@@ -408,7 +408,7 @@ static MENU_UPDATE_FUNC(sd_exp_update)
  * menu itself resets Canon's GUI state, so a probe dump taken from the menu
  * cannot see it.  Off by default; nothing is stored in a file while it runs. */
 #define SL_ROWS 512
-#define SL_COLS 14
+#define SL_COLS 19
 static int statelog_on = 0;
 static int sl_n = 0, sl_lost = 0;
 static int sl_rows[SL_ROWS][SL_COLS];
@@ -419,6 +419,30 @@ static int d7_lcd_position = -1;
 PROP_HANDLER(PROP_LCD_POSITION)
 {
     d7_lcd_position = buf[0];
+}
+
+/* Buttons, as ML's handler chain sees them (module keys run before the
+ * Trash -> ML menu check): code, a press counter so every press makes a row,
+ * and Canon's GUI state at that moment.  A press that never shows up here
+ * never reached ML at all. */
+static volatile int sl_key = -1, sl_key_n = 0, sl_key_gs = -1, sl_key_arg = 0, sl_key_obj = 0;
+
+static unsigned int statelog_keypress(unsigned int raw_event)
+{
+    struct event * event = (struct event *) raw_event;
+    extern int gui_state;
+    if (statelog_on && event && event->type == 0)
+    {
+        sl_key = event->param;
+        sl_key_arg = event->arg;
+        /* buttons Canon has no dedicated code for share one param and differ
+         * only in arg / the first word of obj */
+        uint32_t o = (uint32_t)event->obj;
+        sl_key_obj = (o >= 0x1000 && o < 0x40000000 && !(o & 3)) ? (int)MEM(o) : 0;
+        sl_key_gs = gui_state;
+        sl_key_n++;
+    }
+    return 1;   /* never consumes the button */
 }
 
 static void statelog_sample(int * v)
@@ -436,7 +460,10 @@ static void statelog_sample(int * v)
     extern int overlay_mirror_x, overlay_mirror_y;
     v[10] = d7_lcd_position;    v[11] = overlay_mirror_x;
     v[12] = overlay_mirror_y;
-    v[13] = liveview_display_idle();
+    v[13] = sl_key;             v[14] = sl_key_n;
+    v[15] = sl_key_gs;
+    v[16] = sl_key_arg;         v[17] = sl_key_obj;
+    v[18] = liveview_display_idle();
 }
 
 static void statelog_write(void)
@@ -444,12 +471,19 @@ static void statelog_write(void)
     FILE * f = FIO_CreateFile("ML/LOGS/STATELOG.TXT");
     if (!f) return;
     my_fprintf(f, "d7probe state log: %d rows%s\n", sl_n, sl_lost ? " (buffer full, later changes lost)" : "");
-    my_fprintf(f, "    ms  gui_state gui_mode lv lv_paused display_on ready_to_shoot mirror_down ml_menu halfshutter screen_pos ovl_mirror_x ovl_mirror_y => display_idle\n");
+    /* ML's printf mishandles field widths of 10 and up ("%10d" prints "0d"),
+     * so every column is at most 9 wide and the long names are in a legend */
+    my_fprintf(f, "gs=gui_state gm=gui_mode lp=lv_paused do=display_on rs=ready_to_shoot md=mirror_down\n"
+                  "mm=ml_menu hs=halfshutter sp=screen_pos mx/my=overlay mirror x/y\n"
+                  "key=button (hex)  n=press count  kgs=gui_state at press  arg/obj=event arg, first word of obj (hex)\n"
+                  "idle=liveview_display_idle (LiveView dialog pointer, 0 = not idle)\n\n");
+    my_fprintf(f, "    ms gs gm lv lp do rs md mm hs sp mx my      key     n kgs      arg      obj => idle\n");
     for (int i = 0; i < sl_n; i++)
     {
         int * v = sl_rows[i];
-        my_fprintf(f, "%6d  %9d %8d %2d %9d %10d %14d %11d %7d %11d %10d %12d %12d => %d\n",
-                   v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11], v[12], v[13]);
+        my_fprintf(f, "%6d %2d %2d %2d %2d %2d %2d %2d %2d %2d %2d %2d %2d %8x %5d %3d %8x %8x => %x\n",
+                   v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11], v[12],
+                   v[13], v[14], v[15], v[16], v[17], v[18]);
     }
     FIO_CloseFile(f);
 }
@@ -457,7 +491,7 @@ static void statelog_write(void)
 static void statelog_task(void * unused)
 {
     int prev[SL_COLS] = {0};
-    sl_n = 0; sl_lost = 0;
+    sl_n = 0; sl_lost = 0; sl_key = -1; sl_key_n = 0; sl_key_gs = -1; sl_key_arg = 0; sl_key_obj = 0;
     while (statelog_on)
     {
         int v[SL_COLS];
@@ -698,6 +732,10 @@ MODULE_CONFIGS_START()
     MODULE_CONFIG(sd_exp_mode)
     MODULE_CONFIG(sd_exp_idx)
 MODULE_CONFIGS_END()
+
+MODULE_CBRS_START()
+    MODULE_CBR(CBR_KEYPRESS_RAW, statelog_keypress, 0)
+MODULE_CBRS_END()
 
 MODULE_PROPHANDLERS_START()
     MODULE_PROPHANDLER(PROP_LCD_POSITION)
