@@ -178,9 +178,11 @@ extern int bm2lv_x_cache[];
 #define HD2BM_X(x) LV2BM_X(HD2LV_X(x))
 #define HD2BM_Y(y) LV2BM_Y(HD2LV_Y(y))
 
-// scaling a distance between image buffers
-#define BM2LV_DX(x) (BM2LV_X(x) - BM2LV_X(0))
-#define BM2LV_DY(y) (BM2LV_Y(y) - BM2LV_Y(0))
+// scaling a distance between image buffers - never mirrored: with the
+// flip-screen option on, BM2LV_X(x) - BM2LV_X(0) is negative, and every scale
+// derived from it (raw preview, recorded-area shading, magic zoom) inverts
+#define BM2LV_DX(x) (BM2LV_Xu(x) - BM2LV_Xu(0))
+#define BM2LV_DY(y) (BM2LV_Yu(y) - BM2LV_Yu(0))
 
 #define LV2BM_DX(x) (LV2BM_X(x) - LV2BM_X(0))
 #define LV2BM_DY(y) (LV2BM_Y(y) - LV2BM_Y(0))

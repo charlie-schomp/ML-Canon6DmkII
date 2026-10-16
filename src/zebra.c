@@ -3803,16 +3803,16 @@ static void draw_zoom_overlay(int dirty)
             zb_y0_lv = H/2 + 50;
             break;
         case 2: // NE
-            zb_x0_lv = BM2LV_X(os.x_max) - W/2 - 50;
+            zb_x0_lv = BM2LV_Xu(os.x_max) - W/2 - 50;
             zb_y0_lv = H/2 + 50;
             break;
         case 3: // SE
-            zb_x0_lv = BM2LV_X(os.x_max) - W/2 - 50;
-            zb_y0_lv = BM2LV_Y(os.y_max) - H/2 - 50;
+            zb_x0_lv = BM2LV_Xu(os.x_max) - W/2 - 50;
+            zb_y0_lv = BM2LV_Yu(os.y_max) - H/2 - 50;
             break;
         case 4: // SV
             zb_x0_lv = W/2 + 50;
-            zb_y0_lv = BM2LV_Y(os.y_max) - H/2 - 50;
+            zb_y0_lv = BM2LV_Yu(os.y_max) - H/2 - 50;
             break;
         default:
             return;

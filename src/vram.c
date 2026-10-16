@@ -610,8 +610,8 @@ void _update_vram_params()
     // HD buffer does not contain pillarboxes, LV does
     // and HD may or may not contain bars 
     // the offset needs to be specified in HD units
-    lv2hd.tx = -LV2HD_DX(BM2LV_X(os.x0 + bar_x));
-    lv2hd.ty = -LV2HD_DY(BM2LV_Y(os.y0 + bar_y));
+    lv2hd.tx = -LV2HD_DX(BM2LV_Xu(os.x0 + bar_x));
+    lv2hd.ty = -LV2HD_DY(BM2LV_Yu(os.y0 + bar_y));
 
 //~ #ifndef CONFIG_5DC
     if (!lv) // HD buffer not active, use LV instead
