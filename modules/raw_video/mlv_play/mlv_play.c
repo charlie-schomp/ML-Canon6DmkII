@@ -111,6 +111,11 @@ static uint32_t mlv_play_info = 1;
 static uint32_t mlv_play_timer_stop = 1;
 static uint32_t mlv_play_frames_skipped = 0;
 
+/* per-frame cost, shown with the frame counter: card read vs drawing, to
+ * tell which one limits the playback rate */
+static volatile int mlv_play_read_ms = 0;
+static volatile int mlv_play_draw_ms = 0;
+
 /* this structure is used to build the mlv_xref_t table */
 typedef struct 
 {
@@ -1528,8 +1533,10 @@ static void mlv_play_render_task(uint32_t priv)
             break;
         }
 
+        int draw_start = get_ms_clock();
         mlv_play_render_frame(buffer);
-        
+        mlv_play_draw_ms = get_ms_clock() - draw_start;
+
         /* if info display is requested, paint it. todo: thats OSD stuff, so it should be removed from here */
         if(mlv_play_info)
         {
@@ -1992,7 +1999,10 @@ static void mlv_play_mlv(char *filename, FILE **chunk_files, uint32_t chunk_coun
             FIO_SeekSkipFile(in_file, position + sizeof(mlv_vidf_hdr_t) + vidf_block.frameSpace, SEEK_SET);
 
             /* finally read the raw data */
-            if(FIO_ReadFile(in_file, read_buffer, read_size) != (int32_t)read_size)
+            int read_start = get_ms_clock();
+            int read_ok = (FIO_ReadFile(in_file, read_buffer, read_size) == (int32_t)read_size);
+            mlv_play_read_ms = get_ms_clock() - read_start;
+            if(!read_ok)
             {
                 bmp_printf(FONT_MED, 30, 190, "File ends prematurely during VIDF raw data");
                 beep();
@@ -2063,7 +2073,8 @@ static void mlv_play_mlv(char *filename, FILE **chunk_files, uint32_t chunk_coun
                 }
                 
                 snprintf(buffer->messages.botLeft, SCREEN_MSG_LEN, "%s: %dx%d %dbpp%s", filename, rawi_block.xRes, rawi_block.yRes, rawi_block.raw_info.bits_per_pixel, (main_header.videoClass & MLV_VIDEO_CLASS_FLAG_LJ92)?" LJ92":"");
-                snprintf(buffer->messages.botRight, SCREEN_MSG_LEN, "%d/%d", vidf_block.frameNumber + 1, frame_count);
+                snprintf(buffer->messages.botRight, SCREEN_MSG_LEN, "rd %dms dr %dms  %d/%d",
+                         mlv_play_read_ms, mlv_play_draw_ms, vidf_block.frameNumber + 1, frame_count);
                 
                 
                 if (mlv_play_exact_fps)
