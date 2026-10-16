@@ -2656,6 +2656,45 @@ int raw_lv_settings_still_valid()
 #define QG ((int)(q->g_lo | (q->g_hi << 2)))
 #define QH ((int)(q->h))
 
+/* Any packed depth: ML raw rows are a stream of 16-bit little-endian words,
+ * pixels MSB first (14-bit is the raw_pixblock layout above).  Slower than
+ * the pixblock macros; used to play back 10/12-bit clips. */
+static inline int raw_px_any_bpp(const void * row, int x, int bpp)
+{
+    uint32_t bit = x * bpp;
+    const uint16_t * w = (const uint16_t *) row + (bit >> 4);
+    uint32_t v = ((uint32_t) w[0] << 16) | w[1];
+    return (v >> (32 - (bit & 15) - bpp)) & ((1 << bpp) - 1);
+}
+
+/* Playback tone curve (outside LiveView only - the LiveView framing preview
+ * keeps upstream's curve).  Upstream shows 10 EV and squares it, so the
+ * bottom stops go to black; this spans 12 EV with a 2.2 gamma, which puts mid
+ * grey (about 3.5 EV under clipping) near 120 of 255, like Canon's styles. */
+static int playback_tone(float ev)
+{
+    float t = COERCE((ev + 12.0f) / 12.0f, 0.0f, 1.0f);
+    return COERCE((int)(255.0f * powf(t, 2.2f)), 0, 255);
+}
+
+/* The playback curve as a lookup over the preview's 1024 input steps, rebuilt
+ * only when the clip's levels change (powf per entry per frame is not free). */
+static uint8_t playback_lut_rb[1024], playback_lut_g[1024];
+static int playback_lut_key = -1;
+
+static void playback_lut_update(int black, int white, int div)
+{
+    int key = black ^ (white << 12) ^ (div << 28);
+    if (key == playback_lut_key) return;
+    for (int i = 0; i < 1024; i++)
+    {
+        float ev = raw_to_ev((i << div) + black);
+        playback_lut_rb[i] = playback_tone(ev + 1);    /* white balance 2,1,2 */
+        playback_lut_g[i]  = playback_tone(ev);
+    }
+    playback_lut_key = key;
+}
+
 static void FAST raw_preview_color_work(void* raw_buffer, void* lv_buffer, int y1, int y2)
 {
     dbg_printf("Raw color preview...\n");
@@ -2685,17 +2724,29 @@ static void FAST raw_preview_color_work(void* raw_buffer, void* lv_buffer, int y
     }
 
     /* white balance 2,1,2 => use two gamma curves to simplify code */
-    uint8_t gamma_rb[1024];
-    uint8_t gamma_g[1024];
+    uint8_t lv_gamma_rb[1024];
+    uint8_t lv_gamma_g[1024];
+    uint8_t * gamma_rb = lv_gamma_rb;
+    uint8_t * gamma_g = lv_gamma_g;
+    int bpp = raw_info.bits_per_pixel;
 
-    for (int i = 0; i < 1024; i++)
+    if (lv)
     {
-        /* only show 10 bits */
-        int g_rb = COERCE(raw_to_ev((i << div) + black) + 11, 0, 10) * 255 / 10;
-        int g_g  = COERCE(raw_to_ev((i << div) + black) + 10, 0, 10) * 255 / 10;
-        /* gamma 2 */
-        gamma_rb[i] = COERCE(g_rb * g_rb / 255, 0, 255);
-        gamma_g[i]  = COERCE(g_g  * g_g  / 255, 0, 255);
+        for (int i = 0; i < 1024; i++)
+        {
+            /* only show 10 bits */
+            int g_rb = COERCE(raw_to_ev((i << div) + black) + 11, 0, 10) * 255 / 10;
+            int g_g  = COERCE(raw_to_ev((i << div) + black) + 10, 0, 10) * 255 / 10;
+            /* gamma 2 */
+            gamma_rb[i] = COERCE(g_rb * g_rb / 255, 0, 255);
+            gamma_g[i]  = COERCE(g_g  * g_g  / 255, 0, 255);
+        }
+    }
+    else
+    {
+        playback_lut_update(black, white, div);
+        gamma_rb = playback_lut_rb;
+        gamma_g = playback_lut_g;
     }
 
     int x1 = COERCE(RAW2LV_X(preview_rect_x), 0, vram_lv.width);
@@ -2738,7 +2789,15 @@ static void FAST raw_preview_color_work(void* raw_buffer, void* lv_buffer, int y
 
             /* RGGB cell */
             /* note: at 1920 horizontal resolution in raw, downsampling by 8 would result in 240px horizontally => looks ugly */
-            switch (xr%8)
+            if (bpp != 14)
+            {
+                void * r0 = (void*)row;
+                void * r1 = (void*)row + raw_info.pitch;
+                r = raw_px_any_bpp(r0, xr, bpp);
+                g = (raw_px_any_bpp(r0, xr + 1, bpp) + raw_px_any_bpp(r1, xr, bpp)) >> 1;
+                b = raw_px_any_bpp(r1, xr + 1, bpp);
+            }
+            else switch (xr%8)
             {
                 case 0:
                     r = PA;
@@ -2804,13 +2863,23 @@ static void FAST raw_preview_fast_work(void* raw_buffer, void* lv_buffer, int y1
         div++;
     }
 
-    uint8_t gamma[1024];
+    uint8_t lv_gamma[1024];
+    uint8_t * gamma = lv_gamma;
+    int bpp = raw_info.bits_per_pixel;
 
-    for (int i = 0; i < 1024; i++)
+    if (lv)
     {
-        /* only show 10 bits */
-        int g = COERCE(raw_to_ev((i << div) + black) + 10, 0, 10) * 255 / 10;
-        gamma[i] = g * g / 255; /* gamma 2 */
+        for (int i = 0; i < 1024; i++)
+        {
+            /* only show 10 bits */
+            int g = COERCE(raw_to_ev((i << div) + black) + 10, 0, 10) * 255 / 10;
+            gamma[i] = g * g / 255; /* gamma 2 */
+        }
+    }
+    else
+    {
+        playback_lut_update(black, white, div);
+        gamma = playback_lut_g;
     }
 
     int x1 = COERCE(RAW2LV_X(preview_rect_x), 0, vram_lv.width);
@@ -2848,7 +2917,7 @@ static void FAST raw_preview_fast_work(void* raw_buffer, void* lv_buffer, int y1
         {
             int xr = lv2rx[x];
             struct raw_pixblock * p = row + (xr/8);
-            int c = p->a;
+            int c = (bpp != 14) ? raw_px_any_bpp(row, xr & ~7, bpp) : p->a;
             uint64_t Y = gamma[COERCE(c - black, 0, white-black) >> div];
             Y = (Y << 8) | (Y << 24) | (Y << 40) | (Y << 56);
             int idx = LV(x,y)/8;
@@ -2861,7 +2930,11 @@ static void FAST raw_preview_fast_work(void* raw_buffer, void* lv_buffer, int y1
 
 void FAST raw_preview_fast_ex(void* raw_buffer, void* lv_buffer, int y1, int y2, int quality)
 {
-    if (raw_info.bits_per_pixel != 14)
+    /* 10/12-bit only outside LiveView, i.e. in playback.  In LiveView this
+     * also draws mlv_lite's framing preview while recording, which stays
+     * 14-bit only so a take never pays for the slower pixel reads. */
+    int bpp = raw_info.bits_per_pixel;
+    if (bpp != 14 && (lv || (bpp != 12 && bpp != 10)))
         return;
 
     yuv422_buffer_check();
