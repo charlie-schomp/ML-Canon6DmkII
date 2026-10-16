@@ -437,9 +437,9 @@ static CONFIG_INT("overlay.mirror", overlay_mirror_mode, 1);       /* 0 off, 1 o
 /* What Canon does to its image layer in each screen position, as a transform
  * for ML's overlays: 0 none, 1 mirror (left-right), 2 flip (upside down),
  * 3 rotate 180.  PROP_LCD_POSITION: 0 stowed facing out, 1 facing forward,
- * 2 flipped outside.  Position 1 = mirror was confirmed on hardware (v32);
- * position 2 is unmeasured, so it is a setting - whichever choice makes the
- * overlays line up is what this body does. */
+ * 2 flipped outside.  Both confirmed on hardware: position 1 = mirror (v32,
+ * again v79), position 2 = none (v79).  The defaults are right, so the
+ * settings live in the Debug menu. */
 static CONFIG_INT("overlay.mirror.pos1", overlay_xform_pos1, 1);
 static CONFIG_INT("overlay.mirror.pos2", overlay_xform_pos2, 0);
 extern int overlay_mirror_x;   /* vram.c */
@@ -3412,6 +3412,17 @@ struct menu_entry zebra_menus[] = {
         .depends_on = DEP_GLOBAL_DRAW,
     },
     #endif
+    {
+        .name = "Clean HDMI out",
+        .priv = &clean_hdmi_out,
+        .max = 1,
+        .help  = "With HDMI connected, draw no ML overlays or info bars at all.",
+        .help2 = "For a recorder on the HDMI port. Canon's info: cycle INFO to clean.",
+        .depends_on = DEP_GLOBAL_DRAW,
+    },
+};
+
+static struct menu_entry livev_dbg_menus[] = {
     #ifdef CONFIG_MIRROR_OVERLAYS
     {
         .name = "Flip-screen overlays",
@@ -3429,8 +3440,8 @@ struct menu_entry zebra_menus[] = {
                 .max = 3,
                 .update = overlay_xform_update,
                 .choices = CHOICES("None", "Mirror", "Flip", "Rotate 180"),
-                .help  = "Screen turned to face the subject. Canon mirrors the image here.",
-                .help2 = "Pick the choice that makes the overlays line up with the picture.",
+                .help  = "Screen turned to face the subject. Canon mirrors the image here:",
+                .help2 = "Mirror (default, confirmed on the camera).",
             },
             {
                 .name = "Flipped outside (pos 2)",
@@ -3438,24 +3449,13 @@ struct menu_entry zebra_menus[] = {
                 .max = 3,
                 .update = overlay_xform_update,
                 .choices = CHOICES("None", "Mirror", "Flip", "Rotate 180"),
-                .help  = "The other flipped position. What Canon does here is not measured yet:",
-                .help2 = "try each choice with the screen in this position; keep the one that lines up.",
+                .help  = "Screen flipped outside. Canon does not transform the image here:",
+                .help2 = "None (default, confirmed on the camera).",
             },
             MENU_EOL,
         },
     },
     #endif
-    {
-        .name = "Clean HDMI out",
-        .priv = &clean_hdmi_out,
-        .max = 1,
-        .help  = "With HDMI connected, draw no ML overlays or info bars at all.",
-        .help2 = "For a recorder on the HDMI port. Canon's info: cycle INFO to clean.",
-        .depends_on = DEP_GLOBAL_DRAW,
-    },
-};
-
-static struct menu_entry livev_dbg_menus[] = {
     #ifdef FEATURE_SHOW_OVERLAY_FPS
     {
         .name = "Show Overlay FPS",
