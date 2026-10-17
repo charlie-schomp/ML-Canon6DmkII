@@ -3805,7 +3805,7 @@ void raw_video_rec_task(uint32_t card_index)
          * Started here rather than at RAW_RECORDING so the WAV covers the whole
          * take; the two are driven by the same sensor clock, so the only offset
          * is a fixed start delay, not drift. */
-        if (wav_scratch_auto_enabled() == 2)
+        if (wav_scratch_auto_enabled())
         {
             wav_scratch_start();
         }
@@ -4319,7 +4319,7 @@ abort_and_check_early_stop:
          * on a 3s take with a full buffer: 11.4s of WAV against 3s of video.
          * Stopping here keeps the WAV bracketing the take by the fraction of
          * a second it takes to start and stop, which is what we want. */
-        if (wav_scratch_auto_enabled() == 2)
+        if (wav_scratch_auto_enabled())
         {
             wav_scratch_stop();
         }
@@ -4427,7 +4427,7 @@ cleanup:
      * audio, 27.2s against 6.8s, and one 0.1s clip carrying 28.4s of sound.
      *
      * wav_scratch_stop() is idempotent, so the normal path is unaffected. */
-    if (wav_scratch_auto_enabled() == 2)
+    if (wav_scratch_auto_enabled())
     {
         wav_scratch_stop();
     }
@@ -4486,7 +4486,7 @@ cleanup:
         raw_recording_state = RAW_IDLE;
         rec_log("========== TAKE END (state back to IDLE)");
 
-        if (wav_scratch_auto_enabled() == 2)
+        if (wav_scratch_auto_enabled())
         {
             /* Rename last, after the state machine is already back to IDLE.
              * The recorder was stopped before the flush; this only moves the

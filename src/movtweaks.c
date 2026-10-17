@@ -1013,7 +1013,12 @@ void movtweak_task_init()
  * verified stub, and this has not been confirmed on hardware yet.
  */
 
-static CONFIG_INT("wav.scratch.audio", wav_scratch_audio, 0);
+/* 0 OFF, 1 Auto with RAW, 2 Manual - the menu order.  Saved under a new name
+ * since v80 swapped Auto and Manual, so an old saved value is not misread. */
+#define WAV_SCRATCH_OFF    0
+#define WAV_SCRATCH_AUTO   1
+#define WAV_SCRATCH_MANUAL 2
+static CONFIG_INT("wav.scratch.mode", wav_scratch_audio, WAV_SCRATCH_OFF);
 static int wav_is_recording = 0;
 /* Take counter, persisted. It was a plain static that reset to 0 on every
  * boot - and Canon's recorder APPENDS to an existing Sample%d.wav rather than
@@ -1397,10 +1402,10 @@ int wav_scratch_rename(const char * mlv_path)
 }
 
 /* Called by mlv_lite when raw recording starts/stops, so one button gets you
- * both. Returns whether the user asked for that. */
+ * both. Returns whether the user asked for that (Mode = Auto with RAW). */
 int wav_scratch_auto_enabled(void)
 {
-    return wav_scratch_audio;
+    return wav_scratch_audio == WAV_SCRATCH_AUTO;
 }
 
 /* Manual start/stop gets its own entry, and deliberately so. The menu routes
@@ -1498,7 +1503,7 @@ static MENU_UPDATE_FUNC(wav_gain_update)
 
 static MENU_UPDATE_FUNC(wav_scratch_main_update)
 {
-    static const char * modes[] = { "OFF", "Manual", "Auto with RAW" };
+    static const char * modes[] = { "OFF", "Auto with RAW", "Manual" };
     if (wav_is_recording)
         MENU_SET_VALUE("REC");
     else
@@ -1512,12 +1517,12 @@ static MENU_UPDATE_FUNC(wav_scratch_update)
         MENU_SET_VALUE("REC -> Sample%d.wav", wav_file_number);
         MENU_SET_WARNING(MENU_WARN_INFO, "Recording. Press SET to stop.");
     }
-    else if (wav_scratch_audio == 2)
+    else if (wav_scratch_audio == WAV_SCRATCH_AUTO)
     {
         MENU_SET_VALUE("Auto (next: Sample%d)", wav_file_number);
         MENU_SET_HELP("Starts and stops with raw recording.");
     }
-    else if (wav_scratch_audio == 1)
+    else if (wav_scratch_audio == WAV_SCRATCH_MANUAL)
     {
         MENU_SET_VALUE("Manual (next: Sample%d)", wav_file_number);
         MENU_SET_HELP("Press SET to start recording.");
@@ -1633,7 +1638,7 @@ static struct menu_entry mov_menus[] = {
                 .name       = "Mode",
                 .priv       = &wav_scratch_audio,
                 .max        = 2,
-                .choices    = CHOICES("OFF", "Manual", "Auto with RAW"),
+                .choices    = CHOICES("OFF", "Auto with RAW", "Manual"),
                 .help       = "Auto: starts and stops with RAW recording, WAV named after the clip.",
                 .help2      = "Manual: use Record WAV now. Files go to DCIM/AUDIO.",
             },
