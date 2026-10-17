@@ -2918,8 +2918,12 @@ static void FAST raw_preview_fast_work(void* raw_buffer, void* lv_buffer, int y1
             int xr = lv2rx[x];
             struct raw_pixblock * p = row + (xr/8);
             int c = (bpp != 14) ? raw_px_any_bpp(row, xr & ~7, bpp) : p->a;
-            uint64_t Y = gamma[COERCE(c - black, 0, white-black) >> div];
-            Y = (Y << 8) | (Y << 24) | (Y << 40) | (Y << 56);
+            /* neutral chroma via UYVY_PACK: hand-packing U = V = 0 is neutral
+             * only on DIGIC <= 5; DIGIC 6/7/8 bias chroma by 0x80, so the
+             * "grayscale" preview came out solid green there */
+            int luma = gamma[COERCE(c - black, 0, white-black) >> div];
+            uint32_t pair = UYVY_PACK(0, luma, 0, luma);
+            uint64_t Y = (uint64_t) pair | ((uint64_t) pair << 32);
             int idx = LV(x,y)/8;
             lv64[idx] = Y;
             lv64[idx + vram_lv.pitch/8] = Y;
