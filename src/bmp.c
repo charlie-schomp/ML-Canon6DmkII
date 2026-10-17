@@ -149,6 +149,15 @@ uint8_t * bmp_vram(void)
 // 1 = copy idle to BMP
 void bmp_idle_copy(int direction, int fullsize)
 {
+#ifdef FEATURE_VRAM_RGBA
+    /* No idle buffer on RGBA bodies: bmp_vram() always returns ML's indexed
+     * buffer, whatever bmp_draw_to_idle() says, so there is nothing to copy.
+     * Without this, "real" is Canon's RGBA layer and "idle" is that address
+     * with bit 19 flipped - unrelated memory. Direction 0 wrote half a
+     * megabyte over it; direction 1 sprayed it onto Canon's layer, which
+     * Canon never clears (mlv_play's info line did both every 10th frame). */
+    return;
+#endif
     uint8_t* real = bmp_vram_real();
     uint8_t* idle = bmp_vram_idle();
     ASSERT(real)
