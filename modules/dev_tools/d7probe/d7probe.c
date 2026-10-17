@@ -639,8 +639,94 @@ static MENU_UPDATE_FUNC(fpsx_update)
     MENU_SET_WARNING(MENU_WARN_ADVICE, "EXPERIMENT. Smaller B = faster. Step down; battery out if LV freezes.");
 }
 
+/* ---- Overlay alignment dump (read-only) --------------------------------------
+ *
+ * Peaking sits ~16 px off the picture (left in screen positions 0/2, right in
+ * the mirrored position 1) and moves after a bit-depth zoom bounce.  ML maps
+ * screen x straight to LiveView-buffer x, and the buffer is 736 wide for a
+ * 720-wide panel, so the question is which 720 columns Canon shows.  Each
+ * press writes ML/LOGS/ALIGNn.TXT: ML's current mapping, Canon's display
+ * struct around the width/height fields, and the mean luma of every buffer
+ * column - aimed at an evenly lit wall, black or noise columns at either end
+ * of the buffer show up directly. */
+static void align_dump(void)
+{
+    char name[32];
+    int n = 0;
+    for (n = 0; n < 100; n++)
+    {
+        snprintf(name, sizeof(name), "ML/LOGS/ALIGN%d.TXT", n);
+        if (!is_file(name)) break;
+    }
+    FILE * f = FIO_CreateFile(name);
+    if (!f) return;
+
+    extern int overlay_mirror_x, overlay_mirror_y;
+    struct vram_info * v = get_yuv422_vram();
+    my_fprintf(f, "align dump %d  screen_pos=%d mirror_x=%d mirror_y=%d  dispsize=%d  bpp=%d armed=%d\n",
+               n, d7_lcd_position, overlay_mirror_x, overlay_mirror_y, lv_dispsize,
+               raw_info.bits_per_pixel, raw_lv_bpp_armed());
+    my_fprintf(f, "vram_lv %dx%d pitch %d buf %x\n", v ? v->width : 0, v ? v->height : 0,
+               v ? v->pitch : 0, v ? (uint32_t) v->vram : 0);
+    my_fprintf(f, "bm2lv tx %d ty %d sx %d sy %d   os x0 %d y0 %d x_ex %d y_ex %d off_169 %d\n",
+               bm2lv.tx, bm2lv.ty, bm2lv.sx, bm2lv.sy, os.x0, os.y0, os.x_ex, os.y_ex, os.off_169);
+    my_fprintf(f, "screen x -> buffer x: 0->%d 16->%d 360->%d 703->%d 719->%d\n",
+               BM2LV_X(0), BM2LV_X(16), BM2LV_X(360), BM2LV_X(703), BM2LV_X(719));
+
+    uint32_t dv = *(uint32_t *) 0x7dc8;
+    my_fprintf(f, "disp struct %x", dv);
+    if (dv)
+        for (int o = 0x00; o < 0xe0; o += 4)
+            my_fprintf(f, "%s%02x=%x", (o % 0x20) ? " " : "\n  ", o, MEM(dv + o));
+    my_fprintf(f, "\n");
+
+    if (v && v->vram && v->width > 0 && v->width <= 2048 && v->height > 0)
+    {
+        /* mean Y per column, rows sampled every 4th; UYVY = U Y V Y */
+        my_fprintf(f, "column mean luma (hex, 32 per line, first column number at left):\n");
+        uint8_t * buf = CACHEABLE(v->vram);
+        for (int c0 = 0; c0 < v->width; c0 += 32)
+        {
+            my_fprintf(f, "%4d:", c0);
+            for (int c = c0; c < c0 + 32 && c < v->width; c++)
+            {
+                int sum = 0, cnt = 0;
+                for (int y = 0; y < v->height; y += 4)
+                {
+                    sum += buf[y * v->pitch + c * 2 + 1];
+                    cnt++;
+                }
+                my_fprintf(f, " %02x", cnt ? sum / cnt : 0);
+            }
+            my_fprintf(f, "\n");
+        }
+    }
+    FIO_CloseFile(f);
+    NotifyBox(3000, "%s written", name);
+}
+
+static void align_dump_task(void * unused)
+{
+    /* the dump is taken with the menu closed and Canon back to plain LiveView */
+    msleep(1000);
+    align_dump();
+}
+
+static MENU_SELECT_FUNC(align_dump_select)
+{
+    gui_stop_menu();
+    task_create("d7align", 0x1e, 0x1000, align_dump_task, 0);
+}
+
 static struct menu_entry d7probe_menu[] =
 {
+    {
+        .name   = "Overlay alignment dump",
+        .select = align_dump_select,
+        .icon_type = IT_ACTION,
+        .help   = "Writes ML/LOGS/ALIGNn.TXT: where the picture sits in the LiveView",
+        .help2  = "buffer vs ML's overlay mapping. Aim at an evenly lit wall.",
+    },
     {
         .name   = "FPS experiment (timer B)",
         .priv   = &fpsx_b,
