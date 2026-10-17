@@ -2564,6 +2564,12 @@ static void mlv_play_leave_playback()
     
     vram_clear_lv();
     exit_play_qr_mode();
+
+    /* The player's controls and info lines are drawn on ML's own layer.
+     * Older cameras lose them when Canon redraws on leaving playback; on
+     * DIGIC 6/7/8 Canon never clears that layer, so they stayed on screen. */
+    clrscr();
+    redraw();
 }
 
 static void mlv_play_enter_playback()
