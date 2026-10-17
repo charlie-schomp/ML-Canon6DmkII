@@ -2487,8 +2487,11 @@ unsigned int raw_rec_polling_cbr(unsigned int unused)
         return 0;
     }
 
-    /* reallocate buffers if needed (only if not recording) */
-    if (realloc && (RAW_IS_IDLE || RAW_IS_PREPARING) && gui_state == GUISTATE_IDLE)
+    /* reallocate buffers if needed (only if not recording).  The GUI check
+     * keeps the UI lock out of Canon's menus while idle; a take that is
+     * starting owns the UI already, and with the H.264 proxy it is waiting
+     * for exactly this while Canon - recording - need not report idle. */
+    if (realloc && (RAW_IS_PREPARING || (RAW_IS_IDLE && gui_state == GUISTATE_IDLE)))
     {
         gui_uilock(UILOCK_EVERYTHING);
         take_semaphore(settings_sem, 0);
@@ -3841,11 +3844,29 @@ void raw_video_rec_task(uint32_t card_index)
             ASSERT(!RECORDING_H264);
             movie_start();
 
-            /* wait until our buffers are reallocated */
-            while (shoot_mem_suite == 0 && srm_mem_suite == 0)
+            /* wait until our buffers are reallocated (raw_rec_polling_cbr does
+             * it once it sees RECORDING_H264).  Bounded: this used to wait for
+             * ever, leaving the take on "Starting..." with H.264 running if
+             * the memory never came back.  Logged, so RECDBG.LOG says why. */
+            int waited = 0;
+            while (shoot_mem_suite == 0 && srm_mem_suite == 0 && waited < 10000)
             {
+                if (waited % 1000 == 0)
+                {
+                    extern int gui_state;
+                    rec_log("H.264 proxy: waiting for buffers %ds, h264=%d gui_state=%d",
+                            waited / 1000, RECORDING_H264, gui_state);
+                }
                 msleep(100);
+                waited += 100;
             }
+            if (shoot_mem_suite == 0 && srm_mem_suite == 0)
+            {
+                rec_log_mem("H.264 proxy: no buffers after 10 s");
+                NotifyBox(8000, "H.264 proxy: no memory for RAW\nwhile Canon records. Take stopped.");
+                goto cleanup;
+            }
+            rec_log_mem("H.264 proxy: buffers back");
         }
 
         /* disable Canon's powersaving (30 min in LiveView) */
