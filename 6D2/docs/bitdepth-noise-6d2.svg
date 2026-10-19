@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 430" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13">
+  <rect width="900" height="430" fill="#ffffff"/>
+  <text x="450.0" y="24.0" font-size="16" text-anchor="middle" fill="#222" font-weight="600">EOS 6D Mark II — what 12- and 10-bit cost, from measured read noise</text>
+  <text x="240.0" y="50.0" font-size="13" text-anchor="middle" fill="#333" font-weight="600">Noise floor (14-bit DN) — lower is better</text>
+  <line x1="70" y1="330.0" x2="410" y2="330.0" stroke="#e4e4e4"/>
+  <text x="64.0" y="334.0" font-size="11" text-anchor="end" fill="#666">4</text>
+  <line x1="70" y1="276.0" x2="410" y2="276.0" stroke="#e4e4e4"/>
+  <text x="64.0" y="280.0" font-size="11" text-anchor="end" fill="#666">6</text>
+  <line x1="70" y1="222.0" x2="410" y2="222.0" stroke="#e4e4e4"/>
+  <text x="64.0" y="226.0" font-size="11" text-anchor="end" fill="#666">8</text>
+  <line x1="70" y1="168.0" x2="410" y2="168.0" stroke="#e4e4e4"/>
+  <text x="64.0" y="172.0" font-size="11" text-anchor="end" fill="#666">10</text>
+  <line x1="70" y1="114.0" x2="410" y2="114.0" stroke="#e4e4e4"/>
+  <text x="64.0" y="118.0" font-size="11" text-anchor="end" fill="#666">12</text>
+  <line x1="70" y1="60.0" x2="410" y2="60.0" stroke="#e4e4e4"/>
+  <text x="64.0" y="64.0" font-size="11" text-anchor="end" fill="#666">14</text>
+  <text x="70.0" y="346.0" font-size="11" text-anchor="middle" fill="#666">100</text>
+  <text x="138.0" y="346.0" font-size="11" text-anchor="middle" fill="#666">200</text>
+  <text x="206.0" y="346.0" font-size="11" text-anchor="middle" fill="#666">400</text>
+  <text x="274.0" y="346.0" font-size="11" text-anchor="middle" fill="#666">800</text>
+  <text x="342.0" y="346.0" font-size="11" text-anchor="middle" fill="#666">1600</text>
+  <text x="410.0" y="346.0" font-size="11" text-anchor="middle" fill="#666">3200</text>
+  <text x="240.0" y="364.0" font-size="12" text-anchor="middle" fill="#666">ISO (analog)</text>
+  <polyline fill="none" stroke="#222" stroke-width="2.5" points="70.0,269.8 138.0,258.7 206.0,238.2 274.0,232.8 342.0,188.0 410.0,119.4" stroke-dasharray="2 0"/>
+  <polyline fill="none" stroke="#1f5fbf" stroke-width="2.5" points="70.0,267.1 138.0,256.2 206.0,235.9 274.0,230.6 342.0,186.2 410.0,118.0"/>
+  <polyline fill="none" stroke="#e8913a" stroke-width="2.5" points="70.0,228.7 138.0,219.8 206.0,202.6 274.0,198.0 342.0,158.7 410.0,96.0"/>
+  <circle cx="70.0" cy="270.6" r="5" fill="none" stroke="#222" stroke-width="2"/>
+  <circle cx="70.0" cy="267.9" r="5" fill="none" stroke="#1f5fbf" stroke-width="2"/>
+  <circle cx="70.0" cy="213.9" r="5" fill="none" stroke="#e8913a" stroke-width="2"/>
+  <text x="79.0" y="207.9" font-size="11" text-anchor="start" fill="#e8913a">measured 8.3</text>
+  <text x="670.0" y="50.0" font-size="13" text-anchor="middle" fill="#333" font-weight="600">Dynamic range given up vs 14-bit (EV)</text>
+  <line x1="500" y1="330.0" x2="840" y2="330.0" stroke="#e4e4e4"/>
+  <text x="494.0" y="334.0" font-size="11" text-anchor="end" fill="#666">0.0</text>
+  <line x1="500" y1="276.0" x2="840" y2="276.0" stroke="#e4e4e4"/>
+  <text x="494.0" y="280.0" font-size="11" text-anchor="end" fill="#666">0.1</text>
+  <line x1="500" y1="222.0" x2="840" y2="222.0" stroke="#e4e4e4"/>
+  <text x="494.0" y="226.0" font-size="11" text-anchor="end" fill="#666">0.2</text>
+  <line x1="500" y1="168.0" x2="840" y2="168.0" stroke="#e4e4e4"/>
+  <text x="494.0" y="172.0" font-size="11" text-anchor="end" fill="#666">0.3</text>
+  <line x1="500" y1="114.0" x2="840" y2="114.0" stroke="#e4e4e4"/>
+  <text x="494.0" y="118.0" font-size="11" text-anchor="end" fill="#666">0.4</text>
+  <line x1="500" y1="60.0" x2="840" y2="60.0" stroke="#e4e4e4"/>
+  <text x="494.0" y="64.0" font-size="11" text-anchor="end" fill="#666">0.5</text>
+  <text x="500.0" y="346.0" font-size="11" text-anchor="middle" fill="#666">100</text>
+  <text x="568.0" y="346.0" font-size="11" text-anchor="middle" fill="#666">200</text>
+  <text x="636.0" y="346.0" font-size="11" text-anchor="middle" fill="#666">400</text>
+  <text x="704.0" y="346.0" font-size="11" text-anchor="middle" fill="#666">800</text>
+  <text x="772.0" y="346.0" font-size="11" text-anchor="middle" fill="#666">1600</text>
+  <text x="840.0" y="346.0" font-size="11" text-anchor="middle" fill="#666">3200</text>
+  <text x="670.0" y="364.0" font-size="12" text-anchor="middle" fill="#666">ISO (analog)</text>
+  <polyline fill="none" stroke="#1f5fbf" stroke-width="2.5" points="500.0,317.7 568.0,319.1 636.0,321.2 704.0,321.7 772.0,324.4 840.0,326.5"/>
+  <circle cx="500.0" cy="317.7" r="3.5" fill="#1f5fbf"/>
+  <circle cx="568.0" cy="319.1" r="3.5" fill="#1f5fbf"/>
+  <circle cx="636.0" cy="321.2" r="3.5" fill="#1f5fbf"/>
+  <circle cx="704.0" cy="321.7" r="3.5" fill="#1f5fbf"/>
+  <circle cx="772.0" cy="324.4" r="3.5" fill="#1f5fbf"/>
+  <circle cx="840.0" cy="326.5" r="3.5" fill="#1f5fbf"/>
+  <polyline fill="none" stroke="#e8913a" stroke-width="2.5" points="500.0,159.9 568.0,176.8 636.0,202.3 704.0,208.0 772.0,243.8 840.0,274.7"/>
+  <circle cx="500.0" cy="159.9" r="3.5" fill="#e8913a"/>
+  <circle cx="568.0" cy="176.8" r="3.5" fill="#e8913a"/>
+  <circle cx="636.0" cy="202.3" r="3.5" fill="#e8913a"/>
+  <circle cx="704.0" cy="208.0" r="3.5" fill="#e8913a"/>
+  <circle cx="772.0" cy="243.8" r="3.5" fill="#e8913a"/>
+  <circle cx="840.0" cy="274.7" r="3.5" fill="#e8913a"/>
+  <circle cx="500.0" cy="102.7" r="5" fill="none" stroke="#e8913a" stroke-width="2"/>
+  <text x="509.0" y="106.7" font-size="11" text-anchor="start" fill="#e8913a">measured 0.42</text>
+  <line x1="250" y1="394" x2="274" y2="394" stroke="#222" stroke-width="3"/>
+  <text x="280.0" y="398.0" font-size="12" text-anchor="start" fill="#333">14-bit</text>
+  <line x1="370" y1="394" x2="394" y2="394" stroke="#1f5fbf" stroke-width="3"/>
+  <text x="400.0" y="398.0" font-size="12" text-anchor="start" fill="#333">12-bit</text>
+  <line x1="490" y1="394" x2="514" y2="394" stroke="#e8913a" stroke-width="3"/>
+  <text x="520.0" y="398.0" font-size="12" text-anchor="start" fill="#333">10-bit</text>
+  <circle cx="620" cy="394" r="5" fill="none" stroke="#666" stroke-width="2"/>
+  <text x="630.0" y="398.0" font-size="12" text-anchor="start" fill="#333">lens-cap measurement, ISO 100</text>
+  <text x="450.0" y="422.0" font-size="11" text-anchor="middle" fill="#666">lines: measured read noise ⊕ quantisation step/√12 (12-bit step 4 DN, 10-bit 16 DN)</text>
+</svg>

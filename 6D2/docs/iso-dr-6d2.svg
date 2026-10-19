@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 380" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13">
+  <rect width="900" height="380" fill="#ffffff"/>
+  <text x="450" y="24" text-anchor="middle" font-size="16" font-weight="600" fill="#222">EOS 6D Mark II — video mode, 1920×720 14-bit, lens-cap dark frames</text>
+
+  <!-- ===== left panel: dynamic range ===== -->
+  <text x="225" y="50" text-anchor="middle" font-weight="600" fill="#333">Dynamic range (EV)</text>
+  <!-- axes: x 60..390, y 320 (8.5 EV) .. 70 (11.5 EV) => 83.33 px/EV -->
+  <g stroke="#ddd" stroke-width="1">
+    <line x1="60" y1="320" x2="390" y2="320"/><line x1="60" y1="278.3" x2="390" y2="278.3"/>
+    <line x1="60" y1="236.7" x2="390" y2="236.7"/><line x1="60" y1="195" x2="390" y2="195"/>
+    <line x1="60" y1="153.3" x2="390" y2="153.3"/><line x1="60" y1="111.7" x2="390" y2="111.7"/>
+    <line x1="60" y1="70" x2="390" y2="70"/>
+  </g>
+  <g fill="#666" text-anchor="end">
+    <text x="54" y="324">8.5</text><text x="54" y="282">9.0</text><text x="54" y="240">9.5</text>
+    <text x="54" y="199">10.0</text><text x="54" y="157">10.5</text><text x="54" y="116">11.0</text><text x="54" y="74">11.5</text>
+  </g>
+  <line x1="60" y1="70" x2="60" y2="320" stroke="#999"/><line x1="60" y1="320" x2="390" y2="320" stroke="#999"/>
+  <!-- ISO on log2 axis: 100..25600 = 8 stops over 330px => 41.25px/stop; x = 60 + stop*41.25 -->
+  <g fill="#666" text-anchor="middle">
+    <text x="60" y="340">100</text><text x="101" y="340">200</text><text x="143" y="340">400</text>
+    <text x="184" y="340">800</text><text x="225" y="340">1600</text><text x="266" y="340">3200</text>
+    <text x="308" y="340">6400</text><text x="349" y="340">12800</text><text x="390" y="340">25600</text>
+    <text x="225" y="362" font-size="12">ISO (analog gain stops at 3200; 6400+ is digital push)</text>
+  </g>
+  <!-- analog region shading -->
+  <rect x="266" y="70" width="124" height="250" fill="#f3e9e9" opacity="0.7"/>
+  <text x="328" y="86" text-anchor="middle" font-size="11" fill="#a33">digital gain</text>
+  <!-- DR points: y = 320 - (DR-8.5)*83.33 -->
+  <polyline fill="none" stroke="#1f5fbf" stroke-width="2.5"
+    points="60,99.2 101,106.7 143,120 184,123.3 225,146.7 266,175.8 308,244.2 390,291.7"/>
+  <g fill="#1f5fbf">
+    <circle cx="60" cy="99.2" r="4"/><circle cx="101" cy="106.7" r="4"/><circle cx="143" cy="120" r="4"/>
+    <circle cx="184" cy="123.3" r="4"/><circle cx="225" cy="146.7" r="4"/><circle cx="266" cy="175.8" r="4"/>
+    <circle cx="308" cy="244.2" r="4"/><circle cx="390" cy="291.7" r="4"/>
+  </g>
+  <g fill="#1f5fbf" font-size="11" text-anchor="middle">
+    <text x="60" y="92">11.15</text><text x="101" y="100">11.06</text><text x="143" y="113">10.90</text>
+    <text x="184" y="116">10.86</text><text x="225" y="140">10.58</text><text x="266" y="169">10.23</text>
+    <text x="308" y="237">9.41</text><text x="390" y="285">8.84</text>
+  </g>
+  <line x1="349" y1="244" x2="349" y2="292" stroke="#bbb" stroke-dasharray="3,3"/>
+  <text x="349" y="308" text-anchor="middle" font-size="10" fill="#999">12800 not measured</text>
+
+  <!-- ===== right panel: read noise ===== -->
+  <text x="675" y="50" text-anchor="middle" font-weight="600" fill="#333">Read noise (DN, 14-bit) and input-referred noise</text>
+  <!-- axes: x 510..840, y 320 (0) .. 70 (32 DN) => 7.8125 px/DN -->
+  <g stroke="#ddd">
+    <line x1="510" y1="320" x2="840" y2="320"/><line x1="510" y1="257.5" x2="840" y2="257.5"/>
+    <line x1="510" y1="195" x2="840" y2="195"/><line x1="510" y1="132.5" x2="840" y2="132.5"/><line x1="510" y1="70" x2="840" y2="70"/>
+  </g>
+  <g fill="#666" text-anchor="end">
+    <text x="504" y="324">0</text><text x="504" y="261">8</text><text x="504" y="199">16</text><text x="504" y="136">24</text><text x="504" y="74">32</text>
+  </g>
+  <line x1="510" y1="70" x2="510" y2="320" stroke="#999"/><line x1="510" y1="320" x2="840" y2="320" stroke="#999"/>
+  <g fill="#666" text-anchor="middle">
+    <text x="510" y="340">100</text><text x="551" y="340">200</text><text x="593" y="340">400</text>
+    <text x="634" y="340">800</text><text x="675" y="340">1600</text><text x="716" y="340">3200</text>
+    <text x="758" y="340">6400</text><text x="799" y="340">12800</text><text x="840" y="340">25600</text>
+    <text x="675" y="362" font-size="12">ISO</text>
+  </g>
+  <rect x="716" y="70" width="124" height="250" fill="#f3e9e9" opacity="0.7"/>
+  <!-- read noise DN: 6.23 6.64 7.40 7.60 9.26 11.80 20.76 30.87 ; y = 320 - DN*7.8125 -->
+  <polyline fill="none" stroke="#c0392b" stroke-width="2.5"
+    points="510,271.3 551,268.1 593,262.2 634,260.6 675,247.7 716,227.8 758,157.8 840,78.8"/>
+  <g fill="#c0392b">
+    <circle cx="510" cy="271.3" r="4"/><circle cx="551" cy="268.1" r="4"/><circle cx="593" cy="262.2" r="4"/>
+    <circle cx="634" cy="260.6" r="4"/><circle cx="675" cy="247.7" r="4"/><circle cx="716" cy="227.8" r="4"/>
+    <circle cx="758" cy="157.8" r="4"/><circle cx="840" cy="78.8" r="4"/>
+  </g>
+  <!-- input-referred (DN at ISO 100 equivalent): 6.23 3.32 1.85 0.95 0.58 0.37 ; same scale -->
+  <polyline fill="none" stroke="#2e8b57" stroke-width="2.5" stroke-dasharray="6,4"
+    points="510,271.3 551,294.1 593,305.5 634,312.6 675,315.5 716,317.1"/>
+  <g fill="#2e8b57">
+    <circle cx="551" cy="294.1" r="3.5"/><circle cx="593" cy="305.5" r="3.5"/><circle cx="634" cy="312.6" r="3.5"/>
+    <circle cx="675" cy="315.5" r="3.5"/><circle cx="716" cy="317.1" r="3.5"/>
+  </g>
+  <g font-size="12">
+    <line x1="540" y1="92" x2="566" y2="92" stroke="#c0392b" stroke-width="2.5"/><text x="572" y="96" fill="#333">read noise, DN at that ISO</text>
+    <line x1="540" y1="112" x2="566" y2="112" stroke="#2e8b57" stroke-width="2.5" stroke-dasharray="6,4"/><text x="572" y="116" fill="#333">input-referred (÷ gain): 17× better by 3200</text>
+  </g>
+</svg>

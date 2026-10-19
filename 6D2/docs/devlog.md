@@ -2,10 +2,15 @@
 
 Raw video, focus peaking and the rest of the monitoring overlays, working on a DIGIC 7 body.
 
-    Build:     v77, 2026-10-14
+    Build:     v86, 2026-10-19
     Base:      magiclantern_simplified @ 40c0a133b
-    Platforms: 6D2.111 (primary, tested on hardware over four weeks)
-               6D2.120 (parallel build, boot-tested in qemu only)
+    Platforms: 6D2.111 (primary, tested on hardware over five weeks)
+               6D2.120 (source kept in step, last boot-tested in qemu at v83; not shipped)
+
+v79-v86 in one line: **RAW + H.264 proxy recording together for the first time on this body, "Format
+card, keep ML", the top-plate buttons as overlay toggles, 10/12-bit playback in camera, and overlays
+aligned to the picture in every screen position.** See *v79-v86* and *Measured: data rates, cards
+and bit depth*.
 
 v41-v63 in one line: **12- and 10-bit raw video, video dual ISO (in the 1:1 crop readout), a held
 5x crop mode, correct per-mode frame rates, a black-level fix that affects every clip, and input
@@ -26,9 +31,9 @@ was consequences and cleanup.
 
 | | |
 |---|---|
-| **Working** | 14/12/10-bit raw video to SD (MLV), 5x crop mode (1:1 readout, 3164x926 window), video dual ISO in crop mode, focus peaking (with noise rejection), zebras, false colour (YUV + raw), cropmarks, magic zoom, histogram (YUV + raw), waveform (YUV + raw), vectorscope, spotmeter, ghost image, overlays in playback, shutter-angle display, scratch WAV audio, clean HDMI out, photo dual ISO, benchmarks, file manager |
-| **Working, with caveats** | `mlv_play` (needs `silent` loaded too — see *Known issues*), H.264 proxy (off by default) |
-| **New in v63, untested on hardware** | scratch WAV input select (Auto / Internal / External) and per-channel gain |
+| **Working** | 14/12/10-bit raw video to SD (MLV), **RAW + H.264 proxy on one card** (v84), 5x crop mode (1:1 readout, 3164x926 window), video dual ISO in crop mode, focus peaking (with noise rejection), zebras, false colour (YUV + raw), cropmarks, magic zoom, histogram (YUV + raw), waveform (YUV + raw), vectorscope, spotmeter, ghost image, overlays in playback, flip-screen overlays (all three positions), shutter-angle display, scratch WAV audio, top-plate buttons as overlay toggles, **Format card, keep ML**, clean HDMI out, photo dual ISO, benchmarks, file manager |
+| **Working, with caveats** | `mlv_play` (needs `silent` loaded too, slow - review the proxy MP4 in Canon's player instead; see *Known issues*) |
+| **Untested on hardware** | scratch WAV input select (Auto / Internal / External) and per-channel gain (v63) |
 | **Not possible on this body (yet)** | FPS override, 24p in the crop readout, lossless compression, expo override, auto-ETTR, video dual ISO in the binned 1080p readout, 4K / custom crop windows, `mlv_snd`, H.264 bitrate control, per-channel audio *source* |
 
 Most of the last row needs a register-write path that DIGIC 7 does not expose as one function; see
@@ -40,16 +45,18 @@ The build currently listed for the 6D2 is the DIGIC 7 *minimal / test* line: it 
 menu and the info overlays, and exists to prove the port loads. What it does not do on this body,
 and this build does:
 
-| | magiclantern.fm 6D2 build | this build (v63) |
+| | magiclantern.fm 6D2 build | this build (v86) |
 |---|---|---|
 | LiveView overlays (peaking, zebras, false colour, magic zoom) | drawn into a buffer the compositor never reads — nothing appears | working; drawn into the RGBA shadow buffer, 20 fps refresh |
 | Histogram / waveform / vectorscope | not drawn (same cause); vectorscope has the `+0x80` chroma bug on every DIGIC 6+ body | YUV *and* raw histogram/waveform; vectorscope fixed |
 | Raw video (`mlv_lite`) | module builds; second take of a session fails (`setup_buffers()` never re-runs — a 1 KB MLV) | 14/12/10-bit MLV, 1080p and 5x crop (1:1), video dual ISO in crop, second and later takes fixed |
 | Audio with raw | none | scratch WAV via Canon's factory recorder, auto-named `<clip>.WAV` |
+| H.264 proxy | `movie_start()` compiled empty, recording property denied - cannot work | RAW + Canon H.264 on one card, paired by file number |
+| Formatting the card | removes ML | *Format card, keep ML* |
 | Cropmarks | bitmap files only; the recorded-area rectangle is the hidden "OFF" state | *Recorded area* shading + *Framing guide* inside it; honest to the aspect actually recorded |
-| Resolution menu | offers 2240–5796 wide that silently record ~1920 | capped at 1920; "If too tall: shrink width" keeps the chosen aspect |
+| Resolution menu | offers 2240–5796 wide that silently record ~1920 | what the readout can deliver: up to 2048 (DCI 2K) in 1080p, 3072 in crop; "If too tall: shrink width" keeps the chosen aspect |
 | Clean HDMI, shutter angle, photo dual ISO | — | working |
-| Selfie-screen mirroring | — | present but unreliable — see *Known issues* |
+| Flip-screen overlays | — | aligned in all three screen positions |
 
 The first three rows are not 6D2-specific: the overlay bug affects every `FEATURE_VRAM_RGBA` camera
 and the other two every body. Details under *Fixes that are not 6D2-specific*.
@@ -406,6 +413,134 @@ v78 build that was tested, with one correction found by that per-commit
 build (`crop_guide_names` is now inside `#ifdef FEATURE_CROPMARKS`, so bodies
 without cropmarks compile). Commit hashes quoted in the entries below refer
 to the previous history and no longer exist.
+
+---
+
+## v79-v86 - the proxy, keep-ML format, top buttons, playback, alignment
+
+Five test rounds on two new SanDisk Extreme PRO cards. Every item below was confirmed on the camera
+unless it says otherwise.
+
+### RAW + H.264 proxy (v80-v84)
+
+The proxy had never worked on this body, and it took three separate faults to see why - each one
+hidden behind the previous.
+
+1. **The reallocation never ran (v80).** A proxy take frees mlv_lite's buffers, starts Canon's H.264,
+   and waits for `raw_rec_polling_cbr()` to reallocate on the `RECORDING_H264` state change. That
+   reallocation also required `gui_state == GUISTATE_IDLE`, which a recording body does not report,
+   and the wait had no limit: the take sat on *Starting...* with only the WAV running. The wait is
+   now bounded (10 s, then H.264 is stopped and the reason shown) and logged to `RECDBG.LOG`.
+2. **`movie_start()` was empty (v83).** `RECDBG.LOG` showed it returning in 8 ms with nothing
+   recording: the 6D2 never defined `CONFIG_MOVIE`, so `movie_start()` / `movie_end()` compiled to
+   nothing. An MP4 seen in an earlier attempt came from the user's own REC press reaching Canon.
+3. **ML could not see Canon recording (v84).** With `CONFIG_MOVIE`, Canon started - three MP4s on
+   the card - but `RECORDING_H264` stayed 0 throughout, so the buffers never came back and, on giving
+   up, ML judged Canon idle and left its H.264 running. `PROP_MVR_REC_START` had been on the 6D2's
+   `prop_handler_deny` list since the first port ("probably related to MVR stubs being all wrong").
+   Of the six handlers it wakes, only `audio-common.c`'s `enable_recording()` touches hardware - it
+   releases the AK codec gain task, which writes audio-chip registers this body does not have. That
+   handler is now skipped on the 6D2 and the property is read again. No freeze since.
+
+Also in v80: the reallocation runs during take start only once Canon reports
+`RECORDING_H264_STARTED` (state 2). At state 1 ("starting") it took the memory Canon's recorder was
+about to claim, and H.264 never started at all.
+
+Result: `IMG_9482.MLV` 2048×856 12-bit, 62.6 s, 1,502 frames, no drops, next to `MVI_9482.MP4` at
+~3.6 MB/s; the buffers were back ~1 s after Canon started, and stopping the take stopped both.
+Proxy-mode clips take Canon's number (`IMG_9482.MLV` ↔ `MVI_9482.MP4`). Without SRM memory (Canon
+holds it while recording H.264) the take still had 228 MB of shoot buffer.
+
+### Format card, keep ML (v85)
+
+`CONFIG_RESTORE_AFTER_FORMAT` needs the two format dialogs' handles. In ROM 1.1.1 each format module
+keeps its globals in a small block with the dialog handle at +4: `StopMnCardFormatBeginApp`
+(`0xe0718044`) deletes `[0x229cc+4]` and zeroes it, and every `DlgMnCardFormatBegin` call loads it;
+`StopMnCardFormatexcuteApp` (`0xe074f25a`) does the same with `[0x27730+4]` (+8 is the separate
+dummy dialog), with `hThisDialog` beside `0x27730` in the literal pool. So
+`DIALOG_MnCardFormatBegin = 0x229d0`, `DIALOG_MnCardFormatExecute = 0x27734` (EOS R 1.8.0:
+`0x1D868` / `0x21E14`).
+
+DIGIC 6/7/8 differences: the watcher keys on the Begin handle instead of `MENU_MODE`; messages go
+through `NotifyBox` instead of rewriting Canon's WinSys dialog; the restore waits for the Execute
+dialog to appear and close, then 2 s, so nothing is written while Canon formats; and the camera asks
+for a power cycle because `PROP_REBOOT` is not writable here. The boot flag is written by the same
+`bootflag_write_bootblock()` that `ML-SETUP.FIR` uses, exFAT included.
+
+For every body: `TmpMem_Init()` used to retry for ever with `UILOCK_EVERYTHING` held - with RAW video
+holding the shoot memory that locked every button until a battery pull. It now falls back to a 6 MB
+buffer, gives up after five tries and says why.
+
+### Top-plate buttons (v79)
+
+AF, ISO, DRIVE and metering have no codes of their own on this body. A press is the generic
+`GMT_GUICMD_PRESS_BUTTON_SOMETHING` (`0x4b`), followed within a few ms by Canon's top-LCD update
+`GMT_OLC_INFO_CHANGED` (`0x62`), whose arg says what Canon did:
+
+| Button | `0x62` arg | Canon's reaction |
+|---|---|---|
+| AF | `0x16`, then `0x11` | AF operation screen opens / closes |
+| ISO | `0x1e` | ISO screen; top LCD shows only ISO |
+| DRIVE | `9`, obj bit 26 set then clear | "not available in movie mode" |
+| metering | identical to DRIVE | same warning |
+| AF-point (front of the top dial) | identical to DRIVE | same warning |
+| light | nothing after `0x4b` | backlight |
+
+Mapped with d7probe's state logger, which grew a per-event list and - briefly - a core hook to see
+every GUI event type; types 2 and 4 are background streams (type 4 carries property ids) and none of
+them carries the button. The identity stays between the MPU and Canon's GUI. Overlay → *Top buttons
+(movie)* gives AF, ISO and DRIVE/metering a toggle each; an update only counts within 60 ms of a
+press, which ignores the ones Canon sends when its screens time out. Nothing is blocked, so Canon's
+screen still flashes up, and ISO stays dial-adjustable until the screen closes - kept on purpose.
+
+### Playback (v79-v81)
+
+- **10/12-bit clips drew nothing.** `raw_preview_fast_ex()` read only the 14-bit `raw_pixblock`
+  layout and returned for anything else; `raw_twk` (the upstream renderer for other depths) drives
+  DIGIC 5 EDMAC channels and is not usable here. Outside LiveView the preview now reads any depth
+  from the packed bitstream (16-bit words, MSB first - checked against the clip decoder on real
+  10/12/14-bit rows, 0 mismatches). In LiveView it stays 14-bit only, so mlv_lite's framing preview
+  never pays for the slower reads during a take.
+- **Crushed shadows.** Upstream's preview shows 10 EV and squares it. Playback now uses 12 EV with a
+  2.2 gamma (LiveView unchanged): 2.3 % of pixels at 0 on a test frame became 0.7 %.
+- **Green *fast* mode** - `raw_preview_fast_work()` packed U = V = 0 by hand, neutral only on DIGIC
+  <= 5. Now `UYVY_PACK`. Upstream bug on every DIGIC 6+ body; the same bug made screenshots green.
+- **Smeared controls.** On RGBA bodies there is no idle buffer, but `bmp_idle_copy()` still copied
+  between Canon's RGBA layer and that address with bit 19 flipped - unrelated memory. mlv_play's info
+  line did both directions every 10th frame. Now a no-op on RGBA bodies (upstream bug), and leaving
+  playback clears ML's layer.
+- The info line shows card-read and draw time per frame (`rd 41ms dr 30ms`); a failed `.IDX` save
+  is removed instead of left at 0 bytes (the loader already rejected those, so clips only opened
+  slowly).
+
+Playback is still too slow to review at speed; the proxy MP4 in Canon's player is the answer to that.
+
+### Overlay alignment (v78-v83)
+
+- **Flip screen.** `raw_set_preview_rect()` anchored the recorded-area shading on the mirrored
+  `BM2LV_X/Y` (v78), and `BM2LV_DX/DY` - distances - were mirrored too, so with the mirror on they
+  came out negative and the shading turned inside out (v79). Geometry now uses the unmirrored
+  `BM2LV_Xu/Yu`. Position 1 = Mirror and position 2 = None, both confirmed; the settings moved to
+  Debug.
+- **The 8-pixel offset.** `bm2lv.tx` centred the 720-wide panel in the 736-wide LiveView buffer.
+  d7probe's alignment dump (mean luma per buffer column) shows the picture running to column 719 and
+  a flat bright band at 720-735 in every position and after a bit-depth switch: the 16 columns are
+  padding at the end of each line. `tx = 0`. In position 1 the old value also read that band at the
+  left edge - the stray column of peaking dots.
+- After a bit-depth bounce the mapping and the raw geometry are marked stale; peaking still needs one
+  menu open/close after power-on and after a depth change.
+
+### Smaller things
+
+- **MLV header frame rate** is now exactly `24000/1001` (and `30000/1001`, `60000/1001`) instead of
+  `23976/1000`; `cardcheck.py` measures fps over the whole clip (span / frames) instead of
+  `1e6 / median`, which wandered 23.975-23.979 on integer-microsecond timestamps.
+- **Scratch audio** Mode order is OFF / Auto with RAW / Manual (saved as `wav.scratch.mode`); the
+  rename waits up to 10 s after a long take and says "Card full" when that is why it failed.
+- **Default settings** are the port's shooting setup (settings files store only changed values, so
+  an existing card keeps its owner's choices): scratch audio Auto with RAW, H.264 proxy on, sync beep
+  off, raw false colour / waveform / zebras, AF = peaking, DRIVE/metering = false colour.
+- `mlv_lite` logs why a take ran out of buffer (`REC_TRACE` builds); `REC_TRACE` is off again.
 
 ---
 
@@ -916,6 +1051,54 @@ resolution, not depth.
 
 ---
 
+## Measured: data rates, cards and bit depth
+
+**Cards.** ML's *Quick R/W benchmark*, photo mode (with RAW video on, mlv_lite holds the shoot
+memory and the benchmark's 16 MB buffer fails):
+
+| Card | Write | Read | Note |
+|---|---|---|---|
+| SanDisk Extreme PRO 64 GB V30, new | 82.9 / 81.6 MB/s | 89.6 MB/s | first fill |
+| the same card after a 33 GB take, camera-formatted | 62.1-65.5 MB/s | 96.3 MB/s | a camera format does not reset flash wear-levelling state; an SD Association *Overwrite* format is the fix to try |
+| SanDisk Extreme PRO 64 GB V30, second card | 83.3 MB/s, steady | 95.7 MB/s | |
+| SanDisk Extreme Plus 64 GB | 65 MB/s | - | (v56) |
+
+Reads at 96 MB/s mean the SDR104 path is not the limit; writes are the card. On the good card the
+wall sits between 81.6 MB/s (ran 66 s) and 88.0 MB/s (stopped in ~12 s); 75.4 MB/s ran 438 s
+(33 GB) until the card was full; 63.0 MB/s + proxy ran 62.6 s with no drops.
+
+**The ladder.** 1080p readout, 2.39:1, 23.976 fps, raw + 3.6 MB/s H.264 proxy + 0.19 MB/s scratch
+WAV, against both cards. Narrower widths are centre crops of the binned readout, not downscales.
+
+![Data-rate ladder](datarate-ladder-6d2.svg)
+
+| Size | Bit | Raw MB/s | + proxy + WAV | 64 GB card | 3 cards |
+|---|---|---|---|---|---|
+| 1280×536 | 10 / 12 / 14 | 20.6 / 24.7 / 28.8 | 24.4 / 28.5 / 32.6 | 44 / 37 / 33 min | 131 / 112 / 98 min |
+| 1600×668 | 10 / 12 / 14 | 32.0 / 38.4 / 44.8 | 35.8 / 42.2 / 48.6 | 30 / 25 / 22 min | 89 / 76 / 66 min |
+| 1728×724 | 10 / 12 / 14 | 37.5 / 45.0 / 52.5 | 41.3 / 48.8 / 56.3 | 26 / 22 / 19 min | 77 / 65 / 57 min |
+| 1920×804 | 10 / 12 / 14 | 46.3 / 55.5 / 64.8 | 50.1 / 59.3 / 68.6 | 21 / 18 / 16 min | 64 / 54 / 47 min |
+| 2048×856 | 10 / 12 / 14 | 52.5 / 63.0 / 73.6 | 56.3 / 66.8 / 77.3 | 19 / 16 / 14 min | 57 / 48 / 41 min |
+
+**What 12- and 10-bit cost.** Raw is linear, so a lower depth removes levels from the bottom stops
+first; the cost is quantisation noise (step / √12: 1.15 DN for 12-bit, 4.6 DN for 10-bit, in 14-bit
+units) added to the read noise measured in *ISO response* below.
+
+![Bit depth and noise](bitdepth-noise-6d2.svg)
+
+| ISO | read noise | 12-bit | 10-bit | 10-bit DR cost |
+|---|---|---|---|---|
+| 100 | 6.23 DN | 6.33 (model) / **6.3 measured** | 7.75 (model) / **8.3 measured** | 0.32 EV model, **0.42 measured** |
+| 800 | 7.60 DN | 7.68 | 8.89 | 0.23 EV |
+| 3200 | 11.80 DN | 11.85 | 12.67 | 0.10 EV |
+
+12-bit is lossless in practice at every ISO. 10-bit costs about a third to half a stop of shadow
+range at base ISO - more than the model, because quantisation of a near-black signal is not the
+uniform noise the model assumes, and it shows as posterisation when shadows are lifted - and becomes
+hard to see from ~ISO 800. The ISO 800-3200 rows are model values from measured read noise.
+
+---
+
 ## Measured: ISO response in video mode
 
 Read noise from lens-cap dark frames, 1920×720 14-bit, black 2047 / white 16200. Dark mean landed
@@ -1046,10 +1229,11 @@ cells are left empty rather than filled with a flattering number. ISO 12800 was 
 
 ## Known issues
 
-- **H.264 proxy is off by default and should stay there.** Its start path contains
-  `ASSERT(!RECORDING_H264); movie_start();` — if Canon's recorder has not returned to idle after the
-  previous take, the next one asserts and aborts. Never tested at length here, and with scratch WAV
-  working there is little reason to.
+- **H.264 proxy: tested on short takes only** (62.6 s, v84). Long takes, back-to-back takes and the
+  proxy with crop mode are untested. `RECDBG.LOG` (`REC_TRACE 1`) records the proxy start and every
+  take's stop reason.
+- **Peaking needs one ML menu open/close after power-on and after a bit-depth change** to realign
+  (v83 marks the mapping stale after the bounce; one path still misses it).
 - **Scratch WAV is Canon's factory recorder, not an audio driver.** Gain is calibrated and
   per-channel since v64 (see *v64*); the meter and the right-channel register writes are untested on
   hardware. One mic feeds both channels - a TRS splitter or a small mixer is still the answer for two
@@ -1060,8 +1244,9 @@ cells are left empty rather than filled with a flattering number. ISO 12800 was 
   the optical black ends (expected ~column 40; recording starts at 44 or later).
 - **Clips recorded before v62 have wrong black levels** in their headers on lit scenes - run
   `fix_mlv_black.py` or set 2047 / 512 / 128 in MLV App.
-- **Card-limited, not camera-limited.** A 12-bit 1920x960 take at 66.3 MB/s on a 65 MB/s card runs
-  about a minute and stops itself; size to ~58 MB/s for unlimited takes on that card.
+- **Card-limited, not camera-limited.** A format runs continuously when it stays under the card's
+  *low* write speed, not its benchmark average; see *Measured: data rates, cards and bit depth*. A
+  card filled once can drop ~20 MB/s and a camera format does not bring it back.
 - **`mlv_play` needs `silent` loaded alongside it.** Its only unresolved symbol is
   `lossless_decompress_raw`, which `silent` exports, and cross-module symbols resolve only if both
   modules are actually loaded — so enable both, and leave *Silent Picture* itself switched off.
@@ -1074,16 +1259,12 @@ cells are left empty rather than filled with a flattering number. ISO 12800 was 
   started on 89 MB either aborted in 0.5 s or crashed. Canon's audio recorder buffer is the obvious
   suspect and fits the audio path's fragility, but it is unconfirmed. If failures continue, point
   `REC_TRACE` here first.
-- **Selfie-screen mirror does not reach every overlay.** With the screen in position 1 Canon
-  mirrors the image; ML reflects the `BM2LV_X` table so overlays follow. Zebras/false colour do;
-  peaking still draws un-mirrored in some sessions even after the cache was keyed on table
-  contents and rebuilt synchronously (v38). Left in, off by default, parked.
 - **One boot-time crash loop seen once** (three `Evf`/`LvJob` asserts three seconds apart on the
   first boot of v39) and not reproduced on v40. If it recurs on a non-first boot, keep the logs.
 - **Overlay refresh is compositor-limited** to 20 fps (`refresh_yuv_from_rgb_task`), and the RGBA
   conversion is full-screen. Peaking and false colour feel slower than on DIGIC 5, and there is
   visible tearing, because the overlay is drawn into a buffer the compositor is consuming.
-- 1.2.0 is **built and boot-tested in qemu only.** `RESTARTSTART` differs (`0xe0fd0` vs `0xe0f90`);
+- 1.2.0 is **not shipped from v84**; its source is kept in step and it last booted in qemu at v83. `RESTARTSTART` differs (`0xe0fd0` vs `0xe0f90`);
   note that `build/magiclantern.lds` has no Makefile dependency, so `make clean` is mandatory after
   changing it or ML links at the old base and data-aborts.
 
@@ -1169,6 +1350,17 @@ Compressed — the full story is in the sections above and the code comments.
 | v68 | Diagnostics for the bit-depth switch and `gui_state`; half-shutter gate removed |
 | v67 | **Reverted all v64-v66 display/menu work** (the audio meter task was painting over Canon's UI); kept the any-bpp record fix and the zoom-ownership fix |
 | v66 | Button-event log **reverted** (broke overlays); `%c` snprintf bug (the "BBBB..." directory); bit-depth switch no longer fights crop mode's zoom hold, retry lockout removed; audio meter without recording; gain in 3 dB stops |
+| v72-v76 | Depth switch no longer keyed on zoom; data-loss bug (a take that never created its file deleted the previous clip); wider 1080p + Movie tab order back; resolution list per readout; fast-card test suite and `cardcheck.py` |
+| v77 | Peaking after a LiveView photo; flip-screen overlays per position; frame-rate experiment (timer B) |
+| v78 | Flip screen position 1 blackout: preview-rect anchor used the mirrored mapping |
+| v79 | Mirrored distances (`BM2LV_DX/DY`) fixed; **top buttons as overlay toggles**; 10/12-bit playback + playback tone curve |
+| v80 | Audio mode order; green *fast* playback; **`bmp_idle_copy` no-op on RGBA**; proxy wait bounded; alignment dump |
+| v81 | MLV fps `24000/1001`; half-written `.IDX` removed; WAV rename waits for long takes; `cardcheck` fps over the whole clip |
+| v82 | **8 px overlay offset**: `tx` 8 → 0 (picture is buffer columns 0..719) |
+| v83 | **`CONFIG_MOVIE`** for the 6D2; take-stop reason in `RECDBG.LOG`; screenshot colours on RGBA; mapping stale after a depth bounce |
+| v84 | **`PROP_MVR_REC_START` read again** (AK audio handler skipped) - **RAW + H.264 proxy working** |
+| v85 | **Format card, keep ML** (dialog handles `0x229d0` / `0x27734`); `TmpMem` no longer locks the UI for ever |
+| v86 | The port's shooting setup as default settings; `REC_TRACE` off |
 
 ---
 
