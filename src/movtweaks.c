@@ -1018,7 +1018,13 @@ void movtweak_task_init()
 #define WAV_SCRATCH_OFF    0
 #define WAV_SCRATCH_AUTO   1
 #define WAV_SCRATCH_MANUAL 2
+#ifdef CONFIG_6D2
+/* 6D2 default: the port's shooting setup (settings files store only values
+ * that differ from the default, so a user's own choice still wins) */
+static CONFIG_INT("wav.scratch.mode", wav_scratch_audio, WAV_SCRATCH_AUTO);
+#else
 static CONFIG_INT("wav.scratch.mode", wav_scratch_audio, WAV_SCRATCH_OFF);
+#endif
 static int wav_is_recording = 0;
 /* Take counter, persisted. It was a plain static that reset to 0 on every
  * boot - and Canon's recorder APPENDS to an existing Sample%d.wav rather than

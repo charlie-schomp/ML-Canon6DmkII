@@ -208,8 +208,12 @@ static CONFIG_INT("raw.warm.up", warm_up, 0);
 static CONFIG_INT("raw.use.srm.memory", use_srm_memory, 1);
 static CONFIG_INT("raw.small.hacks", small_hacks, 1);
 
-static CONFIG_INT("raw.h264.proxy", h264_proxy_menu, 0);
-static CONFIG_INT("raw.sync_beep", sync_beep, 1);
+/* on by default in this fork (6D2 builds only): the H.264 proxy is the
+ * in-camera review copy, ~3.6 MB/s on top of the raw stream */
+static CONFIG_INT("raw.h264.proxy", h264_proxy_menu, 1);
+/* off by default in this fork: the scratch WAV is the sync track, and the
+ * beep is audible on set and lands in the WAV and the proxy's audio */
+static CONFIG_INT("raw.sync_beep", sync_beep, 0);
 
 static CONFIG_INT("raw.output_format", output_format, 3);
 #define OUTPUT_14BIT_NATIVE 0

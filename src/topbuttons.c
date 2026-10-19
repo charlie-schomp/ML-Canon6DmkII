@@ -35,9 +35,11 @@
 
 #define PRESS_WINDOW_MS 60
 
-static CONFIG_INT("topbtn.af",    topbtn_af,    0);
+/* defaults: AF toggles focus peaking, DRIVE/metering false colour, ISO nothing
+ * (ISO keeps Canon's ISO screen) - indices into action_vars below */
+static CONFIG_INT("topbtn.af",    topbtn_af,    2);
 static CONFIG_INT("topbtn.iso",   topbtn_iso,   0);
-static CONFIG_INT("topbtn.drive", topbtn_drive, 0);
+static CONFIG_INT("topbtn.drive", topbtn_drive, 4);
 
 /* action index -> (name shown, config variable toggled, value when turned on
  * with nothing remembered) */

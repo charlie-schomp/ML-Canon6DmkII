@@ -56,7 +56,13 @@ extern uint8_t* get_bvram_mirror();
  * co-exists with the other overlays, and the same 2px step for speed.
  */
 
+#ifdef CONFIG_6D2
+/* 6D2 default: the port's shooting setup (settings files store only values
+ * that differ from the default, so a user's own choice still wins) */
+CONFIG_INT("falsecolor.raw", falsecolor_raw, 1);
+#else
 CONFIG_INT("falsecolor.raw", falsecolor_raw, 0);
+#endif
 
 /* stops relative to raw white level -> ML palette index */
 static inline int raw_fc_color(float ev)
