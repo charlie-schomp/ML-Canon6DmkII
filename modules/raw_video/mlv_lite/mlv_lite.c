@@ -408,7 +408,7 @@ static volatile int buffers_need_realloc = 0;
  * rather than deleted because it is what found the buffer-reallocation bug
  * above, after three wrong guesses made from symptoms alone; the next fault in
  * this path will be much cheaper to find with it than without. */
-#define REC_TRACE 1
+#define REC_TRACE 0
 
 #if REC_TRACE
 static void rec_log(const char * fmt, ...)
