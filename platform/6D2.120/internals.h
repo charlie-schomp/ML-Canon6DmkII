@@ -21,6 +21,11 @@
 // has LV
 #define CONFIG_LIVEVIEW
 
+// ML can start/stop Canon's H.264 (movie_start/movie_end in shoot.c, used by
+// mlv_lite's H.264 proxy). Without it both are empty, so the proxy never started
+// Canon's recording and a proxy take waited on a recording that never came.
+#define CONFIG_MOVIE
+
 // Does the mode *dial* have movie mode?
 // 6D2 does not, even though it does have a dedicated switch for movie.
 #define CONFIG_NO_DEDICATED_MOVIE_MODE
