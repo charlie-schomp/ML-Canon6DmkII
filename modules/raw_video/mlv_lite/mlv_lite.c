@@ -400,7 +400,7 @@ static volatile int buffers_need_realloc = 0;
  * rather than deleted because it is what found the buffer-reallocation bug
  * above, after three wrong guesses made from symptoms alone; the next fault in
  * this path will be much cheaper to find with it than without. */
-#define REC_TRACE 0
+#define REC_TRACE 1
 
 #if REC_TRACE
 static void rec_log(const char * fmt, ...)
@@ -2487,11 +2487,18 @@ unsigned int raw_rec_polling_cbr(unsigned int unused)
         return 0;
     }
 
-    /* reallocate buffers if needed (only if not recording).  The GUI check
-     * keeps the UI lock out of Canon's menus while idle; a take that is
-     * starting owns the UI already, and with the H.264 proxy it is waiting
-     * for exactly this while Canon - recording - need not report idle. */
-    if (realloc && (RAW_IS_PREPARING || (RAW_IS_IDLE && gui_state == GUISTATE_IDLE)))
+    /* reallocate buffers if needed (only if not recording).
+     *
+     * Idle: only with Canon's GUI idle, keeping the UI lock out of its menus.
+     * Starting a take with the H.264 proxy: only once Canon is fully recording.
+     * RECORDING_H264 turns on at "starting" (state 1), and reallocating then
+     * takes the memory Canon's own recorder is about to claim - v80 did, and
+     * H.264 never started.  Before v80 the GUI check applied here too, and a
+     * recording Canon never reports idle, so RAW waited for ever with H.264
+     * running.  RECORDING_H264_STARTED (state 2) is the moment in between. */
+    int prep_ok = RAW_IS_PREPARING &&
+                  (use_h264_proxy() ? RECORDING_H264_STARTED : gui_state == GUISTATE_IDLE);
+    if (realloc && (prep_ok || (RAW_IS_IDLE && gui_state == GUISTATE_IDLE)))
     {
         gui_uilock(UILOCK_EVERYTHING);
         take_semaphore(settings_sem, 0);
@@ -3857,7 +3864,10 @@ void raw_video_rec_task(uint32_t card_index)
             /* start H.264 recording */
             printf("Starting H.264...\n");
             ASSERT(!RECORDING_H264);
+            rec_log("H.264 proxy: movie_start, ready_to_take_pic=%d", job_state_ready_to_take_pic());
             movie_start();
+            rec_log("H.264 proxy: movie_start returned, h264=%d started=%d",
+                    RECORDING_H264, RECORDING_H264_STARTED);
 
             /* wait until our buffers are reallocated (raw_rec_polling_cbr does
              * it once it sees RECORDING_H264).  Bounded: this used to wait for
