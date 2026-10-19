@@ -1295,11 +1295,12 @@ static int wav_last_take_ready(char * src, int len)
      * file Canon holds open asserts inside Canon's FileIO (seen on hardware as
      * "ASSERT: 0 at ./FileIO/FileIO.c:119, raw_rec_task1"). A fixed sleep was
      * a guess; watching the size until it holds still is not. Three unchanged
-     * readings 100ms apart, up to 4s. If it never settles, leave the file
-     * where it is - a mis-named WAV is recoverable, a crashed camera is not. */
+     * readings 100ms apart, up to 10s (4s was not always enough after a
+     * 7-minute take). If it never settles, leave the file where it is - a
+     * mis-named WAV is recoverable, a crashed camera is not. */
     uint32_t last = 0;
     int stable = 0;
-    for (int i = 0; i < 40; i++)
+    for (int i = 0; i < 100; i++)
     {
         msleep(100);
         if (FIO_GetFileSize(src, &size) != 0) { stable = 0; continue; }
@@ -1389,8 +1390,14 @@ int wav_scratch_rename(const char * mlv_path)
     }
 
     int ok = (FIO_RenameFile(src, dest) == 0);
-    if (ok) NotifyBox(2000, "WAV -> %s", dest + 3);
-    else    NotifyBox(2000, "WAV kept as Sample%d.wav", wav_last_number);
+    if (ok)
+        NotifyBox(2000, "WAV -> %s", dest + 3);
+    else if (get_free_space_32k(get_shooting_card()) < 32)
+        /* moving into DCIM/AUDIO needs a directory entry; a full card has no
+         * room for one (seen after a take that filled the card) */
+        NotifyBox(4000, "Card full: WAV kept as Sample%d.wav", wav_last_number);
+    else
+        NotifyBox(2000, "WAV kept as Sample%d.wav", wav_last_number);
     /* Deliberately NOT rewinding wav_file_number here. An earlier version
      * reused the number once the file had been renamed away, on the grounds
      * that the name was free again - but that asks Canon's recorder to create
