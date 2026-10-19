@@ -1000,6 +1000,17 @@ static mlv_xref_hdr_t *mlv_play_load_index(char *base_filename)
     return block_hdr;
 }
 
+/* A write that fails part way (card full, seen on hardware) used to leave the
+ * .IDX behind - empty or truncated.  The loader rejects it, so the clip still
+ * plays, but the index is rebuilt on every open and the stub looks like data.
+ * Remove it and say why. */
+static void mlv_play_index_failed(FILE *out_file, char *filename)
+{
+    FIO_CloseFile(out_file);
+    FIO_RemoveFile(filename);
+    NotifyBox(4000, "Index not saved (card full?)");
+}
+
 static void mlv_play_save_index(char *base_filename, mlv_file_hdr_t *ref_file_hdr, int fileCount, frame_xref_t *index, int entries)
 {
     char filename[128];
@@ -1024,7 +1035,11 @@ static void mlv_play_save_index(char *base_filename, mlv_file_hdr_t *ref_file_hd
     file_hdr.audioFrameCount = 0;
     file_hdr.fileNum = fileCount + 1;
     
-    FIO_WriteFile(out_file, &file_hdr, sizeof(mlv_file_hdr_t));
+    if(FIO_WriteFile(out_file, &file_hdr, sizeof(mlv_file_hdr_t)) != sizeof(mlv_file_hdr_t))
+    {
+        mlv_play_index_failed(out_file, filename);
+        return;
+    }
 
     /* now write XREF block */
     mlv_xref_hdr_t hdr;
@@ -1036,7 +1051,7 @@ static void mlv_play_save_index(char *base_filename, mlv_file_hdr_t *ref_file_hd
     
     if(FIO_WriteFile(out_file, &hdr, sizeof(mlv_xref_hdr_t)) != sizeof(mlv_xref_hdr_t))
     {
-        FIO_CloseFile(out_file);
+        mlv_play_index_failed(out_file, filename);
         return;
     }
     
@@ -1081,7 +1096,7 @@ static void mlv_play_save_index(char *base_filename, mlv_file_hdr_t *ref_file_hd
             if(FIO_WriteFile(out_file, buffer, write_size) != write_size)
             {
                 free(buffer);
-                FIO_CloseFile(out_file);
+                mlv_play_index_failed(out_file, filename);
                 return;
             }
         }
