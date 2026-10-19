@@ -219,3 +219,17 @@ extern int winsys_bmp_dirty_bit_neg;
 #define AUDIO_GAIN_TABLE_INT_ATT    0xe08e7adc
 #define AUDIO_GAIN_TABLE_EXT        0xe08e7ddc
 #define AUDIO_GAIN_TABLE_EXT_ATT    0xe08e7bdc
+
+// "Format card, keep ML" (CONFIG_RESTORE_AFTER_FORMAT).  Each format module keeps
+// its globals in a small block; the dialog handle is at +4, non-zero exactly while
+// that dialog is open.  Found in ROM: StopMnCardFormatBeginApp (0xe0718044) deletes
+// [0x229cc+4] and zeroes it, and every DlgMnCardFormatBegin call loads it; likewise
+// StopMnCardFormatexcuteApp (0xe074f25a) deletes [0x27730+4] (+8 is the separate
+// "dummy" dialog), with "hThisDialog" next to 0x27730 in the literal pool.
+// Compare EOS R 1.8.0: 0x1D868 / 0x21E14.  Runtime-confirmed by ML's message
+// appearing when Canon's Format screen opens.
+#define DIALOG_MnCardFormatBegin   (0x229d0)
+#define DIALOG_MnCardFormatExecute (0x27734)
+#define FORMAT_BTN       BGMT_INFO
+#define FORMAT_BTN_NAME  "[INFO]"
+#define FORMAT_STR_LOC   0       // unused on DIGIC 7: messages go through NotifyBox

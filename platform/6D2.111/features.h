@@ -110,3 +110,8 @@
 #define CONFIG_AUTOBACKUP_ROM
 
 #undef CONFIG_ADDITIONAL_VERSION
+
+// Canon's Format card screen: back ML up to RAM first, restore it and the card's
+// boot flag afterwards ("Format card, keep ML"; INFO toggles keep/remove).
+// The boot flag writer is the same bootflag_write_bootblock() ML-SETUP.FIR uses.
+#define CONFIG_RESTORE_AFTER_FORMAT
