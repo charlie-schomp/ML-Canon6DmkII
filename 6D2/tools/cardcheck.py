@@ -213,7 +213,12 @@ def check_clip(stem, parts):
     steps = [ts[i + 1] - ts[i] for i in range(len(fn) - 1) if fn[i + 1] == fn[i] + 1 and ts[i + 1] > ts[i]]
     if steps:
         med = statistics.median(steps)
-        c['fps'] = 1e6 / med if med else 0
+        # rate over the whole clip (frame-number span / time span), not 1e6 / median:
+        # timestamps are whole microseconds and 23.976's period is 41708.33 us, so the
+        # median lands on a different integer per clip (23.975-23.979 for one camera
+        # rate); the span averages that out and can show real drift
+        span_us = ts[-1] - ts[0]
+        c['fps'] = (fn[-1] - fn[0]) * 1e6 / span_us if span_us > 0 and fn[-1] > fn[0] else (1e6 / med if med else 0)
         c['dur'] = (ts[-1] - ts[0]) / 1e6 + med / 1e6
         c['hiccups'] = sum(1 for s in steps if s > 1.5 * med)
     else:
