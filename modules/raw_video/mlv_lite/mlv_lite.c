@@ -3509,11 +3509,26 @@ void init_mlv_chunk_headers(struct raw_info *raw_info)
         file_hdr[i].videoFrameCount = 0; //autodetect
         file_hdr[i].audioFrameCount = 0;
         int fps = fps_get_current_x1000();
+        /* NTSC rates are N/1.001 exactly; 23976/1000 is 1 ppm off and some
+         * NLEs read it as a non-standard rate instead of 23.976.  Use
+         * 24000/1001 (30000/1001, 60000/1001) when the x1000 figure is
+         * exactly that ratio, truncated; anything else stays as measured. */
+        int whole = (fps * 1001 + 500000) / 1000000;
         if (fps == 0)
+        {
             file_hdr[i].sourceFpsNom = 1;
+            file_hdr[i].sourceFpsDenom = 1000;
+        }
+        else if (fps % 1000 && whole * 1000000 / 1001 == fps)
+        {
+            file_hdr[i].sourceFpsNom = whole * 1000;
+            file_hdr[i].sourceFpsDenom = 1001;
+        }
         else
+        {
             file_hdr[i].sourceFpsNom = fps;
-        file_hdr[i].sourceFpsDenom = 1000;
+            file_hdr[i].sourceFpsDenom = 1000;
+        }
     }
 
     memset(&rawi_hdr, 0, sizeof(mlv_rawi_hdr_t));
