@@ -178,6 +178,10 @@ static int crop_refused = 0;        /* 6D2: Canon refused the 5x request (Face A
 
 static CONFIG_INT("raw.write.speed", measured_write_speed, 0);
 static int measured_write_speeds[CARD_COUNT] = {0};
+
+/* why the last take ran out of buffer, for RECDBG.LOG: 1 card too slow,
+ * 2 EDMAC timeout, 3 compressed frame too large */
+static volatile int buffer_full_reason = 0;
 static int measured_compression_ratio = 0;
 
 static CONFIG_INT("raw.pre-record", pre_record, 0);
@@ -3223,6 +3227,7 @@ static void compress_task()
                 {
                     printf("\nCompressed size higher than uncompressed - corrupted frame?\n");
                     printf("Please reboot, then decrease vertical resolution in crop_rec menu.\n\n");
+                    buffer_full_reason = 3;
                     buffer_full = 1;
                     ASSERT(0);
                 }
@@ -3230,6 +3235,7 @@ static void compress_task()
                 {
                     printf("Compressed size too high - too much detail or noise?\n");
                     printf("Consider using uncompressed 10/12-bit.");
+                    buffer_full_reason = 3;
                     buffer_full = 1;
                     ASSERT(0);
                 }
@@ -3293,6 +3299,7 @@ void process_frame(int next_fullsize_buffer_pos)
     {
         /* EDMAC too slow */
         NotifyBox(2000, "EDMAC timeout.");
+        buffer_full_reason = 2;
         buffer_full = 1;
         return;
     }
@@ -3338,6 +3345,7 @@ void process_frame(int next_fullsize_buffer_pos)
     else
     {
         /* card too slow */
+        buffer_full_reason = 1;
         buffer_full = 1;
         return;
     }
@@ -3819,6 +3827,7 @@ void raw_video_rec_task(uint32_t card_index)
         take_semaphore(settings_sem, 0);
         raw_recording_state = RAW_PREPARING;
         give_semaphore(settings_sem);
+        buffer_full_reason = 0;
 
         rec_log("========== TAKE START, card=%d, srm_enabled=%d",
                 card_index, (int)use_srm_memory);
@@ -4021,6 +4030,17 @@ void raw_video_rec_task(uint32_t card_index)
     {
         if (buffer_full)
         {
+            /* the take stopped by itself: say why, and how fast the card
+             * actually wrote during it (bytes / ms of FIO_WriteFile time) */
+            #if REC_TRACE
+            int ms = writing_time[card_index];
+            int cmbs = ms ? (int)(written_total[card_index] * 100 * 1000 / (1024 * 1024) / ms) : 0;
+            rec_log("BUFFER FULL (%s) card=%d frames=%d written=%dMB, %dms writing + %dms idle -> %d.%02d MB/s while writing",
+                    buffer_full_reason == 1 ? "card too slow" : buffer_full_reason == 2 ? "EDMAC timeout" :
+                    buffer_full_reason == 3 ? "compressed frame too large" : "?",
+                    card_index, frame_count, (int)(written_total[card_index] / (1024 * 1024)),
+                    ms, idle_time[card_index], cmbs / 100, cmbs % 100);
+            #endif
             goto abort_and_check_early_stop;
         }
         
