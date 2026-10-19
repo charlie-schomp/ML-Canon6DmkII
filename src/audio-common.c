@@ -1054,6 +1054,13 @@ audio_monitoring_toggle( void * priv, int delta )
 static void
 enable_recording(int mode)
 {
+    #ifdef CONFIG_6D2
+    /* Not an AK-codec body: waking the gain task here would write audio-chip
+     * registers through this file's AK paths. Recording start/stop is all
+     * this handler reacts to, so skip it (PROP_MVR_REC_START is read on the
+     * 6D2 now - see its property_whitelist.h). */
+    return;
+    #endif
     switch( mode )
     {
         case 0:

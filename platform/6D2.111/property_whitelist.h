@@ -28,7 +28,13 @@
 // deny reads / do not register property handlers for these
 const uint32_t prop_handler_deny[] =
 {
-    PROP_MVR_REC_START // probably related to MVR stubs being all wrong
+    /* PROP_MVR_REC_START was listed here from the first port ("probably related
+     * to MVR stubs being all wrong"). Denying it left ML unable to see Canon
+     * recording at all: RECORDING_H264 stayed 0, so the H.264 proxy never got
+     * its buffers back and never stopped Canon's recording on giving up. Its
+     * handler that touches hardware - audio-common.c's enable_recording(),
+     * which wakes the AK audio-chip task - is disabled for this body instead. */
+    0   /* no property is 0; keeps the array non-empty */
 };
 
 // allow writes / allow prop_request_change() for these:
