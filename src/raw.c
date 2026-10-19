@@ -734,6 +734,13 @@ static int lv_bpp_patched = 0;      /* depth the ROM constants are patched to, 0
  * this body throws a Canon ERR mid-take (see the note in zebra.c). */
 static void raw_lv_bounce_redraw(void)
 {
+    /* The overlay mapping (vram params, peaking's x cache) and the raw
+     * geometry behind the frame guides can be rebuilt while the view is still
+     * at the other zoom, and nothing marks them stale again once it is back -
+     * peaking and the guides stayed misaligned until the ML menu was opened
+     * and closed, which does mark them.  Mark them here. */
+    vram_params_set_dirty();
+    raw_set_dirty();
     if (NOT_RECORDING)
     {
         redraw();
