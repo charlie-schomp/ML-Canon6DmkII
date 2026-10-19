@@ -12,11 +12,10 @@ built on [Magic Lantern](https://www.magiclantern.fm/).
 
 | Your camera's firmware | Download | Status |
 |---|---|---|
-| **1.1.1** | [**ML-6D2-fw1.1.1-v78.zip**](6D2/download/ML-6D2-fw1.1.1-v78.zip) | Tested on a camera |
-| 1.2.0 | [ML-6D2-fw1.2.0-v78-untested.zip](6D2/download/ML-6D2-fw1.2.0-v78-untested.zip) | Never run on a camera; there is no installer for 1.2.0 |
+| **1.1.1** | [**ML-6D2-fw1.1.1-v86.zip**](6D2/download/ML-6D2-fw1.1.1-v86.zip) | Tested on a camera |
+| 1.2.0 | — | Not supported in current releases |
 
-To check your firmware: Canon menu → Wrench (setup) tab → **Firmware**. If it says 1.1.1, use the
-first download.
+To check your firmware: Canon menu → Wrench (setup) tab → **Firmware**. This build needs 1.1.1.
 
 ## Install
 
@@ -33,6 +32,9 @@ You only need three things from the zip: **`autoexec.bin`**, the **`ML`** folder
 **Updating from an older version:** replace `autoexec.bin` and the `ML` folder on the card (keep
 `ML/SETTINGS` if you want your settings), then restart the camera.
 
+**Clearing a card later:** use Canon's **Format card** — it now says *Format card, keep ML* and
+Magic Lantern puts itself back afterwards.
+
 **Then:** Magic Lantern menu → **Modules**, turn on `mlv_lite` (raw video), plus `dual_iso`,
 `mlv_play` and `silent` if you want them, and restart.
 
@@ -42,10 +44,16 @@ The official Magic Lantern build for this camera only boots and shows the menu. 
 
 - **Raw video** (MLV files) at 14, 12 or 10 bit, in 1080p up to **2048 wide** (DCI 2K), or a
   **1:1 crop mode** up to 3072×926.
+- **H.264 proxy**: Canon's own H.264 recorded next to every raw clip on the same card, for smooth
+  review in the camera's player.
 - **Scratch audio**: a WAV recorded alongside every raw clip and named after it, with per-channel
   gain and a backup "safety" channel for loud sound.
 - **Focus peaking, zebras, false colour, waveform, vectorscope, histograms, magic zoom**, frame
-  guides for the area you're recording, clean HDMI out.
+  guides for the area you're recording, clean HDMI out — aligned with the flip screen in any
+  position.
+- **Top buttons as overlay toggles**: in movie mode the AF and DRIVE buttons switch peaking and false
+  colour on and off (assignable).
+- **Format card, keep ML**: clear a card in the camera without reinstalling.
 - **Dual ISO** for photos, and for video in crop mode.
 
 The [user guide](6D2/docs/user-guide.md) covers where everything is in the menus, which card
@@ -53,9 +61,9 @@ speeds you need, and shooting tips.
 
 ## Good to know
 
-- **Your SD card decides the resolution.** A card that really writes ~65 MB/s records
-  1920×804 at 12-bit without stopping; a ~90 MB/s card handles full 1080p at 12-bit. The user
-  guide has the table.
+- **Your SD card decides the resolution.** A SanDisk Extreme PRO (~83 MB/s) records 2048×856 12-bit
+  with the H.264 proxy without stopping, about 16 minutes per 64 GB card. The user guide has the
+  table, and the [development log](6D2/docs/devlog.md) the full ladder.
 - **Use a lens with an AF/MF switch, set to MF**, for crop mode and when changing bit depth. With
   the lens on autofocus, Canon blocks the zoom these use.
 - Raw clips play in [MLV App](https://mlv.app/). Your computer's normal video player can't open them.

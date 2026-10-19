@@ -3,7 +3,7 @@
 Raw video and the full monitoring overlay set on a DIGIC 7 body.
 
     Firmware 1.1.1  — tested on a camera
-    Firmware 1.2.0  — built and boot-tested in an emulator only, never run on a camera
+    Firmware 1.2.0  — not supported in current releases
 
 ## Install
 
@@ -15,6 +15,18 @@ Raw video and the full monitoring overlay set on a DIGIC 7 body.
 Updating: replace `autoexec.bin` and `ML/`, keep `ML/SETTINGS/`, and restart the camera — Magic
 Lantern loads at power-on, so a new version does nothing until you do.
 
+**Clearing a card:** Canon menu → **Format card** shows *Format card, keep ML* (INFO switches to
+*remove ML*). After the format Magic Lantern copies itself back and asks you to turn the camera off
+and on. Don't clear cards by deleting files on a Mac or PC: the computer leaves hidden files behind,
+and a card cleared that way writes more slowly.
+
+### Out of the box
+
+A new card starts with: scratch audio **Auto with RAW**, **H.264 proxy on**, recorded-area frame
+guides, false colour / waveform / zebras reading the **raw** data, the **AF** button toggling focus
+peaking and **DRIVE / metering** toggling false colour, sync beep off. Change anything you like;
+updates keep your changes.
+
 ## Where things are
 
 | | |
@@ -23,16 +35,18 @@ Lantern loads at power-on, so a new version does nothing until you do.
 | Changing bit depth | Pick it, then **close the ML menu**: the view zooms in and out once and the entry reads `live`. Needs the lens on **MF** (Canon refuses the zoom with the lens on AF); with AF, Canon's MENU and back applies it instead |
 | Crop mode | Movie → RAW video → **Crop mode** — holds Canon's 5x zoom: a 1:1 sensor window, 3160×926, always 29.97 fps. Lens on **MF**; switching the lens to MF (or closing the ML menu) brings it in |
 | Video dual ISO | enable `dual_iso`, turn on Dual ISO, use Crop mode (it does nothing in the binned 1080p readout). MLV App: Dual ISO **On**, pattern low-low-HIGH-HIGH |
-| Scratch audio | Movie → **Scratch audio**, the last entry, one submenu: **Mode** OFF / Manual / Auto with RAW, **Record WAV now**, **Input** Auto (jack) / Internal / External, **Gain** Factory / Manual with **Left gain** in 3 dB stops (Mute, −12 … +42 dB), **Right channel** Same as left / Own level / Safety −6 … −24 dB, **Right gain** |
+| Scratch audio | Movie → **Scratch audio**, the last entry, one submenu: **Mode** OFF / Auto with RAW / Manual, **Record WAV now**, **Input** Auto (jack) / Internal / External, **Gain** Factory / Manual with **Left gain** in 3 dB stops (Mute, −12 … +42 dB), **Right channel** Same as left / Own level / Safety −6 … −24 dB, **Right gain** |
 | Focus peaking | Overlay → Focus Peak — **Edge density: Dots / Lines**, **Noise rejection: OFF / Steady / Steady + Wide** |
 | Frame guides | Overlay → Cropmarks = **OFF / Recorded area** (shades outside what's recorded) + **Framing guide** inside it. Bitmap cropmarks are not in this build. |
 | Resolution / aspect | Movie → RAW video. 1080p goes up to **2048** wide (2080 active columns), crop mode up to 3072; each keeps its own pick. Aspect **1.90:1 (DCI)** gives 2048×1080. **If too tall = Shrink width** (default) keeps the ratio; Clamp height keeps the width |
-| Flip screen | Overlay → **Flip-screen overlays** — makes peaking, zebras and false colour follow Canon's image when the vari-angle screen is flipped; one setting per screen position (None / Mirror / Flip / Rotate 180). The menu shows the position Canon reports |
+| Flip screen | automatic — overlays follow Canon's image in all three screen positions. The per-position settings are under Debug → **Flip-screen overlays** if you ever need them |
+| H.264 proxy | Movie → RAW video → **H.264 proxy** (on by default). Records Canon's H.264 next to every raw clip on the same card, for smooth review in Canon's player: `IMG_1234.MLV` pairs with `MVI_1234.MP4`. Canon movie size **1080 IPB 23.98**. Costs ~3.6 MB/s |
+| Top buttons | Overlay → **Top buttons (movie)** — in movie LiveView, **AF**, **ISO** and **DRIVE / metering** (the AF-point button counts as DRIVE) each toggle an overlay of your choice. Canon's own screen still flashes up; ISO stays adjustable with the dial until its screen closes |
 | Clean HDMI | Overlay → **Clean HDMI out** — no ML overlays or bars while HDMI is connected |
 | False colour | Overlay → False color → **Source: Preview (YUV) / RAW sensor** |
 | Waveform | Overlay → Waveform → **Source: Preview (YUV) / RAW sensor** |
 | Shutter angle | shown in the LiveView info bar |
-| MLV playback | enable **both** `mlv_play` and `silent` in Modules; leave Silent Picture off |
+| MLV playback | enable **both** `mlv_play` and `silent` in Modules; leave Silent Picture off. With RAW video on, PLAY opens ML's player (slow, but shows 10/12/14-bit); **disable `mlv_play`** to review the proxy MP4s in Canon's player instead |
 
 In **Auto**, the WAV starts and stops with the raw clip and is filed as `DCIM/AUDIO/<clip>.WAV` —
 `M09-1231.MLV` gets `DCIM/AUDIO/M09-1231.WAV`; manual takes are `W<day>-<hhmm>.WAV`. Costs
@@ -64,18 +78,26 @@ Full method and figures are in the [development log](devlog.md).
 **Peaking sparkle at high ISO:** set Threshold to 5–10 (not 40), Filter edges OFF, then Noise
 rejection `Steady + Wide`.
 
-**Card speed decides resolution.** Budget ~58 MB/s on a 65 MB/s-write card for unlimited takes:
+**Card speed decides resolution.** A take runs until the card is full when its data rate stays
+under the card's *slowest* writing, not its benchmark average. Raw MB/s at 23.976 fps (add ~3.8
+for the H.264 proxy and scratch WAV):
 
 | 23.976 fps | 14-bit | 12-bit | 10-bit |
 |---|---|---|---|
 | 1920×1080 | 87 MB/s | 74.6 | 62.2 |
-| 1920×960 | 77.3 | 66.3 | 55.2 |
 | 1920×804 (2.39:1) | 64.8 | 55.5 | 46.3 |
 | 2048×1080 (1.90:1 DCI) | 92.8 | 79.5 | 66.3 |
 | 2048×856 (2.39:1) | 73.6 | 63.0 | 52.5 |
 
-Crop mode runs at 29.97, so multiply by 1.25. A card that really writes ~90 MB/s (Extreme PRO
-class) makes 1080p 12-bit continuous; the [fast-card test](../testing/fast-card-test.md) is the procedure for finding out.
+Crop mode runs at 29.97, so multiply by 1.25. A SanDisk Extreme PRO 64 GB writes ~83 MB/s new:
+**2048×856 12-bit + proxy** (66.8 MB/s, ~16 min per card) runs continuously on it. The same card
+after being filled once dropped to ~62 MB/s; there, use **1920×804 10-bit + proxy** (50 MB/s, ~21
+min). Benchmark a card in a photo mode (Debug → Benchmarks): with RAW video on, the benchmark cannot
+get its memory. The full ladder is in the [development log](devlog.md).
+
+**10-bit or 12-bit?** 12-bit is lossless in practice. 10-bit costs about half a stop of shadow range
+at ISO 100-400 (it shows as blotchy shadows when you lift them) and is hard to tell apart from ~ISO
+800 up. Highlights and midtones are the same.
 
 **Clips from before v62** carry a wrong black level on lit scenes (shadows crushed in MLV App). Run
 `extras/tools/fix_mlv_black.py` (in the zip) on them, or set RAW black level to 2047 (512 at 12-bit, 128 at 10-bit).
@@ -85,7 +107,7 @@ class) makes 1080p 12-bit continuous; the [fast-card test](../testing/fast-card-
 FPS override, 24p in crop mode (four rounds of experiments, always 29.97), lossless compression,
 expo override, auto-ETTR, video dual ISO in 1080p, 4K / custom crop windows, `mlv_snd`, H.264
 bitrate control, a different audio source per channel, crop mode or a bit-depth switch with the
-lens on AF, a recorded-area guide in crop mode.
+lens on AF, a recorded-area guide in crop mode, separate DRIVE / metering / AF-point buttons.
 
 Photo dual ISO works. Face-tracking AF works natively. See the [roadmap](roadmap.md).
 
