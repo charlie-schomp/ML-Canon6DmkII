@@ -523,23 +523,28 @@ void _update_vram_params()
     bm2lv.ty = 0;
     //~ bm2lv.ty = (PLAY_MODE || QR_MODE)? -48 : 0;     
 #elif defined(CONFIG_6D2)
-    /* The LiveView buffer is shown 1:1, centred on the 720x480 panel:
-     *   photo LV  736x480 -> 8 buffer columns off each side, no letterbox
-     *   movie LV  736x408 -> 8 off each side, 36 rows of letterbox top and
+    /* The LiveView buffer is shown 1:1 on the 720x480 panel:
+     *   photo LV  736x480 -> buffer columns 0..719 shown, no letterbox
+     *   movie LV  736x408 -> columns 0..719, 36 rows of letterbox top and
      *                        bottom (the same 36 that os.off_169 carries)
+     * Columns 720..735 are not picture: d7probe's alignment dump (v81, mean
+     * luma per buffer column) shows the image running smoothly to column 719
+     * and a flat bright band at 720..735, in every screen position and after
+     * a bit-depth switch.  This used to centre the panel (tx = 8), which put
+     * every overlay 8 px left of the picture, 8 px right in the mirrored
+     * position 1, and read the noise band at the left edge there - a stray
+     * column of peaking dots.
      * The generic branch below assumes "no black bars" and scales the buffer
      * height onto all 480 rows, so only screen row 240 read the LV row it
-     * drew on; row 36 read row 30, row 444 read row 377. Focus peaking sat
-     * ~30px above the true edge at the top of frame and ~30px below at the
-     * bottom - reported as "offset up and to the right", the right part being
-     * the 8 uncounted columns. Width/height come from the DISP struct at
-     * runtime (see the block above), so this holds if Canon changes them.
-     * Off an HDMI monitor the generic branch is still the right one. */
+     * drew on; row 36 read row 30, row 444 read row 377. Width/height come
+     * from the DISP struct at runtime (see the block above), so this holds if
+     * Canon changes them. Off an HDMI monitor the generic branch is still the
+     * right one. */
     if (hdmi_code < 5 && !EXT_MONITOR_RCA)
     {
         bm2lv.sx = 1024;
         bm2lv.sy = 1024;
-        bm2lv.tx =  ((int)vram_lv.width  - 720) / 2;
+        bm2lv.tx = 0;
         bm2lv.ty = -((480 - (int)vram_lv.height) / 2);
     }
     else
