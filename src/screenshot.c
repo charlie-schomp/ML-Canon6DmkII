@@ -212,7 +212,10 @@ int take_screenshot( char* filename, uint32_t mode )
                 pal = 0x00FF0000;
             }
             
-            uint32_t uyvy = 0;
+            /* black with neutral chroma when the LiveView image is not saved:
+             * a plain 0 is neutral only on DIGIC <= 5 - DIGIC 6/7/8 bias chroma
+             * by 0x80, so 0 decoded as saturated green behind the overlays */
+            uint32_t uyvy = UYVY_PACK(0, 0, 0, 0);
 
             /* handle transparency (incomplete, needs more reverse engineering) */
             if (pal == 0x00FF0000) /* fully transparent */
