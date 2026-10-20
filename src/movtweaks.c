@@ -1264,6 +1264,140 @@ void wav_scratch_stop(void)
     wav_file_number = (wav_file_number + 1) & 0xFF;   /* next take gets its own file */
 }
 
+#ifdef AUDIO_PEAK_REG
+/* ---- level meter --------------------------------------------------------
+ *
+ * L/R peak bars in dBFS with a 1.5 s peak hold and CLIP, while the scratch
+ * WAV records.  AUDIO_PEAK_REG holds the current L/R peaks (what Canon's own
+ * meter reads, 0xe04b576e); it is only meaningful while the recorder has the
+ * input live, so the meter only runs then.
+ *
+ * Brought back from v64-v66 under the rule the v67 revert taught: on this
+ * body ML draws into its own layer, and every draw makes the compositor push
+ * that layer over whatever Canon is showing.  The v66 meter drew 20 times a
+ * second gated only on `lv`, so it sat on top of Canon's screens and broke
+ * every LiveView overlay.  This one draws only while liveview_display_idle()
+ * (plain LiveView, no Canon dialog, no ML menu), ten times a second, and
+ * clears its own small rectangle once when it has to go away.  No "always on"
+ * mode: metering without a take needs the audio block started by hand
+ * (FA_Aud_OnlyBlockStart) - a separate experiment, not part of this. */
+static CONFIG_INT("wav.meter", wav_meter, 1);          /* 0 off, 1 while the WAV records */
+
+static int wav_meter_db10[2] = { -999, -999 };      /* dBFS x 10, what the bars show */
+static int wav_meter_hold10[2] = { -999, -999 };    /* peak hold, dBFS x 10 */
+static int wav_clip_until = 0;
+
+static int wav_peak_to_db10(int peak)
+{
+    if (peak <= 0) return -999;
+    return (int)(200.0f * log10f(peak / 32767.0f) - 0.5f);
+}
+
+static uint8_t wav_db_color(int db10)
+{
+    if (db10 > -30)  return COLOR_RED;       /* above -3 dBFS */
+    if (db10 > -120) return COLOR_YELLOW;    /* -12 .. -3 */
+    return COLOR_GREEN1;
+}
+
+/* top left, clear of mlv_lite's recording indicator (x 500..720, y 40..118)
+ * and its messages (y 70 and below) */
+#define WAV_METER_X    24
+#define WAV_METER_Y    48
+#define WAV_METER_W    240     /* -48 .. 0 dBFS, 5 px per dB */
+#define WAV_METER_H    6
+#define WAV_METER_DB   48
+#define WAV_TEXT_X     (WAV_METER_X + WAV_METER_W + 8)
+#define WAV_TEXT_W     200
+
+static void wav_meter_draw(int with_text)
+{
+    for (int ch = 0; ch < 2; ch++)
+    {
+        int y = WAV_METER_Y + ch * (WAV_METER_H + 3);
+        int db10 = wav_meter_db10[ch];
+        int w = COERCE((db10 + WAV_METER_DB * 10) * WAV_METER_W / (WAV_METER_DB * 10), 0, WAV_METER_W);
+        int hx = COERCE((wav_meter_hold10[ch] + WAV_METER_DB * 10) * WAV_METER_W / (WAV_METER_DB * 10), 0, WAV_METER_W - 2);
+        bmp_fill(COLOR_BLACK, WAV_METER_X - 2, y - 1, WAV_METER_W + 4, WAV_METER_H + 2);
+        if (w > 0) bmp_fill(wav_db_color(db10), WAV_METER_X, y, w, WAV_METER_H);
+        if (wav_meter_hold10[ch] > -999) bmp_fill(COLOR_WHITE, WAV_METER_X + hx, y, 2, WAV_METER_H);
+        /* ticks every 6 dB */
+        for (int d = 6; d < WAV_METER_DB; d += 6)
+            bmp_fill(COLOR_GRAY(50), WAV_METER_X + WAV_METER_W - d * WAV_METER_W / WAV_METER_DB, y + WAV_METER_H - 2, 1, 2);
+    }
+
+    if (!with_text) return;
+    char l[8], r[8];
+    int a = wav_meter_hold10[0], b = wav_meter_hold10[1];
+    if (a <= -999) snprintf(l, sizeof(l), "-inf");
+    else           snprintf(l, sizeof(l), "%s%d.%d", a < 0 ? "-" : "", ABS(a) / 10, ABS(a) % 10);
+    if (b <= -999) snprintf(r, sizeof(r), "-inf");
+    else           snprintf(r, sizeof(r), "%s%d.%d", b < 0 ? "-" : "", ABS(b) / 10, ABS(b) % 10);
+    int clip = get_ms_clock() < wav_clip_until;
+    /* spaces draw nothing on the RGBA layer, so clear the old text first */
+    bmp_fill(COLOR_EMPTY, WAV_TEXT_X, WAV_METER_Y - 3, WAV_TEXT_W, 2 * (WAV_METER_H + 3) + 4);
+    bmp_printf(FONT(FONT_SMALL, clip ? COLOR_RED : COLOR_WHITE, COLOR_BLACK),
+               WAV_TEXT_X, WAV_METER_Y - 2, "%s %s dBFS%s", l, r, clip ? " CLIP" : "");
+}
+
+static void wav_meter_clear(void)
+{
+    bmp_fill(COLOR_EMPTY, WAV_METER_X - 2, WAV_METER_Y - 3,
+             WAV_TEXT_X + WAV_TEXT_W - (WAV_METER_X - 2), 2 * (WAV_METER_H + 3) + 4);
+}
+
+static void wav_meter_task(void * unused)
+{
+    int drawn = 0, tick = 0;
+    int hold_t[2] = { 0, 0 };
+    TASK_LOOP
+    {
+        if (!wav_meter || !wav_is_recording)
+        {
+            wav_meter_db10[0] = wav_meter_db10[1] = -999;
+            wav_meter_hold10[0] = wav_meter_hold10[1] = -999;
+            if (drawn) { BMP_LOCK( wav_meter_clear(); ) drawn = 0; }
+            msleep(200);
+            continue;
+        }
+
+        msleep(50);
+        uint32_t v = MEM(AUDIO_PEAK_REG);
+        int pk[2] = { ABS((int16_t)(v & 0xFFFF)), ABS((int16_t)(v >> 16)) };
+        int now = get_ms_clock();
+        for (int ch = 0; ch < 2; ch++)
+        {
+            int db10 = wav_peak_to_db10(pk[ch]);
+            /* bar: instant attack, 20 dB/s release */
+            wav_meter_db10[ch] = MAX(db10, wav_meter_db10[ch] - 10);
+            /* hold the highest peak for 1.5 s */
+            if (db10 >= wav_meter_hold10[ch] || now - hold_t[ch] > 1500)
+            {
+                wav_meter_hold10[ch] = db10;
+                hold_t[ch] = now;
+            }
+            if (pk[ch] >= 32700) wav_clip_until = now + 1500;
+        }
+
+        /* draw at 10 Hz, and only over plain LiveView */
+        if (++tick & 1) continue;
+        int show = lv && liveview_display_idle() && get_global_draw() && !gui_menu_shown();
+        if (show)
+        {
+            BMP_LOCK( wav_meter_draw(!drawn || (tick % 8) == 0); )
+            drawn = 1;
+        }
+        else if (drawn)
+        {
+            BMP_LOCK( wav_meter_clear(); )
+            drawn = 0;
+        }
+    }
+}
+
+TASK_CREATE("wav_meter_task", wav_meter_task, 0, 0x1d, 0x1000);
+#endif // AUDIO_PEAK_REG
+
 /* File the take Canon just wrote into <card>/DCIM/AUDIO/.
  *
  * Canon builds the path itself with a format string baked into ROM
@@ -1672,6 +1806,16 @@ static struct menu_entry mov_menus[] = {
                 .help       = "Mic for the WAV. Canon's recorder ignores the jack by itself,",
                 .help2      = "so Auto checks it at each start. Both channels share one source.",
             },
+            #ifdef AUDIO_PEAK_REG
+            {
+                .name       = "Level meter",
+                .priv       = &wav_meter,
+                .max        = 1,
+                .choices    = CHOICES("OFF", "While recording"),
+                .help       = "L/R peak bars in dBFS while the WAV records, top left of LiveView.",
+                .help2      = "1.5 s peak hold, CLIP at full scale. Keep peaks below about -6.",
+            },
+            #endif
             #ifdef SOUNDDEV_SET_VOLUME_IN
             {
                 .name       = "Gain",
