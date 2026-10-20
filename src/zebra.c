@@ -396,7 +396,12 @@ static CONFIG_INT( "clear.preview.delay", clearscreen_delay, 1000); // ms
 //~ #define clearscreen (clearscreen_enabled ? clearscreen_mode+1 : 0)
 
 static CONFIG_INT( "spotmeter.size",        spotmeter_size, 5 );
+#ifdef CONFIG_6D2
+/* 6D2 default: off (the port's shooting setup; false colour covers it) */
+static CONFIG_INT( "spotmeter.draw",        spotmeter_draw, 0 );
+#else
 static CONFIG_INT( "spotmeter.draw",        spotmeter_draw, 1 );
+#endif
 static CONFIG_INT( "spotmeter.formula",     spotmeter_formula, 0 ); // 0 percent, 1 IRE AJ, 2 IRE Piers
 static CONFIG_INT( "spotmeter.position",        spotmeter_position, 1 ); // fixed / attached to AF frame
 
