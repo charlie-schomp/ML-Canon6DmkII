@@ -11,6 +11,7 @@
 #include "config.h"
 #include "gui.h"
 #include "lens.h"
+#include "propvalues.h"
 
 static struct semaphore * notify_box_show_sem = 0;
 static struct semaphore * notify_box_main_sem = 0;
@@ -20,6 +21,41 @@ static int notify_box_stop_request = 0;
 static int notify_box_dirty = 0;
 static char notify_box_msg[100];
 static char notify_box_msg_tmp[100];
+
+#ifdef FEATURE_VRAM_RGBA
+/* On RGBA bodies redraw() does not clear ML's layer while recording (a full
+ * clear mid-take killed takes), so a message shown during a take used to stay
+ * on screen for the rest of it.  While recording, erase just the rectangle
+ * the message was drawn in - a small fill is safe mid-take. */
+static int notify_box_drawn_w = 0, notify_box_drawn_lines = 0;
+
+static void notify_box_erase()
+{
+    if (NOT_RECORDING || !notify_box_drawn_w)
+    {
+        redraw();
+    }
+    else
+    {
+        bmp_fill(COLOR_EMPTY, 50, 50, MIN(notify_box_drawn_w + 8, 720 - 50),
+                 notify_box_drawn_lines * fontspec_height(FONT_LARGE));
+    }
+    notify_box_drawn_w = 0;
+}
+
+static void notify_box_draw()
+{
+    int w = bmp_printf(FONT_LARGE, 50, 50, notify_box_msg);
+    int lines = 1;
+    for (const char * c = notify_box_msg; *c; c++)
+        if (*c == '\n') lines++;
+    notify_box_drawn_w = MAX(notify_box_drawn_w, w);
+    notify_box_drawn_lines = MAX(notify_box_drawn_lines, lines);
+}
+#else
+static void notify_box_erase() { redraw(); }
+static void notify_box_draw() { bmp_printf(FONT_LARGE, 50, 50, notify_box_msg); }
+#endif
 
 static void NotifyBox_task(void* priv)
 {
@@ -41,16 +77,16 @@ static void NotifyBox_task(void* priv)
             if (notify_box_dirty)
             {
                 /* clear old message */
-                redraw();
+                notify_box_erase();
                 notify_box_dirty = 0;
             }
-            bmp_printf(FONT_LARGE,  50,  50, notify_box_msg);
+            notify_box_draw();
             msleep(50);
             if (notify_box_stop_request)
                 break;
         }
         notify_box_timeout = 0;
-        redraw();
+        notify_box_erase();
     }
 }
 
