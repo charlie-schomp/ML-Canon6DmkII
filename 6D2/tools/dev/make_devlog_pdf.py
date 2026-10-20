@@ -41,7 +41,7 @@ def main():
     import re
     body = re.sub(r"<thead>\s*<tr>(\s*<th>\s*</th>)+\s*</tr>\s*</thead>", "", body)
     # start each Part and the first appendix on a new page
-    for marker in ('<h2>Part 2', '<h2>Part 3', '<h2>Part 4', '<h2>Part 5', '<h2>Part 6', '<h2>Appendix A'):
+    for marker in ('<h2>Part 2', '<h2>Part 3', '<h2>Part 4', '<h2>Part 5', '<h2>Part 6', '<h2>Part 7', '<h2>Appendix A'):
         body = body.replace(marker, marker.replace('<h2>', '<h2 class="part">'), 1)
     html = ('<!doctype html><html><head><meta charset="utf-8">'
             '<title>6D Mark II ML development log</title><style>%s</style></head><body>%s</body></html>'

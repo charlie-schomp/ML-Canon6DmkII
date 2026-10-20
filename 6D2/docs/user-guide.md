@@ -24,8 +24,9 @@ and a card cleared that way writes more slowly.
 
 A new card starts with: scratch audio **Auto with RAW**, **H.264 proxy on**, recorded-area frame
 guides, false colour / waveform / zebras reading the **raw** data, the **AF** button toggling focus
-peaking and **DRIVE / metering** toggling false colour, sync beep off. Change anything you like;
-updates keep your changes.
+peaking and **DRIVE / metering** toggling false colour, the light button unassigned, the audio
+**level meter** on while the WAV records, sync beep off. Change anything you like; updates keep your
+changes.
 
 ## Where things are
 
@@ -35,13 +36,14 @@ updates keep your changes.
 | Changing bit depth | Pick it, then **close the ML menu**: the view zooms in and out once and the entry reads `live`. Needs the lens on **MF** (Canon refuses the zoom with the lens on AF); with AF, Canon's MENU and back applies it instead |
 | Crop mode | Movie → RAW video → **Crop mode** — holds Canon's 5x zoom: a 1:1 sensor window, 3160×926, always 29.97 fps. Lens on **MF**; switching the lens to MF (or closing the ML menu) brings it in |
 | Video dual ISO | enable `dual_iso`, turn on Dual ISO, use Crop mode (it does nothing in the binned 1080p readout). MLV App: Dual ISO **On**, pattern low-low-HIGH-HIGH |
-| Scratch audio | Movie → **Scratch audio**, the last entry, one submenu: **Mode** OFF / Auto with RAW / Manual, **Record WAV now**, **Input** Auto (jack) / Internal / External, **Gain** Factory / Manual with **Left gain** in 3 dB stops (Mute, −12 … +42 dB), **Right channel** Same as left / Own level / Safety −6 … −24 dB, **Right gain** |
+| Scratch audio | Movie → **Scratch audio**, the last entry, one submenu: **Mode** OFF / Auto with RAW / Manual, **Record WAV now**, **Input** Auto (jack) / Internal / External, **Level meter** OFF / While recording, **Gain** Factory / Manual with **Left gain** in 3 dB stops (Mute, −12 … +42 dB), **Right channel** Same as left / Own level / Safety −6 … −24 dB, **Right gain** |
 | Focus peaking | Overlay → Focus Peak — **Edge density: Dots / Lines**, **Noise rejection: OFF / Steady / Steady + Wide** |
 | Frame guides | Overlay → Cropmarks = **OFF / Recorded area** (shades outside what's recorded) + **Framing guide** inside it. Bitmap cropmarks are not in this build. |
 | Resolution / aspect | Movie → RAW video. 1080p goes up to **2048** wide (2080 active columns), crop mode up to 3072; each keeps its own pick. Aspect **1.90:1 (DCI)** gives 2048×1080. **If too tall = Shrink width** (default) keeps the ratio; Clamp height keeps the width |
 | Flip screen | automatic — overlays follow Canon's image in all three screen positions. The per-position settings are under Debug → **Flip-screen overlays** if you ever need them |
 | H.264 proxy | Movie → RAW video → **H.264 proxy** (on by default). Records Canon's H.264 next to every raw clip on the same card, for smooth review in Canon's player: `IMG_1234.MLV` pairs with `MVI_1234.MP4`. Canon movie size **1080 IPB 23.98**. Costs ~3.6 MB/s |
-| Top buttons | Overlay → **Top buttons (movie)** — in movie LiveView, **AF**, **ISO** and **DRIVE / metering** (the AF-point button counts as DRIVE) each toggle an overlay of your choice. Canon's own screen still flashes up; ISO stays adjustable with the dial until its screen closes |
+| Top buttons | Prefs → **Top buttons (movie)** — in movie LiveView, **AF**, **ISO**, **DRIVE / metering / AF-point** (one setting: the camera reports the three identically) and **Light** each toggle an overlay of your choice. Canon's own screen still flashes up; ISO stays adjustable with the dial until its screen closes; the light button still lights the top LCD |
+| Audio level meter | Movie → Scratch audio → **Level meter** — L/R peak bars in dBFS at the top left of LiveView while the WAV records, 1.5 s peak hold, **CLIP** in red. Keep peaks below about −6 dBFS. Hidden whenever a Canon or ML menu is open |
 | Clean HDMI | Overlay → **Clean HDMI out** — no ML overlays or bars while HDMI is connected |
 | False colour | Overlay → False color → **Source: Preview (YUV) / RAW sensor** |
 | Waveform | Overlay → Waveform → **Source: Preview (YUV) / RAW sensor** |
@@ -52,6 +54,11 @@ In **Auto**, the WAV starts and stops with the raw clip and is filed as `DCIM/AU
 `M09-1231.MLV` gets `DCIM/AUDIO/M09-1231.WAV`; manual takes are `W<day>-<hhmm>.WAV`. Costs
 ~0.19 MB/s and records no video, unlike the H.264 proxy. The **Safety** modes record the right
 channel lower than the left as a backup for clipped peaks; `wav_dualgain.py` merges them.
+
+**Sync with a clap.** The WAV starts a moment before the first frame, so it normally runs 0.5–0.8 s
+longer than the clip, at the front. On 10-bit and crop-mode takes it has come out up to 2 s
+*shorter* (still being investigated): slate or clap at the start of a take and sync on that rather
+than lining up the file starts.
 
 ## Worth knowing before you shoot
 
@@ -131,5 +138,8 @@ Nothing under `extras` goes on the card.
 Send the `CRASH*.LOG` / `ASSERT*.LOG` files from the card root (they name the file and line), the
 contents of `ML/LOGS/`, and a `cardcheck.py` report if clips are involved.
 
-For developers: set `REC_TRACE 1` in `mlv_lite.c` and rebuild to trace the recording path to
-`ML/LOGS/RECDBG.LOG`, flushed per line so it survives a battery pull.
+For developers: the `d7probe` module (**6D2 developer tools** in the Modules menu, off by
+default) gathers the port's research tools under Debug → 6D2 developer tools. **Recording trace**
+there logs each take's record path to `ML/LOGS/RECDBG.LOG`, flushed per line so it survives a
+battery pull; **State logger** records button events and the camera's MPU messages. The FPS and SD
+clock experiments in it write camera registers: research use only, with a spare card.

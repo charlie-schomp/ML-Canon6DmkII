@@ -12,7 +12,7 @@ built on [Magic Lantern](https://www.magiclantern.fm/).
 
 | Your camera's firmware | Download | Status |
 |---|---|---|
-| **1.1.1** | [**ML-6D2-fw1.1.1-v86.zip**](6D2/download/ML-6D2-fw1.1.1-v86.zip) | Tested on a camera |
+| **1.1.1** | [**ML-6D2-fw1.1.1-v87.zip**](6D2/download/ML-6D2-fw1.1.1-v87.zip) | Tested on a camera |
 | 1.2.0 | — | Not supported in current releases |
 
 To check your firmware: Canon menu → Wrench (setup) tab → **Firmware**. This build needs 1.1.1.
@@ -47,12 +47,12 @@ The official Magic Lantern build for this camera only boots and shows the menu. 
 - **H.264 proxy**: Canon's own H.264 recorded next to every raw clip on the same card, for smooth
   review in the camera's player.
 - **Scratch audio**: a WAV recorded alongside every raw clip and named after it, with per-channel
-  gain and a backup "safety" channel for loud sound.
+  gain, a backup "safety" channel for loud sound, and a level meter.
 - **Focus peaking, zebras, false colour, waveform, vectorscope, histograms, magic zoom**, frame
   guides for the area you're recording, clean HDMI out — aligned with the flip screen in any
   position.
-- **Top buttons as overlay toggles**: in movie mode the AF and DRIVE buttons switch peaking and false
-  colour on and off (assignable).
+- **Top buttons as overlay toggles**: in movie mode the AF, ISO, DRIVE and light buttons each switch
+  an overlay of your choice on and off, the way cinema cameras use assignable buttons.
 - **Format card, keep ML**: clear a card in the camera without reinstalling.
 - **Dual ISO** for photos, and for video in crop mode.
 
@@ -67,8 +67,23 @@ speeds you need, and shooting tips.
 - **Use a lens with an AF/MF switch, set to MF**, for crop mode and when changing bit depth. With
   the lens on autofocus, Canon blocks the zoom these use.
 - Raw clips play in [MLV App](https://mlv.app/). Your computer's normal video player can't open them.
-- Not possible on this camera so far: 24p in crop mode, higher frame rates, lossless compression
-  and 4K.
+- Not possible on this camera so far: 24p in crop mode, lossless compression and 4K.
+
+## Not built yet — contributions welcome
+
+This port is feature-complete for the maintainer's own shooting, so two things that would suit a
+public build are left open. If you want to take one on, open an issue first; the
+[roadmap](6D2/docs/roadmap.md) and [development log](6D2/docs/devlog.md) say what is known.
+
+- **Anamorphic.** A desqueeze preview for anamorphic lenses (an overlay, like the frame guides) is
+  the easy half. True anamorphic readouts (1x3 binning, as `crop_rec` does on DIGIC 5) need the
+  sensor's register lists for each readout mode; the hidden `adtglog2` module logs every list
+  Canon sends to the sensor, which is where that work would start.
+- **Higher frame rates.** The binned 1080p readout is paced by Canon's frame timer, which the
+  developer module can already set (Debug → 6D2 developer tools → FPS experiment). The ceiling is
+  the sensor's readout time: about 36–37 fps for the full 1080p readout and the low 60s for the
+  59.94p one; nobody has measured the result on a card yet. The 1:1 crop readout is fixed at
+  29.97 by the sensor.
 
 ## Problems and feedback
 
@@ -93,9 +108,10 @@ the software. Everything specific to the 6D Mark II is in [`6D2/`](6D2/):
 
 Based on [magiclantern_simplified](https://github.com/reticulatedpines/magiclantern_simplified)
 @ `40c0a133b`, with upstream history kept and the 6D2 work as commits on top. The camera ports
-are `platform/6D2.111` and `platform/6D2.120`; `modules/dev_tools/d7probe` is a read-only DIGIC 7
-research probe. The [development log](6D2/docs/devlog.md) has the findings, ROM addresses and
-change history.
+are `platform/6D2.111` and `platform/6D2.120`; `modules/dev_tools/d7probe` is the **6D2 developer
+tools** module (state / button / MPU logger, recording trace, dumps, two register experiments),
+shipped but off by default. The [development log](6D2/docs/devlog.md) has the findings, ROM
+addresses and change history.
 
 ```sh
 cd platform/6D2.111 && make          # or platform/6D2.120

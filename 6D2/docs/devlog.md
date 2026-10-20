@@ -1,10 +1,10 @@
 # Magic Lantern for the Canon EOS 6D Mark II — development log
 
-**Build v86 · 19 October 2026 · firmware 1.1.1 · base `magiclantern_simplified` @ `40c0a133b`**
+**Build v87 · 20 October 2026 · firmware 1.1.1 · base `magiclantern_simplified` @ `40c0a133b`**
 
 The 6D Mark II is a DIGIC 7 body. The official ML build for it boots and shows the menu, and not
 much else. This port adds raw video at 10/12/14-bit with an in-camera H.264 proxy, the full
-LiveView overlay set, scratch audio, video dual ISO in the 1:1 readout, top-button overlay toggles
+LiveView overlay set, scratch audio with a level meter, video dual ISO in the 1:1 readout, top-button overlay toggles
 and *Format card, keep ML*. Everything below was tested on one camera over seven weeks unless it
 says otherwise.
 
@@ -14,12 +14,12 @@ hard way are collected in the appendices.
 
 ---
 
-## Status at v86
+## Status at v87
 
 | | |
 |---|---|
-| **Working** | Raw video (MLV) 14/12/10-bit · 1080p up to 2048 wide · 1:1 crop mode up to 3072×926 · **RAW + H.264 proxy on one card** · scratch WAV with clip-named files · video dual ISO (crop readout) · focus peaking, zebras, false colour, waveform, histogram, vectorscope, spotmeter, magic zoom (YUV and raw sources) · recorded-area frame guides · flip-screen overlays in all three positions · top buttons as overlay toggles · **Format card, keep ML** · clean HDMI · shutter angle · photo dual ISO · `mlv_play` (10/12/14-bit, slow) |
-| **Not possible so far** | FPS override · 24p in the crop readout · lossless compression · 4K / custom crop windows · expo override · video dual ISO in 1080p · ML audio capture (`mlv_snd`) · H.264 bitrate control · telling DRIVE, metering and the AF-point button apart |
+| **Working** | Raw video (MLV) 14/12/10-bit · 1080p up to 2048 wide · 1:1 crop mode up to 3072×926 · **RAW + H.264 proxy on one card** · scratch WAV with clip-named files and a level meter · video dual ISO (crop readout) · focus peaking, zebras, false colour, waveform, histogram, vectorscope, spotmeter, magic zoom (YUV and raw sources) · recorded-area frame guides · flip-screen overlays in all three positions · top buttons (AF, ISO, DRIVE/metering/AF-point, light) as overlay toggles · **Format card, keep ML** · clean HDMI · shutter angle · photo dual ISO · `mlv_play` (10/12/14-bit, slow) |
+| **Not possible so far** | FPS override · 24p in the crop readout · lossless compression · 4K / custom crop windows · expo override · video dual ISO in 1080p · ML audio capture (`mlv_snd`) · H.264 bitrate control · telling DRIVE, metering and the AF-point button apart (the MPU sends identical messages) |
 | **Firmware 1.2.0** | Source kept in step; last booted in QEMU at v83; not shipped |
 
 ---
@@ -331,6 +331,41 @@ The port's shooting setup became the default settings (scratch audio Auto with R
 sync beep off, raw false colour / waveform / zebras, AF = peaking, DRIVE = false colour). ML stores
 only changed values, so existing cards keep their owner's choices. `REC_TRACE` off.
 
+## Part 7 — The buttons' last layer, and wrap-up (20 October)
+
+### The MPU log
+
+DRIVE, metering and the AF-point button had always reached ML as the same event pair. Lua cannot
+help: its key events come after ML's own handler, one layer above what the probe already logged.
+The layer below is the MPU, the chip that reads the buttons. Canon's SIO3 interrupt keeps the last
+80 received MPU messages in a ring of pointers (`0x80d84`, index at `0x7c00`; each message at
+pointer + 4, first byte its length). d7probe's state logger now copies them every 10 ms, read-only,
+onto one timeline with the GUI events.
+
+Result, on 843 messages: every top-button press is the generic `06 05 06 26 01 00` ("a button was
+pressed", the source of GUI event `0x4b`), then the MPU's own decision as `0a 08 <id> …`, which is
+GUI event `0x62` — its `obj` words are those bytes, little-endian. In movie mode DRIVE, metering
+and AF-point all send `0a 08 20 00 00 04` (show "not available") and `0a 08 20 00 00 00` (clear it)
+~200–330 ms later, byte for byte. In photo mode they open different dialogs, and AF-point's warning
+carries flag `08` instead of `04`. **The button's identity never leaves the MPU.** The light button
+is the generic message alone, which no other button produces.
+
+### v87 · 20 October
+
+- **Light button** as a fourth top-button toggle: after each generic event a small task waits
+  200 ms and acts only if nothing else arrived (other buttons' follow-ups come within ~15 ms in
+  movie mode, ~100 ms in photo mode). The handler now runs first in ML's button chain, so a button
+  ML consumes cannot pass for light. The settings moved from Overlay to **Prefs**.
+- **Audio level meter**, the last item shelved in the v67 revert, back under the overlay rule:
+  draws only while `liveview_display_idle()`, at 10 Hz, clears its own rectangle once when it has
+  to go away, *While recording* only.
+- **One developer module.** d7probe became *6D2 developer tools*: state / button / MPU logger,
+  dumps, the two register experiments marked as such, and the status + sensor-block dump that had
+  lived in the core's `run_test()` (now upstream's again). `REC_TRACE` became the module's
+  **Recording trace** switch, read by mlv_lite once per take, and the trace now logs the scratch
+  WAV's start and stop and the first frame — for the short-WAV question below. `adtglog2` is
+  hidden in the Modules menu.
+
 ---
 
 ## Appendix A — Measurements
@@ -439,6 +474,7 @@ Narrower widths are centre crops of the readout, not downscales.
 | Audio gain registers | `0xd8000550` (L) / `0xd8000554` (R); meter `0xd8000190` |
 | Timer-B store / apply | `0x1c928 + 0x1c` / `0xe03029bc` |
 | Format dialogs | Begin `0x229d0`, Execute `0x27734` |
+| MPU receive ring / index | `0x80d84` (80 pointers, message at +4) / `0x7c00` |
 | Card device for the boot flag | `sd_device` `0x20054` |
 
 ---
@@ -450,7 +486,8 @@ Narrower widths are centre crops of the readout, not downscales.
 - `mlv_play` needs `silent` loaded, and is slow. Review the proxy MP4 in Canon's player (disable
   `mlv_play`, which otherwise takes over PLAY).
 - Scratch WAVs on 10-bit and crop takes ran up to 2.2 s *shorter* than the clip (start late or
-  paused); 12/14-bit 1080p takes run +0.5 to +0.8 s. Not yet explained.
+  paused); 12/14-bit 1080p takes run +0.5 to +0.8 s. Not yet explained; v87's recording trace logs
+  the WAV start/stop and first frame to find out which.
 - Clips recorded before v62 carry a wrong black level; before v7, a wrong frame rate.
 - One mic feeds both WAV channels; per-channel source is not possible in Canon's driver.
 
@@ -464,8 +501,9 @@ cd ../platform/6D2.111 && make clean && make zip_contents   # card files in buil
 ```
 
 `make disk_image` cannot work under WSL2 (no kernel for libguestfs); build a card image with
-`mtools` instead. `make clean` is mandatory after changing `RESTARTSTART`. Set `REC_TRACE 1` in
-`mlv_lite.c` to log the record path to `ML/LOGS/RECDBG.LOG`. Release zips: `6D2/tools/dev/package.py`.
+`mtools` instead. `make clean` is mandatory after changing `RESTARTSTART`. To log the record path
+to `ML/LOGS/RECDBG.LOG`, load the developer module (`d7probe`) and switch on Debug → 6D2 developer
+tools → Recording trace. Release zips: `6D2/tools/dev/package.py`.
 
 Built on `magiclantern_simplified`. The DIGIC 6/7/8 compositor groundwork (`FEATURE_VRAM_RGBA`) is
 the work of srsa, kitor and others named in those files.
