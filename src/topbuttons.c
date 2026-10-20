@@ -101,7 +101,9 @@ int handle_top_buttons(struct event * event)
 
     if (!lv || !is_movie_mode() || gui_menu_shown()) return 1;
 
-    uint32_t * obj = (uint32_t *) event->obj;
+    /* same check as d7probe's: only read obj if it looks like a RAM pointer */
+    uint32_t o = (uint32_t) event->obj;
+    uint32_t * obj = (o >= 0x1000 && o < 0x40000000 && !(o & 3)) ? (uint32_t *) o : 0;
     int action = 0;
     if (event->arg == 0x16 || event->arg == 0x11)
         action = topbtn_af;
