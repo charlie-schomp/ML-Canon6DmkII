@@ -27,7 +27,7 @@ recording). That is what the audio meter got wrong and what the zoom bounce was 
   upstream and should stay that way (a v79 read-only hook for d7probe was removed again once the
   top buttons were mapped).
 
-## Open list (as of v88, 2026-10-20)
+## Open list (as of v89, 2026-10-20)
 
 The port is feature-complete for the maintainer's own shooting. Settled since v79: playback picture
 at every depth, the 8-pixel peaking offset, the H.264 proxy, *Format card, keep ML*, the top
@@ -36,11 +36,9 @@ sends the same signal), the audio level meter (v87), the research tools (v87: on
 module, off by default), and dual ISO at 10/12/14-bit in crop mode (v87 field round).
 
 **Being tested**
-- **v88 on the camera**: the format screen keeping Canon's Cancel / OK, the meter clear of the
-  WAV message, and the temperature scale (raw − 128 = °C, to check against a cold camera).
-- **The level meter's second bar** looked like a held peak rather than the right channel. v88's
-  developer module logs the audio peak register during a clap take to settle what its two halves
-  are.
+- **v89 on the camera**: the shutter angle lock (Canon accepting ML's shutter requests in movie
+  Manual), the meter's Live L/R mode and black box, and the temperature scale (raw − 128 = °C, to
+  check against a cold camera). The format screen fix was confirmed on v88.
 
 **From the v87 code review** (blind review against upstream and the other ports; fixed in v88:
 mlv_lite's 6D2-only WAV calls made weak so it builds for other cameras, the recording trace's NULL

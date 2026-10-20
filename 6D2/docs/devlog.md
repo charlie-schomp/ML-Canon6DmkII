@@ -1,6 +1,6 @@
 # Magic Lantern for the Canon EOS 6D Mark II — development log
 
-**Build v88 · 20 October 2026 · firmware 1.1.1 · base `magiclantern_simplified` @ `40c0a133b`**
+**Build v89 · 20 October 2026 · firmware 1.1.1 · base `magiclantern_simplified` @ `40c0a133b`**
 
 The 6D Mark II is a DIGIC 7 body. The official ML build for it boots and shows the menu, and not
 much else. This port adds raw video at 10/12/14-bit with an in-camera H.264 proxy, the full
@@ -14,11 +14,11 @@ hard way are collected in the appendices.
 
 ---
 
-## Status at v88
+## Status at v89
 
 | | |
 |---|---|
-| **Working** | Raw video (MLV) 14/12/10-bit · 1080p up to 2048 wide · 1:1 crop mode up to 3072×926 · **RAW + H.264 proxy on one card** · scratch WAV with clip-named files and a level meter · video dual ISO (crop readout) · focus peaking, zebras, false colour, waveform, histogram, vectorscope, spotmeter, magic zoom (YUV and raw sources) · recorded-area frame guides · flip-screen overlays in all three positions · top buttons (AF, ISO, DRIVE/metering/AF-point) as overlay toggles · **Format card, keep ML** · clean HDMI · shutter angle · photo dual ISO · `mlv_play` (10/12/14-bit, slow) |
+| **Working** | Raw video (MLV) 14/12/10-bit · 1080p up to 2048 wide · 1:1 crop mode up to 3072×926 · **RAW + H.264 proxy on one card** · scratch WAV with clip-named files and a level meter · video dual ISO (crop readout) · focus peaking, zebras, false colour, waveform, histogram, vectorscope, spotmeter, magic zoom (YUV and raw sources) · recorded-area frame guides · flip-screen overlays in all three positions · top buttons (AF, ISO, DRIVE/metering/AF-point) as overlay toggles · shutter angle lock · **Format card, keep ML** · clean HDMI · shutter angle · photo dual ISO · `mlv_play` (10/12/14-bit, slow) |
 | **Not possible so far** | FPS override · 24p in the crop readout · lossless compression · 4K / custom crop windows · expo override · video dual ISO in 1080p · ML audio capture (`mlv_snd`) · H.264 bitrate control · telling DRIVE, metering and the AF-point button apart (the MPU sends identical messages) |
 | **Firmware 1.2.0** | Source kept in step; last booted in QEMU at v83; not shipped |
 
@@ -420,6 +420,23 @@ wrong clip), *Record WAV now* runs only in Manual (in Auto it could leave Canon'
 with nothing to stop it), the recording trace checks for NULL, and the top buttons check Canon's
 event pointer. The rest is listed in the roadmap.
 
+### v89 · 20 October — shutter angle lock, live meter
+
+The format screen fix was confirmed on the camera.
+
+- **Shutter angle lock** (Expo): keeps motion blur constant across frame-rate changes, chiefly
+  1080p at 23.976 against crop mode at 29.97. ML cannot touch the frame rate on this body, but it
+  can ask Canon for a shutter speed the way the dial does: `PROP_SHUTTER` joins the write
+  whitelist (ML already reads it for the shutter display). The lock picks the 1/3-stop speed whose
+  angle, from Canon's nominal value, is closest — 180° gives 1/50 at 23.976 (172.6°) and 1/60 at
+  29.97 (179.8°) — acts only outside takes with the menu closed, waits for the frame rate to read
+  the same twice, and stops asking if Canon refuses.
+- **Level meter**: a *Live L/R* mode (top bar strictly left, bottom strictly right, the loudest
+  reading of the last 100 ms, nothing held), and the meter is one solid black box — the text's
+  transparent clear had cut a window through the frame guide. A clap take's WAV showed the two
+  channels genuinely differ (right about 6 dB under left, correlation 0.16), so the bars should
+  too.
+
 ---
 
 ## Appendix A — Measurements
@@ -528,6 +545,7 @@ Narrower widths are centre crops of the readout, not downscales.
 | Audio gain registers | `0xd8000550` (L) / `0xd8000554` (R); meter `0xd8000190` |
 | Timer-B store / apply | `0x1c928 + 0x1c` / `0xe03029bc` |
 | Format dialogs | Begin `0x229d0`, Execute `0x27734` |
+| Shutter (read and, from v89, write) | `PROP_SHUTTER` `0x80000005` |
 | Board temperature / Canon temperature status | `0x80030035` (MPU `03 38`) / `0x8004000F` |
 | MPU receive ring / index | `0x80d84` (80 pointers, message at +4) / `0x7c00` |
 | Card device for the boot flag | `sd_device` `0x20054` |
@@ -539,7 +557,8 @@ Narrower widths are centre crops of the readout, not downscales.
 - Peaking needs one ML menu open/close after power-on and after a bit-depth change.
 - The temperature scale (raw − 128) is assumed, not yet checked against a cold camera.
 - Video dual ISO gains less than the ISO gap suggests (1.7 EV at 100 / 800).
-- What the level meter's second bar shows (right channel or a held peak) is being checked.
+- The shutter angle lock depends on Canon accepting ML's shutter requests in movie Manual
+  (first camera test pending).
 - Open review items for other cameras and an upstream merge: see the roadmap.
 - `mlv_play` needs `silent` loaded, and is slow. Review the proxy MP4 in Canon's player (disable
   `mlv_play`, which otherwise takes over PLAY).
