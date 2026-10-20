@@ -1329,6 +1329,8 @@ static uint8_t wav_db_color(int db10)
 #define WAV_TEXT_X     (WAV_METER_X + WAV_METER_W + 8)
 #define WAV_TEXT_W     220     /* ends before x 500, mlv_lite's indicator */
 
+/* the whole meter as one solid box: bars, the gap between them and the text
+ * (a transparent rectangle here cut a window through the frame guide) */
 #define WAV_BOX_X      (WAV_METER_X - 2)
 #define WAV_BOX_Y      (WAV_METER_Y - 3)
 #define WAV_BOX_W      (WAV_TEXT_X + WAV_TEXT_W - WAV_BOX_X)
@@ -1343,6 +1345,7 @@ static void wav_db10_text(char * buf, int len, int db10)
 static void wav_meter_draw(int full, int with_text)
 {
     int live = (wav_meter == 2);
+    if (full) bmp_fill(COLOR_BLACK, WAV_BOX_X, WAV_BOX_Y, WAV_BOX_W, WAV_BOX_H);
 
     for (int ch = 0; ch < 2; ch++)
     {
@@ -1368,8 +1371,9 @@ static void wav_meter_draw(int full, int with_text)
     wav_db10_text(l, sizeof(l), live ? wav_meter_db10[0] : wav_meter_hold10[0]);
     wav_db10_text(r, sizeof(r), live ? wav_meter_db10[1] : wav_meter_hold10[1]);
     int clip = get_ms_clock() < wav_clip_until;
-    /* spaces draw nothing on the RGBA layer, so clear the old text first */
-    bmp_fill(COLOR_EMPTY, WAV_TEXT_X, WAV_BOX_Y, WAV_TEXT_W, WAV_BOX_H);
+    /* spaces draw nothing on the RGBA layer, so blank the old text first -
+     * in black, the meter's own background */
+    bmp_fill(COLOR_BLACK, WAV_TEXT_X, WAV_BOX_Y, WAV_TEXT_W, WAV_BOX_H);
     bmp_printf(FONT(FONT_SMALL, clip ? COLOR_RED : COLOR_WHITE, COLOR_BLACK),
                WAV_TEXT_X, WAV_METER_Y - 2, "L %s R %s %s%s", l, r,
                wav_mic_now ? "ext" : "int", clip ? " CLIP" : "");
