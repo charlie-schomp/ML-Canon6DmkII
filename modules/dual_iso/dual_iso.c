@@ -982,7 +982,7 @@ static MENU_UPDATE_FUNC(dual_iso_update)
     {
         /* measured: the binned 1080p readout applies one gain to every line
          * pair; only the 1:1 zoom readout (RAW video -> Crop mode) alternates */
-        MENU_SET_WARNING(MENU_WARN_ADVICE, "6D2: movie dual ISO needs RAW video > Crop mode (1:1). Off in 1080p.");
+        MENU_SET_WARNING(MENU_WARN_ADVICE, "Inactive in 1080p: turn on RAW video > Crop mode (1:1 readout).");
     }
 
     dual_iso_check(entry, info);
@@ -1670,6 +1670,13 @@ static unsigned int dual_iso_init()
 
     if (FRAME_CMOS_ISO_START || PHOTO_CMOS_ISO_START)
     {
+        if (is_6d2)
+        {
+            /* how it works in video on this body (measured, see the note at
+             * the top): only the 1:1 readout alternates the line pairs */
+            dual_iso_menu[0].help  = "Two ISOs in alternating line pairs. Video: RAW video > Crop mode";
+            dual_iso_menu[0].help2 = "only (1:1 readout at 5x, up to 3072 wide); nothing in 1080p.";
+        }
         menu_add("Expo", dual_iso_menu, COUNT(dual_iso_menu));
     }
     else
