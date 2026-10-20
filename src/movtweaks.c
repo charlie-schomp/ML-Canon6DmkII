@@ -1027,6 +1027,7 @@ static CONFIG_INT("wav.scratch.mode", wav_scratch_audio, WAV_SCRATCH_OFF);
 #endif
 static int wav_is_recording = 0;
 static int wav_mic_now = 0;     /* 0 internal, 1 external: the take in progress */
+static int wav_is_manual = 0;   /* the open recording was started by Record WAV now */
 #ifdef AUDIO_PEAK_REG
 static CONFIG_INT("wav.meter", wav_meter, 1);          /* level meter: 0 off, 1 while the WAV records */
 #else
@@ -1218,6 +1219,15 @@ static void wav_scratch_free_number(void)
 
 void wav_scratch_start(void)
 {
+    if (wav_is_recording && wav_is_manual)
+    {
+        /* a Record WAV now take is really running (the mode was switched to
+         * Auto under it): leave it alone - dropping our flag here would leave
+         * Canon's recorder running with nothing to stop it.  The raw take's
+         * stop ends it and files it under the clip's name. */
+        NotifyBox(2000, "Manual WAV still running - used for this take");
+        return;
+    }
     if (wav_is_recording)
     {
         /* Our flag says a recording is open. mlv_lite now stops on every exit
@@ -1268,6 +1278,7 @@ void wav_scratch_stop(void)
     if (!wav_is_recording) return;
     call("FA_AudioRecStop");             /* no argument */
     wav_is_recording = 0;
+    wav_is_manual = 0;
     wav_last_number = wav_file_number & 0xFF;   /* the file Canon has just closed */
     NotifyBox(2000, "WAV stopped: Sample%d.wav", wav_file_number);
     wav_file_number = (wav_file_number + 1) & 0xFF;   /* next take gets its own file */
@@ -1583,15 +1594,23 @@ static MENU_SELECT_FUNC(wav_scratch_now)
         wav_scratch_stop();
         task_create("wav_file_task", 0x1e, 0x1000, wav_file_task, 0);
     }
-    else
+    else if (wav_scratch_audio == WAV_SCRATCH_MANUAL)
     {
         wav_scratch_start();
+        wav_is_manual = wav_is_recording;
+    }
+    else
+    {
+        /* in Auto, a manual recording would collide with the next raw take */
+        NotifyBox(2000, "Set Mode to Manual first");
     }
 }
 
 static MENU_UPDATE_FUNC(wav_scratch_now_update)
 {
     MENU_SET_VALUE(wav_is_recording ? "Recording..." : "Idle");
+    if (!wav_is_recording && wav_scratch_audio != WAV_SCRATCH_MANUAL)
+        MENU_SET_WARNING(MENU_WARN_NOT_WORKING, "Needs Mode = Manual (Auto starts the WAV with each raw take).");
     if (wav_is_recording)
     {
         /* raw reading of Canon's input level table (FA_AudGetInLevel ->
