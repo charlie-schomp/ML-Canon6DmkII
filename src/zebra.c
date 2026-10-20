@@ -4383,9 +4383,20 @@ BMP_LOCK (
     }
 #endif
 
-    if(LiveViewApp_dialog)
+    struct dialog * canon_dialog = LiveViewApp_dialog;
+    #if defined(CONFIG_RESTORE_AFTER_FORMAT) && defined(DIALOG_MnCardFormatExecute)
+    /* Canon's format screens sit on top of LiveView.  Repainting LiveView
+     * instead (as NotifyBox's redraw() did for "Format card, keep ML") hid
+     * the format dialog and its Cancel / OK until a dial was turned. */
+    if (MEM(DIALOG_MnCardFormatExecute))
+        canon_dialog = (struct dialog *) MEM(DIALOG_MnCardFormatExecute);
+    else if (MEM(DIALOG_MnCardFormatBegin))
+        canon_dialog = (struct dialog *) MEM(DIALOG_MnCardFormatBegin);
+    #endif
+
+    if(canon_dialog)
     {
-        dialog_redraw(LiveViewApp_dialog); // try to redraw (this has semaphores for winsys)
+        dialog_redraw(canon_dialog); // try to redraw (this has semaphores for winsys)
     }
     else
     {
