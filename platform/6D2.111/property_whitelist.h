@@ -44,7 +44,9 @@ const uint32_t prop_write_allow[] =
     PROP_BUTTON_ASSIGNMENT,
     PROP_REMOTE_SW1,
     PROP_REMOTE_SW2,
-    PROP_LV_DISPSIZE   // mlv_lite crop mode: request Canon's 5x zoom (1:1 readout)
+    PROP_LV_DISPSIZE,  // mlv_lite crop mode: request Canon's 5x zoom (1:1 readout)
+    PROP_SHUTTER       // shutter angle lock: the same request turning the dial makes; ML reads
+                       // this property for its shutter display, so the ID and length are known good
 };
 
 // anything not listed above will allow reads but not writes
