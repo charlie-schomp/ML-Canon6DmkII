@@ -554,6 +554,26 @@ static int ml_ms[ML_ROWS];
 static unsigned char ml_msg[ML_ROWS][ML_BYTES];   /* [0] = length as sent */
 static int ml_n = 0, ml_last = -1, ml_bad = 0;
 
+/* Audio peak register (0xd8000190, what Canon's level meter reads): sampled
+ * with the MPU ring, a row whenever it changes.  The level meter draws the low
+ * half as L and the high half as R; on the camera the second bar looked like
+ * a held peak rather than a level, so this records what the halves really do
+ * (record a take with claps while the logger runs). */
+#define AU_ROWS 2048
+static int au_ms[AU_ROWS];
+static uint32_t au_val[AU_ROWS];
+static int au_n = 0;
+
+static void audiolog_poll(void)
+{
+    uint32_t v = *(volatile uint32_t *) 0xd8000190;
+    if (au_n > 0 && au_val[au_n - 1] == v) return;
+    if (au_n >= AU_ROWS) return;
+    au_ms[au_n] = get_ms_clock();
+    au_val[au_n] = v;
+    au_n++;
+}
+
 static void mpulog_poll(void)
 {
     int tail = MPU_RING_TAIL;
@@ -682,6 +702,11 @@ static void statelog_write(void)
             b++;
         }
     }
+    my_fprintf(f, "\nAudio peak register 0xd8000190, a row per change: %d%s\n", au_n,
+               au_n >= AU_ROWS ? " (list full, later ones lost)" : "");
+    my_fprintf(f, "    ms      low     high   (signed 16-bit halves)\n");
+    for (int i = 0; i < au_n; i++)
+        my_fprintf(f, "%6d %8d %8d\n", au_ms[i], (int)(int16_t)(au_val[i] & 0xFFFF), (int)(int16_t)(au_val[i] >> 16));
     FIO_CloseFile(f);
 }
 
@@ -689,12 +714,13 @@ static void statelog_task(void * unused)
 {
     int prev[SL_COLS] = {0};
     sl_n = 0; sl_lost = 0; sl_key = -1; sl_key_n = 0; sl_key_gs = -1; sl_key_arg = 0; sl_key_obj = 0; kl_n = 0;
-    ml_n = 0; ml_last = -1; ml_bad = 0;
+    ml_n = 0; ml_last = -1; ml_bad = 0; au_n = 0;
     for (int tick = 0; statelog_on; tick++)
     {
         /* MPU ring every 10 ms (80 slots, so a burst would have to bring 80
          * messages in 10 ms to lap us); the state rows stay at 20 ms */
         mpulog_poll();
+        audiolog_poll();
         if (tick & 1) { msleep(10); continue; }
         int v[SL_COLS];
         statelog_sample(v);
