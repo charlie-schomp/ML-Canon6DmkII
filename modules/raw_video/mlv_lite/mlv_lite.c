@@ -402,17 +402,19 @@ static volatile int buffers_need_realloc = 0;
 #define INVALID_PTR ((void *)0xFFFFFFFF)
 #endif
 
-/* Set to 1 to trace the record path to ML/LOGS/RECDBG.LOG.
+/* Trace of the record path to ML/LOGS/RECDBG.LOG.
  *
- * Off by default - it appends to the card on every take. Kept in the tree
- * rather than deleted because it is what found the buffer-reallocation bug
- * above, after three wrong guesses made from symptoms alone; the next fault in
- * this path will be much cheaper to find with it than without. */
-#define REC_TRACE 0
+ * Off unless the developer module (d7probe) is loaded with its "Recording
+ * trace" switched on - it appends to the card several times per take. Kept
+ * because it is what found the buffer-reallocation bug above, after three
+ * wrong guesses made from symptoms alone; the next fault in this path will be
+ * much cheaper to find with it than without.  Read once per take, so a take
+ * is traced from start to end or not at all. */
+static int rec_trace = 0;
 
-#if REC_TRACE
 static void rec_log(const char * fmt, ...)
 {
+    if (!rec_trace) return;
     char msg[160];
     va_list ap;
     va_start(ap, fmt);
@@ -437,6 +439,7 @@ static void rec_log(const char * fmt, ...)
  * these are printed as plain integers rather than through it. */
 static void rec_log_mem(const char * when)
 {
+    if (!rec_trace) return;
     rec_log("%s | free=%dK shoot=%dK/%dchunks srm=%dK",
             when,
             GetFreeMemForAllocateMemory() / 1024,
@@ -444,10 +447,6 @@ static void rec_log_mem(const char * when)
             shoot_mem_suite ? (int)shoot_mem_suite->num_chunks    : -1,
             srm_mem_suite   ? (int)(srm_mem_suite->size / 1024)   : -1);
 }
-#else
-#define rec_log(...)       do { } while (0)
-#define rec_log_mem(when)  do { } while (0)
-#endif
 
 static GUARDED_BY(settings_sem) void * fullsize_buffers[2];         /* original image, before cropping, double-buffered */
 static GUARDED_BY(LiveViewTask) int fullsize_buffer_pos = 0;        /* which of the full size buffers (double buffering) is currently in use */
@@ -3833,6 +3832,7 @@ void raw_video_rec_task(uint32_t card_index)
         give_semaphore(settings_sem);
         buffer_full_reason = 0;
 
+        rec_trace = get_config_var("d7probe.rectrace");   /* 0 unless the dev module is loaded */
         rec_log("========== TAKE START, card=%d, srm_enabled=%d",
                 card_index, (int)use_srm_memory);
         rec_log_mem("take start");
@@ -4036,7 +4036,8 @@ void raw_video_rec_task(uint32_t card_index)
         {
             /* the take stopped by itself: say why, and how fast the card
              * actually wrote during it (bytes / ms of FIO_WriteFile time) */
-            #if REC_TRACE
+            if (rec_trace)
+            {
             int ms = writing_time[card_index];
             int cmbs = ms ? (int)(written_total[card_index] * 100 * 1000 / (1024 * 1024) / ms) : 0;
             rec_log("BUFFER FULL (%s) card=%d frames=%d written=%dMB, %dms writing + %dms idle -> %d.%02d MB/s while writing",
@@ -4044,7 +4045,7 @@ void raw_video_rec_task(uint32_t card_index)
                     buffer_full_reason == 3 ? "compressed frame too large" : "?",
                     card_index, frame_count, (int)(written_total[card_index] / (1024 * 1024)),
                     ms, idle_time[card_index], cmbs / 100, cmbs % 100);
-            #endif
+            }
             goto abort_and_check_early_stop;
         }
         
