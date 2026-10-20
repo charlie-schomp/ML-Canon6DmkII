@@ -1026,6 +1026,12 @@ static CONFIG_INT("wav.scratch.mode", wav_scratch_audio, WAV_SCRATCH_AUTO);
 static CONFIG_INT("wav.scratch.mode", wav_scratch_audio, WAV_SCRATCH_OFF);
 #endif
 static int wav_is_recording = 0;
+static int wav_mic_now = 0;     /* 0 internal, 1 external: the take in progress */
+#ifdef AUDIO_PEAK_REG
+static CONFIG_INT("wav.meter", wav_meter, 1);          /* level meter: 0 off, 1 while the WAV records */
+#else
+static const int wav_meter = 0;
+#endif
 /* Take counter, persisted. It was a plain static that reset to 0 on every
  * boot - and Canon's recorder APPENDS to an existing Sample%d.wav rather than
  * replacing it. So each new session started by adding fresh audio onto the
@@ -1251,7 +1257,10 @@ void wav_scratch_start(void)
         wav_apply_gain();
     }
 #endif
-    NotifyBox(2000, "WAV rec (%s mic)", mic ? "ext" : "int");
+    /* with the level meter on, the meter itself says the WAV is running and
+     * which mic; a message here would sit under it */
+    wav_mic_now = mic;
+    if (!wav_meter) NotifyBox(2000, "WAV rec (%s mic)", mic ? "ext" : "int");
 }
 
 void wav_scratch_stop(void)
@@ -1281,7 +1290,6 @@ void wav_scratch_stop(void)
  * clears its own small rectangle once when it has to go away.  No "always on"
  * mode: metering without a take needs the audio block started by hand
  * (FA_Aud_OnlyBlockStart) - a separate experiment, not part of this. */
-static CONFIG_INT("wav.meter", wav_meter, 1);          /* 0 off, 1 while the WAV records */
 
 static int wav_meter_db10[2] = { -999, -999 };      /* dBFS x 10, what the bars show */
 static int wav_meter_hold10[2] = { -999, -999 };    /* peak hold, dBFS x 10 */
@@ -1308,7 +1316,7 @@ static uint8_t wav_db_color(int db10)
 #define WAV_METER_H    6
 #define WAV_METER_DB   48
 #define WAV_TEXT_X     (WAV_METER_X + WAV_METER_W + 8)
-#define WAV_TEXT_W     200
+#define WAV_TEXT_W     220     /* ends before x 500, mlv_lite's indicator */
 
 static void wav_meter_draw(int with_text)
 {
@@ -1337,7 +1345,8 @@ static void wav_meter_draw(int with_text)
     /* spaces draw nothing on the RGBA layer, so clear the old text first */
     bmp_fill(COLOR_EMPTY, WAV_TEXT_X, WAV_METER_Y - 3, WAV_TEXT_W, 2 * (WAV_METER_H + 3) + 4);
     bmp_printf(FONT(FONT_SMALL, clip ? COLOR_RED : COLOR_WHITE, COLOR_BLACK),
-               WAV_TEXT_X, WAV_METER_Y - 2, "%s %s dBFS%s", l, r, clip ? " CLIP" : "");
+               WAV_TEXT_X, WAV_METER_Y - 2, "L %s R %s %s%s", l, r,
+               wav_mic_now ? "ext" : "int", clip ? " CLIP" : "");
 }
 
 static void wav_meter_clear(void)
