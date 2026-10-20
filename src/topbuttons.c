@@ -191,7 +191,7 @@ static struct menu_entry topbtn_menus[] = {
 
 static void topbtn_init()
 {
-    menu_add("Overlay", topbtn_menus, COUNT(topbtn_menus));
+    menu_add("Prefs", topbtn_menus, COUNT(topbtn_menus));
 }
 
 INIT_FUNC(__FILE__, topbtn_init);
