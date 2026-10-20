@@ -87,12 +87,15 @@ static GUARDED_BY(GuiMainTask) int show_edmac = 0;
 extern WEAK_FUNC(ret_0) void mlv_play_file(char *filename);
 
 /* camera-specific tricks */
-/* provided by src/movtweaks.c (FEATURE_WAV_AUDIO) */
-extern void wav_scratch_start(void);
-extern void wav_scratch_stop(void);
-extern int  wav_scratch_auto_enabled(void);
-extern int  wav_scratch_rename(const char * mlv_path);
-extern int  wav_scratch_discard(void);
+/* provided by src/movtweaks.c (FEATURE_WAV_AUDIO, 6D2 only).  Weak: modules
+ * are built once for every camera, and a plain extern made every other body's
+ * build leave mlv_lite out (missing symbols).  Elsewhere auto_enabled() is 0,
+ * so the others are never called. */
+extern WEAK_FUNC(ret_0) void wav_scratch_start(void);
+extern WEAK_FUNC(ret_0) void wav_scratch_stop(void);
+extern WEAK_FUNC(ret_0) int  wav_scratch_auto_enabled(void);
+extern WEAK_FUNC(ret_0) int  wav_scratch_rename(const char * mlv_path);
+extern WEAK_FUNC(ret_0) int  wav_scratch_discard(void);
 /* src/zebra.c - weak so the module still loads on bodies without it */
 extern WEAK_FUNC(ret_0) int clean_hdmi_active(void);
 extern WEAK_FUNC(ret_0) int dual_iso_is_enabled(void);
@@ -428,7 +431,7 @@ static void rec_log(const char * fmt, ...)
     int n = snprintf(line, sizeof(line), "%6d.%03d  %s\n", t / 1000, t % 1000, msg);
 
     FILE * f = FIO_CreateFileOrAppend("ML/LOGS/RECDBG.LOG");
-    if (f == INVALID_PTR) return;
+    if (!f || f == INVALID_PTR) return;     /* FIO returns NULL on failure */
     FIO_WriteFile(f, line, n);
     FIO_CloseFile(f);
 }
@@ -4565,6 +4568,7 @@ cleanup:
 
         ResumeLiveView();
         redraw();
+
         raw_recording_state = RAW_IDLE;
         rec_log("========== TAKE END (state back to IDLE)");
 
