@@ -3846,6 +3846,7 @@ void raw_video_rec_task(uint32_t card_index)
         if (wav_scratch_auto_enabled())
         {
             wav_scratch_start();
+            rec_log("scratch WAV started");
         }
 
         mlv_rec_call_cbr(MLV_REC_EVENT_PREPARING, NULL);
@@ -4030,8 +4031,17 @@ void raw_video_rec_task(uint32_t card_index)
 
 
     /* main recording loop */
+    int first_frame_logged = 0;
     while (RAW_IS_RECORDING && lv)
     {
+        if (!first_frame_logged && frame_count > 0)
+        {
+            /* with the WAV start/stop lines, this says whether a WAV that
+             * comes out short started late or lost time inside Canon's recorder */
+            rec_log("first frame captured, bpp=%d %dx%d", BPP, res_x, res_y);
+            first_frame_logged = 1;
+        }
+
         if (buffer_full)
         {
             /* the take stopped by itself: say why, and how fast the card
@@ -4393,6 +4403,7 @@ abort_and_check_early_stop:
         if (wav_scratch_auto_enabled())
         {
             wav_scratch_stop();
+            rec_log("scratch WAV stopped, frames=%d", frame_count);
         }
 
         /* write remaining frames */
