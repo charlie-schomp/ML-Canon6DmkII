@@ -334,6 +334,109 @@ static MENU_SELECT_FUNC(d7probe_dump_select)
     d7probe_dump();
 }
 
+/* ---- Status + sensor block dump (was in the core's debug.c run_test) ------
+ *
+ * Read-only: reports state, allocates nothing, writes ML/LOGS/STATUS.TXT and
+ * CMOSBLK.BIN.  An earlier core version called shoot_malloc_suite(0) to measure
+ * the memory pools and took the camera down on the spot - asking Canon for
+ * every free block while LiveView runs is not a read-only act, no matter how
+ * promptly it is handed back.  Don't reintroduce that. */
+extern int GetFreeMemForAllocateMemory();
+
+static void status_dump(void)
+{
+    FILE * f = FIO_CreateFile("ML/LOGS/STATUS.TXT");
+    if (!f) return;
+    my_fprintf(f, "lv=%d movie=%d dispsize=%d fps=%d rec=%d\n",
+               lv, is_movie_mode(), lv_dispsize, fps_get_current_x1000(), !NOT_RECORDING);
+    my_fprintf(f, "free mem: %d K\n", GetFreeMemForAllocateMemory() / 1024);
+
+    if (raw_update_params())
+    {
+        my_fprintf(f, "raw %dx%d bpp=%d black=%d white=%d dr=%d\n",
+                   raw_info.width, raw_info.height, raw_info.bits_per_pixel,
+                   raw_info.black_level, raw_info.white_level, raw_info.dynamic_range);
+        my_fprintf(f, "raw active %dx%d at (%d,%d)\n",
+                   raw_info.active_area.x2 - raw_info.active_area.x1,
+                   raw_info.active_area.y2 - raw_info.active_area.y1,
+                   raw_info.active_area.x1, raw_info.active_area.y1);
+    }
+    else my_fprintf(f, "no LV raw (enable RAW video first)\n");
+
+    /* display geometry - the source of os.off_169, and the thing to check
+     * first if overlays land in the wrong place after a firmware change */
+    uint32_t dv = *(uint32_t *) 0x7dc8;
+    my_fprintf(f, "disp_vram=%x\n", dv);
+    if (dv)
+    {
+        uint32_t * d = (uint32_t *) dv;
+        my_fprintf(f, "  sel=%d buf=%x w=%d h=%d\n", d[0x0c/4], d[0x90/4], d[0x94/4], d[0x98/4]);
+    }
+
+    /* Sensor-config block: ROM 0xe1980000 is DMA-copied to the heap at boot.
+     * Find the copy the way dual_iso does (the DMA descriptor holds the ROM
+     * source address four times, then the RAM destination), report where the
+     * ISO tables landed, and save the first 0x3000 bytes so the tables can be
+     * compared against ROM offline. */
+    uint32_t ram_copy = 0;
+    for (uint32_t a = 0x780000; a < 0x880000; a += 4)
+    {
+        uint32_t * pr = (uint32_t *) a;
+        if (pr[0] == 0xe1980000 && pr[1] == pr[0] && pr[4] == pr[0] && pr[5] == pr[0])
+        {
+            uint32_t dst = pr[6];
+            if (dst != (uint32_t) CACHEABLE(dst) && dst > 0x40000000 && dst < 0x50000000)
+            {
+                ram_copy = dst;
+                break;
+            }
+        }
+    }
+    my_fprintf(f, "sensor block RAM copy: %x\n", ram_copy);
+    if (ram_copy)
+    {
+        static const uint32_t offs[] = { 0xb30, 0x0ef4, 0x11cc, 0x14a4, 0x177c };
+        static const char * names[] = { "photo", "ST0", "ST1", "ST2", "ST3" };
+        for (int i = 0; i < 5; i++)
+        {
+            uint32_t * t = (uint32_t *)(ram_copy + offs[i]);
+            my_fprintf(f, "  %s %x: %08x %08x %08x %08x %08x %08x %08x\n",
+                       names[i], (uint32_t) t, t[0], t[1], t[2], t[3], t[4], t[5], t[6]);
+        }
+        /* dual ISO check: what the ISO tables hold right now (patched rows
+         * carry a nonzero low ISO nibble) and what Canon last assembled into
+         * the per-frame command lists */
+        uint32_t * st2 = (uint32_t *)(ram_copy + 0x14a4);
+        uint32_t * st3 = (uint32_t *)(ram_copy + 0x177c);
+        my_fprintf(f, "ST2 rows 0/3/9/15 reg0: %08x %08x %08x %08x\n", st2[0], st2[3*7], st2[9*7], st2[15*7]);
+        my_fprintf(f, "ST3 rows 0/3/9/15 reg0: %08x %08x %08x %08x\n", st3[0], st3[3*7], st3[9*7], st3[15*7]);
+        for (int slot = 0; slot < 6; slot++)
+        {
+            uint32_t * w = (uint32_t *)(ram_copy + 0xd44 + slot * 0x48);
+            my_fprintf(f, "slot%d list: %08x %08x %08x %08x %08x %08x %08x %08x\n",
+                       slot, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
+        }
+        FILE * b = FIO_CreateFile("ML/LOGS/CMOSBLK.BIN");
+        if (b)
+        {
+            FIO_WriteFile(b, (void *) ram_copy, 0x3000);
+            FIO_CloseFile(b);
+            my_fprintf(f, "wrote ML/LOGS/CMOSBLK.BIN\n");
+        }
+    }
+    FIO_CloseFile(f);
+    NotifyBox(3000, "STATUS.TXT written");
+}
+
+static MENU_SELECT_FUNC(status_dump_select)
+{
+    status_dump();
+}
+
+/* mlv_lite reads this by name at the start of each take, so the trace only
+ * runs while this module is loaded and the switch is on */
+static CONFIG_INT("d7probe.rectrace", rec_trace, 0);
+
 static MENU_UPDATE_FUNC(d7probe_update)
 {
     MENU_SET_VALUE("prepro %d / sdclk %d / sdset %d", prepro_calls, sdclk_calls, sdset_calls);
@@ -796,69 +899,86 @@ static MENU_SELECT_FUNC(align_dump_select)
 static struct menu_entry d7probe_menu[] =
 {
     {
-        .name   = "Overlay alignment dump",
-        .select = align_dump_select,
-        .icon_type = IT_ACTION,
-        .help   = "Writes ML/LOGS/ALIGNn.TXT: where the picture sits in the LiveView",
-        .help2  = "buffer vs ML's overlay mapping. Aim at an evenly lit wall.",
-    },
-    {
-        .name   = "FPS experiment (timer B)",
-        .priv   = &fpsx_b,
-        .max    = 4000,
-        .select = fpsx_select,
-        .update = fpsx_update,
-        .help   = "Sets Canon's frame timer in the binned readouts (1080p, 60p).",
-        .help2  = "Measure the real rate with cardcheck.py. OFF restores Canon's value.",
-    },
-    {
-        .name   = "State logger",
-        .select = statelog_select,
-        .update = statelog_update,
-        .help2  = "Logs what keeps ML's overlays off (read-only; written when switched off).",
-    },
-    {
-        .name = "SD clock experiment",
+        .name   = "6D2 developer tools",
         .select = menu_open_submenu,
-        .update = sd_exp_update,
-        .submenu_width = 700,
-        .help  = "Calls Canon's SD clock functions with chosen args, logs the controller regs.",
-        .help2 = "Then run Benchmarks > Card R/W. Power-cycle if the card errors.",
+        .submenu_width = 720,
+        .help   = "Research tools used to build the 6D2 port. Not needed for shooting.",
+        .help2  = "The FPS and SD clock experiments write camera registers.",
         .children = (struct menu_entry[]) {
             {
-                .name = "mode",
-                .priv = &sd_exp_mode,
-                .min = 0, .max = 13,
-                .help = "6..9 = table modes (3-word pick lists); others = fixed sets (see SdClk.c switch).",
+                .name   = "State logger",
+                .select = statelog_select,
+                .update = statelog_update,
+                .help2  = "Logs GUI state, every button event and every MPU message (read-only).",
             },
             {
-                .name = "idx",
-                .priv = &sd_exp_idx,
-                .min = 0, .max = 5,
-                .help = "Entry of the pick list (modes 6..9 only).",
+                .name   = "Recording trace",
+                .priv   = &rec_trace,
+                .max    = 1,
+                .help   = "mlv_lite logs each take's record path to ML/LOGS/RECDBG.LOG:",
+                .help2  = "buffers, H.264 proxy hand-over, why a take stopped.",
             },
             {
-                .name = "Run SetSDClkFrequency(0,mode,idx)",
-                .select = sd_exp_run_select,
+                .name   = "Status + sensor dump",
+                .select = status_dump_select,
                 .icon_type = IT_ACTION,
-                .help = "Canon's full path: copy entry, apply, print regs before/after to console.",
+                .help   = "Writes ML/LOGS/STATUS.TXT (LV, raw, display geometry) and",
+                .help2  = "CMOSBLK.BIN (the sensor ISO tables, for dual ISO work). Read-only.",
             },
             {
-                .name = "Run apply(0,mode) only",
+                .name   = "Overlay alignment dump",
+                .select = align_dump_select,
+                .icon_type = IT_ACTION,
+                .help   = "Writes ML/LOGS/ALIGNn.TXT: where the picture sits in the LiveView",
+                .help2  = "buffer vs ML's overlay mapping. Aim at an evenly lit wall.",
+            },
+            {
+                .name   = "D7 probe dump",
+                .select = d7probe_dump_select,
+                .update = d7probe_update,
+                .icon_type = IT_ACTION,
+                .help   = "Writes ML/LOGS/D7PROBEn.LOG + LOWRAM.BIN (read-only research).",
+                .help2  = "Run once at 1x and once at 5x zoom in movie LV; each run is a new file.",
+            },
+            {
+                .name   = "FPS experiment (timer B)",
+                .priv   = &fpsx_b,
+                .max    = 4000,
+                .select = fpsx_select,
+                .update = fpsx_update,
+                .help   = "EXPERIMENT: sets Canon's frame timer in the binned readouts.",
+                .help2  = "Measure the real rate with cardcheck.py. OFF restores Canon's value.",
+            },
+            {
+                .name   = "SD clock: mode",
+                .priv   = &sd_exp_mode,
+                .min = 0, .max = 13,
+                .help   = "EXPERIMENT: Canon's SD clock functions with chosen args.",
+                .help2  = "6..9 = table modes (3-word pick lists); others = fixed sets.",
+            },
+            {
+                .name   = "SD clock: idx",
+                .priv   = &sd_exp_idx,
+                .min = 0, .max = 5,
+                .help   = "Entry of the pick list (modes 6..9 only).",
+            },
+            {
+                .name   = "SD clock: run full path",
+                .select = sd_exp_run_select,
+                .update = sd_exp_update,
+                .icon_type = IT_ACTION,
+                .help   = "EXPERIMENT: SetSDClkFrequency(0,mode,idx), regs to console.",
+                .help2  = "Then run Benchmarks > Card R/W. Power-cycle if the card errors.",
+            },
+            {
+                .name   = "SD clock: apply only",
                 .select = sd_exp_apply_select,
                 .icon_type = IT_ACTION,
-                .help = "Just the per-mode register set (e0292602).",
+                .help   = "EXPERIMENT: just the per-mode register set (e0292602).",
+                .help2  = "Power-cycle if the card errors.",
             },
             MENU_EOL,
         },
-    },
-    {
-        .name   = "D7 probe dump",
-        .select = d7probe_dump_select,
-        .update = d7probe_update,
-        .icon_type = IT_ACTION,
-        .help   = "Writes ML/LOGS/D7PROBEn.LOG + LOWRAM.BIN (read-only research).",
-        .help2  = "Run once at 1x and once at 5x zoom in movie LV; each run is a new file.",
     },
 };
 
@@ -914,6 +1034,7 @@ static unsigned int d7probe_deinit()
 }
 
 MODULE_CONFIGS_START()
+    MODULE_CONFIG(rec_trace)
     MODULE_CONFIG(sd_exp_mode)
     MODULE_CONFIG(sd_exp_idx)
 MODULE_CONFIGS_END()

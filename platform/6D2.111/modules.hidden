@@ -1,4 +1,6 @@
 # Module names in this file will be hidden in ML GUI
+# adtglog2: research logger (see modules.included)
+adtglog2
 adv_int
 arkanoid
 autoexpo

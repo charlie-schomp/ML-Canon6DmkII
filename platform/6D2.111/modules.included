@@ -26,8 +26,10 @@ silent
 # Research tool for video dual ISO (which LiveView ISO table is live) and for
 # crop modes (which list each readout mode sends).  Enable in Modules only
 # for a logging session; it costs a little CPU on every CMOS write.
+# Hidden in the Modules menu (modules.hidden): Debug > Modules debug >
+# "Show hidden modules" brings it back.
 adtglog2
-# d7probe: read-only research probe (Debug > D7 probe dump) - hooks the LV
-# prepro path update and SetSDClkFrequency to log bit-depth / SD clock params.
-# Loads only if ML/SETTINGS/d7probe.en exists.
+# d7probe: "6D2 developer tools" - every research tool of the port in one
+# module (state/button/MPU logger, recording trace, dumps, two register
+# experiments).  Off unless enabled in the Modules menu (ML/SETTINGS/d7probe.en).
 d7probe
