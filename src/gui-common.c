@@ -458,6 +458,12 @@ int handle_common_events_by_feature(struct event * event)
     /* log button codes, if enabled from the Debug menu */
     spy_event(event);
 
+    #ifdef FEATURE_TOP_BUTTON_SHORTCUTS
+    /* first, before anything can consume an event: it never blocks one, and
+     * the light button is recognised by nothing following its generic event */
+    handle_top_buttons(event);
+    #endif
+
 #ifdef FEATURE_POWERSAVE_LIVEVIEW
     // these are required for correct shutdown from "LV paused" state
     if (event->param == GMT_GUICMD_START_AS_CHECK || 
@@ -514,10 +520,6 @@ int handle_common_events_by_feature(struct event * event)
 
     #ifdef FEATURE_UPSIDE_DOWN
     if (handle_upside_down(event) == 0) return 0;
-    #endif
-
-    #ifdef FEATURE_TOP_BUTTON_SHORTCUTS
-    if (handle_top_buttons(event) == 0) return 0;
     #endif
     
     #ifdef FEATURE_SWAP_MENU_ERASE
