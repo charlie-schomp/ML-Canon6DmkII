@@ -22,7 +22,7 @@ Standard library only; Python 3.6+.
 """
 import os, re, struct, sys, statistics, math, datetime
 
-VERSION = "v76"
+VERSION = "v87"
 
 # ------------------------------------------------------------------ MLV
 
@@ -84,9 +84,11 @@ def walk_mlv(path):
 
 
 def edge_check(path, m):
-    """Mean level of the outer 8 columns vs the picture just inside them, over a band
-    of rows in the middle of the first frame.  A dark band at an edge means the crop
-    reaches into the sensor's black border."""
+    """Mean level of the outer 8 columns vs the 8 just inside them (and the picture
+    further in, for the report), over a band of rows in the middle of the first frame.
+    A crop that reaches into the sensor's black border shows as a STEP at the edge;
+    comparing with the picture further in also flagged ordinary scenes that simply
+    get darker towards one side (v86 field report)."""
     x, y, bpp = m.get('x'), m.get('y'), m.get('bpp')
     if not (x and y and bpp and m.get('first_frame')):
         return None
@@ -103,8 +105,9 @@ def edge_check(path, m):
         v = [p for r in rows for p in r[a:b]]
         return sum(v) / len(v) if v else 0
     w = len(R[0])
-    return {'left_edge': mean(L, 0, 8), 'left_in': mean(L, 32, 128),
-            'right_edge': mean(R, w - 8, w), 'right_in': mean(R, w - 96, w - 32)}
+    return {'left_edge': mean(L, 0, 8), 'left_adj': mean(L, 8, 16), 'left_in': mean(L, 32, 128),
+            'right_edge': mean(R, w - 8, w), 'right_adj': mean(R, w - 16, w - 8),
+            'right_in': mean(R, w - 96, w - 32)}
 
 
 # ------------------------------------------------------------------ WAV
@@ -240,9 +243,10 @@ def check_clip(stem, parts):
             c['edge'] = e
             blk = c['black'] or 0
             for side in ('left', 'right'):
-                inner = e[side + '_in'] - blk; edge = e[side + '_edge'] - blk
-                if inner > 64 >> max(0, 14 - c['bpp']) and edge < 0.5 * inner:
-                    c['problems'].append('%s edge darker than the picture (%.0f vs %.0f above black)' % (side, edge, inner))
+                adj = e[side + '_adj'] - blk; edge = e[side + '_edge'] - blk
+                # needs a lit edge (a near-black frame is all noise) and a step
+                if adj > 256 >> max(0, 14 - c['bpp']) and edge < 0.5 * adj:
+                    c['problems'].append('%s edge columns darker than the ones next to them (%.0f vs %.0f above black)' % (side, edge, adj))
     return c
 
 
