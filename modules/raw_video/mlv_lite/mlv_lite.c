@@ -473,6 +473,7 @@ static GUARDED_BY(LiveViewTask) int skipped_frames = 0;             /* how many 
 static GUARDED_BY(RawRecTask)   int chunk_frame_count[CARD_COUNT] = {0};          /* how many frames in the current file chunk */
 static volatile                 int buffer_full = 0;                /* true when the memory becomes full */
        GUARDED_BY(RawRecTask)   char *raw_movie_filename = NULL;      /* file name for current (or last) movie */
+static volatile                 int wav_filing = 0;                   /* last take's WAV still being filed */
 static GUARDED_BY(RawRecTask)   char chunk_filename[CARD_COUNT][FIO_MAX_PATH_LENGTH] = {0};          /* file name for current movie chunk */
 static GUARDED_BY(RawRecTask)   int64_t written_total[CARD_COUNT] = {0};          /* how many bytes we have written in this movie */
 static GUARDED_BY(RawRecTask)   int64_t written_chunk[CARD_COUNT] = {0};          /* same for current chunk */
@@ -4569,10 +4570,21 @@ cleanup:
         ResumeLiveView();
         redraw();
 
+        /* The WAV is filed after the state goes back to IDLE (below), and
+         * that can wait up to 10 s for Canon to close the file.  A take
+         * started meanwhile would overwrite raw_movie_filename (a shared
+         * static buffer) and the WAV number, filing this audio under the new
+         * clip - so work from a copy, and raw_start_stop() waits for
+         * wav_filing to clear before starting the next take. */
+        char wav_clip[64];
+        snprintf(wav_clip, sizeof(wav_clip), "%s", raw_movie_filename ? raw_movie_filename : "");
+        int file_wav = wav_scratch_auto_enabled();
+        wav_filing = file_wav;
+
         raw_recording_state = RAW_IDLE;
         rec_log("========== TAKE END (state back to IDLE)");
 
-        if (wav_scratch_auto_enabled())
+        if (file_wav)
         {
             /* Rename last, after the state machine is already back to IDLE.
              * The recorder was stopped before the flush; this only moves the
@@ -4584,8 +4596,9 @@ cleanup:
              * empty name as "nothing to do". */
             /* A take that produced no clip only recorded its own setup:
              * discard that audio rather than file a stub. */
-            if (clip_kept) wav_scratch_rename(raw_movie_filename);
+            if (clip_kept) wav_scratch_rename(wav_clip);
             else           wav_scratch_discard();
+            wav_filing = 0;
         }
         mlv_rec_call_cbr(MLV_REC_EVENT_STOPPED, NULL);
     }
@@ -4599,6 +4612,11 @@ void raw_start_stop()
         printf("Stopping raw recording...\n");
         raw_recording_state = RAW_FINISHING;
         beep();
+    }
+    else if (wav_filing)
+    {
+        /* the last take's WAV is still being filed (see the take's tail) */
+        NotifyBox(1500, "Filing the last WAV - press again in a moment");
     }
     else
     {
