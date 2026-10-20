@@ -366,6 +366,32 @@ is the generic message alone, which no other button produces.
   WAV's start and stop and the first frame — for the short-WAV question below. `adtglog2` is
   hidden in the Modules menu.
 
+### Field round on v86, and what it added to v87
+
+Seven clips on card 2, every one intact with no dropped frames:
+
+| Clip | Mode | Depth | Length | WAV vs clip | MP4 vs clip |
+|---|---|---|---|---|---|
+| IMG_9488 / 9489 | 1080p 2048×856, proxy | 12 | 78 s / 36 s | +1.5 s | +1.9 / +1.8 s |
+| **IMG_9490** | 1080p 2048×856, proxy, ISO 6400 | 12 | **749.5 s** (stopped by hand) | +1.4 s | +1.6 s |
+| IMG_9491 | 1080p 2048×856, proxy | 10 | 31 s | +1.2 s | +1.6 s |
+| M20-1409 / 1410 | crop 2048×856 / 1920×804 | 10 | 3 s / 31 s | +0.5 / +0.4 s | — |
+| M20-1411 | crop 1920×804, dual ISO | 14 | 19 s | +0.4 s | — |
+
+- **The H.264 proxy holds a 12.5-minute take**: 47 GB of raw plus a complete 2.9 GB MP4.
+- **No short WAVs** this time, at 10-bit or in crop mode — every WAV runs past the end of its clip.
+- **Dual ISO in crop mode works as set**: M20-1411 alternates line pairs by 0.97 EV with Canon ISO
+  1600 and Recovery 800 (absolute), and carries a DISO block. The two 10-bit crop clips were shot
+  before the module was enabled (`dual_iso.en` is dated after them).
+- `cardcheck.py` flagged two "dark right edges" that were scene gradients; the test now looks for a
+  step at the outer columns.
+- **Temperature.** The MPU log shows the 6D2 never sends `0x80030014`, the property ML's
+  temperature readout uses, but sends the board temperature `0x80030035` (MPU `03 38`) every ~30 s.
+  v87 reads that: Debug → Internal Temp and the LiveView top bar, assuming raw − 128 = °C as on the
+  5D2 / 50D / 100D (25–28 °C indoors; to be checked against a cold camera). Canon's own
+  `PROP_TEMP_STATUS` (`0x8004000F`) drives its warning icon and the shutdown.
+- **Dual ISO menu text** says how it works in video on this body: Crop mode only.
+
 ---
 
 ## Appendix A — Measurements
@@ -474,6 +500,7 @@ Narrower widths are centre crops of the readout, not downscales.
 | Audio gain registers | `0xd8000550` (L) / `0xd8000554` (R); meter `0xd8000190` |
 | Timer-B store / apply | `0x1c928 + 0x1c` / `0xe03029bc` |
 | Format dialogs | Begin `0x229d0`, Execute `0x27734` |
+| Board temperature / Canon temperature status | `0x80030035` (MPU `03 38`) / `0x8004000F` |
 | MPU receive ring / index | `0x80d84` (80 pointers, message at +4) / `0x7c00` |
 | Card device for the boot flag | `sd_device` `0x20054` |
 
@@ -482,12 +509,12 @@ Narrower widths are centre crops of the readout, not downscales.
 ## Appendix D — Known issues
 
 - Peaking needs one ML menu open/close after power-on and after a bit-depth change.
-- The H.264 proxy is proven on a 62 s take; long and back-to-back proxy takes are untested.
+- The temperature scale (raw − 128) is assumed, not yet checked against a cold camera.
 - `mlv_play` needs `silent` loaded, and is slow. Review the proxy MP4 in Canon's player (disable
   `mlv_play`, which otherwise takes over PLAY).
-- Scratch WAVs on 10-bit and crop takes ran up to 2.2 s *shorter* than the clip (start late or
-  paused); 12/14-bit 1080p takes run +0.5 to +0.8 s. Not yet explained; v87's recording trace logs
-  the WAV start/stop and first frame to find out which.
+- Scratch WAVs on 10-bit and crop takes ran up to 2.2 s *shorter* than the clip in v81; the v86
+  field round did not repeat it (all +0.4 to +1.6 s). v87's recording trace logs the WAV
+  start/stop and first frame if it comes back.
 - Clips recorded before v62 carry a wrong black level; before v7, a wrong frame rate.
 - One mic feeds both WAV channels; per-channel source is not possible in Canon's driver.
 

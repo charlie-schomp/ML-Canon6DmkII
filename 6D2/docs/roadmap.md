@@ -36,10 +36,13 @@ below), the audio level meter (v87), and the research tools (v87: one developer 
 default).
 
 **Being tested**
-- **Scratch WAVs shorter than the clip** on 10-bit and crop takes (up to 2.2 s, files internally
-  complete). v87's recording trace logs the WAV start/stop and the first frame, which separates a
-  late start from time lost inside Canon's recorder.
-- **Long and back-to-back proxy takes** (proven on one 62 s take).
+- **v87 on the camera**: the light button, the level meter, the temperature scale (raw − 128 = °C,
+  to check against a cold camera), dual ISO at 10/12-bit in crop mode.
+
+**Settled in the v86 field round**
+- **Long proxy takes**: a 12.5-minute 2048×856 12-bit take with a complete MP4.
+- **Short WAVs** did not repeat (every WAV +0.4 to +1.6 s past its clip). The recording trace logs
+  the WAV start/stop and the first frame if it comes back.
 
 **Smaller items**
 - Peaking needs one menu cycle after power-on and after a bit-depth change (accepted).
