@@ -431,8 +431,52 @@ static volatile int sl_key = -1, sl_key_n = 0, sl_key_gs = -1, sl_key_arg = 0, s
  * arrive together (press + release + Canon's top-LCD update) get lost.  Every
  * event is also kept here, in order, for the button list in the log. */
 #define KL_ROWS 256
-static int kl_rows[KL_ROWS][6];     /* ms, param, arg, obj[0], obj[1], gui_state */
+#define KL_OBJ  8
+static int kl_rows[KL_ROWS][4 + KL_OBJ];   /* ms, param, arg, gui_state, obj[0..7] */
 static volatile int kl_n = 0;
+
+/* MPU messages, the layer below GUI events.  DRIVE, metering and the AF-point
+ * button reach ML as the same event pair (0x4b, then 0x62 arg 9), so whatever
+ * tells them apart has to be in what the MPU sent.  Canon's SIO3 interrupt
+ * keeps the last 80 received messages in a ring of pointers (0x80d84, 80
+ * entries - it ends where the send ring at 0x80ec4 starts) and advances the
+ * index at 0x7c00; each message is at pointer + 4, its first byte the length.
+ * Read-only: the state logger polls the index and copies new messages. */
+#define MPU_RING        ((uint32_t *) 0x80d84)
+#define MPU_RING_N      80
+#define MPU_RING_TAIL   (*(volatile int *) 0x7c00)
+#define ML_ROWS  1024
+#define ML_BYTES 24
+static int ml_ms[ML_ROWS];
+static unsigned char ml_msg[ML_ROWS][ML_BYTES];   /* [0] = length as sent */
+static int ml_n = 0, ml_last = -1, ml_bad = 0;
+
+static void mpulog_poll(void)
+{
+    int tail = MPU_RING_TAIL;
+    if (tail < 0 || tail >= MPU_RING_N) { ml_bad++; return; }
+    if (ml_last < 0) { ml_last = tail; return; }    /* start with what arrives next */
+    while (ml_last != tail)
+    {
+        uint32_t p = MPU_RING[ml_last];
+        if (ml_n < ML_ROWS)
+        {
+            unsigned char * d = ml_msg[ml_n];
+            memset(d, 0, ML_BYTES);
+            if (p >= 0x1000 && p < 0x40000000)
+            {
+                const unsigned char * m = (const unsigned char *)(p + 4);
+                int len = m[0];
+                if (len > ML_BYTES) len = ML_BYTES;
+                memcpy(d, m, len);
+                d[0] = m[0];
+            }
+            else ml_bad++;
+            ml_ms[ml_n++] = get_ms_clock();
+        }
+        ml_last = (ml_last + 1) % MPU_RING_N;
+    }
+}
 
 static unsigned int statelog_keypress(unsigned int raw_event)
 {
@@ -453,9 +497,9 @@ static unsigned int statelog_keypress(unsigned int raw_event)
         {
             int * k = kl_rows[kl_n];
             k[0] = get_ms_clock();      k[1] = event->param;
-            k[2] = event->arg;          k[3] = sl_key_obj;
-            k[4] = obj_ok ? (int)MEM(o + 4) : 0;
-            k[5] = gui_state;
+            k[2] = event->arg;          k[3] = gui_state;
+            for (int j = 0; j < KL_OBJ; j++)
+                k[4 + j] = obj_ok ? (int)MEM(o + 4 * j) : 0;
             kl_n++;
         }
     }
@@ -503,11 +547,37 @@ static void statelog_write(void)
                    v[13], v[14], v[15], v[16], v[17], v[18]);
     }
     my_fprintf(f, "\nEvery button event, in order: %d%s\n", kl_n, kl_n >= KL_ROWS ? " (list full, later ones lost)" : "");
-    my_fprintf(f, "    ms    param      arg   obj[0]   obj[1]  gui_state\n");
+    my_fprintf(f, "    ms    param      arg gs   obj[0..7]\n");
     for (int i = 0; i < kl_n; i++)
     {
         int * k = kl_rows[i];
-        my_fprintf(f, "%6d %8x %8x %8x %8x  %d\n", k[0], k[1], k[2], k[3], k[4], k[5]);
+        my_fprintf(f, "%6d %8x %8x %2d  %8x %8x %8x %8x %8x %8x %8x %8x\n", k[0], k[1], k[2], k[3],
+                   k[4], k[5], k[6], k[7], k[8], k[9], k[10], k[11]);
+    }
+
+    /* buttons and MPU messages on one timeline, so each press lines up with
+     * what the MPU sent around it */
+    my_fprintf(f, "\nTimeline, GUI events (EVT) and MPU messages received (MPU): %d MPU%s, %d bad reads\n",
+               ml_n, ml_n >= ML_ROWS ? " (list full, later ones lost)" : "", ml_bad);
+    int a = 0, b = 0;
+    while (a < kl_n || b < ml_n)
+    {
+        if (b >= ml_n || (a < kl_n && kl_rows[a][0] <= ml_ms[b]))
+        {
+            int * k = kl_rows[a++];
+            my_fprintf(f, "%6d EVT %8x arg %8x obj0 %8x\n", k[0], k[1], k[2], k[4]);
+        }
+        else
+        {
+            char line[3 * ML_BYTES + 4];
+            int len = ml_msg[b][0], pos = 0;
+            if (len > ML_BYTES) len = ML_BYTES;
+            for (int j = 0; j < len; j++)
+                pos += snprintf(line + pos, sizeof(line) - pos, "%02x ", ml_msg[b][j]);
+            line[pos] = 0;
+            my_fprintf(f, "%6d MPU %s%s\n", ml_ms[b], line, ml_msg[b][0] > ML_BYTES ? "..." : "");
+            b++;
+        }
     }
     FIO_CloseFile(f);
 }
@@ -516,8 +586,13 @@ static void statelog_task(void * unused)
 {
     int prev[SL_COLS] = {0};
     sl_n = 0; sl_lost = 0; sl_key = -1; sl_key_n = 0; sl_key_gs = -1; sl_key_arg = 0; sl_key_obj = 0; kl_n = 0;
-    while (statelog_on)
+    ml_n = 0; ml_last = -1; ml_bad = 0;
+    for (int tick = 0; statelog_on; tick++)
     {
+        /* MPU ring every 10 ms (80 slots, so a burst would have to bring 80
+         * messages in 10 ms to lap us); the state rows stay at 20 ms */
+        mpulog_poll();
+        if (tick & 1) { msleep(10); continue; }
         int v[SL_COLS];
         statelog_sample(v);
         int changed = (sl_n == 0);
@@ -529,10 +604,10 @@ static void statelog_task(void * unused)
             else sl_lost = 1;
             memcpy(prev, v, sizeof(v));
         }
-        msleep(20);
+        msleep(10);
     }
     statelog_write();
-    NotifyBox(3000, "STATELOG.TXT written (%d rows)", sl_n);
+    NotifyBox(3000, "STATELOG.TXT written (%d rows, %d MPU)", sl_n, ml_n);
 }
 
 static MENU_SELECT_FUNC(statelog_select)
@@ -544,7 +619,7 @@ static MENU_SELECT_FUNC(statelog_select)
 
 static MENU_UPDATE_FUNC(statelog_update)
 {
-    MENU_SET_VALUE(statelog_on ? "ON (%d rows)" : "OFF", sl_n);
+    MENU_SET_VALUE(statelog_on ? "ON (%d rows, %d MPU)" : "OFF", sl_n, ml_n);
     MENU_SET_HELP(statelog_on ? "Recording. Switch OFF to write ML/LOGS/STATELOG.TXT."
                               : "ON, close menu, take a photo in LiveView, wait 10 s, reopen, OFF.");
 }
