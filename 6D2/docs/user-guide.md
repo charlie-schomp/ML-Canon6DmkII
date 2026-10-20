@@ -24,8 +24,8 @@ and a card cleared that way writes more slowly.
 
 A new card starts with: scratch audio **Auto with RAW**, **H.264 proxy on**, recorded-area frame
 guides, false colour / waveform / zebras reading the **raw** data, the **AF** button toggling focus
-peaking and **DRIVE / metering** toggling false colour, the light button unassigned, the audio
-**level meter** on while the WAV records, sync beep off. Change anything you like; updates keep your
+peaking and **DRIVE / metering** toggling false colour, the audio **level meter** on while the WAV
+records, spotmeter off, sync beep off. Change anything you like; updates keep your
 changes.
 
 ## Where things are
@@ -35,17 +35,17 @@ changes.
 | RAW video | Movie → RAW video, the first entry (enable the `mlv_lite` module first). **Data format** 14 / 12 / 10-bit — 12-bit is lossless in practice and the default to use |
 | Changing bit depth | Pick it, then **close the ML menu**: the view zooms in and out once and the entry reads `live`. Needs the lens on **MF** (Canon refuses the zoom with the lens on AF); with AF, Canon's MENU and back applies it instead |
 | Crop mode | Movie → RAW video → **Crop mode** — holds Canon's 5x zoom: a 1:1 sensor window, 3160×926, always 29.97 fps. Lens on **MF**; switching the lens to MF (or closing the ML menu) brings it in |
-| Video dual ISO | enable `dual_iso`, turn on Expo → Dual ISO, and use RAW video → **Crop mode**: only the 1:1 readout alternates the line pairs (the binned 1080p readout applies one gain), and crop mode is also where the higher resolutions are, up to 3072 wide. The **Recovery ISO** is the second ISO: for the most range, Canon ISO 100 and Recovery 800–1600. MLV App: Dual ISO **On**, pattern low-low-HIGH-HIGH |
-| Scratch audio | Movie → **Scratch audio**, the last entry, one submenu: **Mode** OFF / Auto with RAW / Manual, **Record WAV now**, **Input** Auto (jack) / Internal / External, **Level meter** OFF / While recording, **Gain** Factory / Manual with **Left gain** in 3 dB stops (Mute, −12 … +42 dB), **Right channel** Same as left / Own level / Safety −6 … −24 dB, **Right gain** |
+| Video dual ISO | enable `dual_iso`, turn on Expo → Dual ISO, and use RAW video → **Crop mode**: only the 1:1 readout alternates the line pairs (the binned 1080p readout applies one gain), and crop mode is also where the higher resolutions are, up to 3072 wide. The **Recovery ISO** is the second ISO: for the most range, Canon ISO 100 and Recovery 800–1600. On this body the line pairs differ by less than the ISO gap — measured 1.7 EV at 100 / 800 — so the gain is real but smaller than the menu's estimate. MLV App: Dual ISO **On**, pattern low-low-HIGH-HIGH |
+| Scratch audio | Movie → **Scratch audio**, the last entry, one submenu: **Mode** OFF / Auto with RAW / Manual, **Record WAV now** (Manual mode only), **Input** Auto (jack) / Internal / External, **Level meter** OFF / While recording, **Gain** Factory / Manual with **Left gain** in 3 dB stops (Mute, −12 … +42 dB), **Right channel** Same as left / Own level / Safety −6 … −24 dB, **Right gain** |
 | Focus peaking | Overlay → Focus Peak — **Edge density: Dots / Lines**, **Noise rejection: OFF / Steady / Steady + Wide** |
 | Frame guides | Overlay → Cropmarks = **OFF / Recorded area** (shades outside what's recorded) + **Framing guide** inside it. Bitmap cropmarks are not in this build. |
 | Resolution / aspect | Movie → RAW video. 1080p goes up to **2048** wide (2080 active columns), crop mode up to 3072; each keeps its own pick. Aspect **1.90:1 (DCI)** gives 2048×1080. **If too tall = Shrink width** (default) keeps the ratio; Clamp height keeps the width |
 | Flip screen | automatic — overlays follow Canon's image in all three screen positions. The per-position settings are under Debug → **Flip-screen overlays** if you ever need them |
 | H.264 proxy | Movie → RAW video → **H.264 proxy** (on by default). Records Canon's H.264 next to every raw clip on the same card, for smooth review in Canon's player: `IMG_1234.MLV` pairs with `MVI_1234.MP4`. Canon movie size **1080 IPB 23.98**. Costs ~3.6 MB/s |
-| Top buttons | Prefs → **Top buttons (movie)** — in movie LiveView, **AF**, **ISO**, **DRIVE / metering / AF-point** (one setting: the camera reports the three identically) and **Light** each toggle an overlay of your choice. Canon's own screen still flashes up; ISO stays adjustable with the dial until its screen closes; the light button still lights the top LCD |
-| Audio level meter | Movie → Scratch audio → **Level meter** — L/R peak bars in dBFS at the top left of LiveView while the WAV records, 1.5 s peak hold, **CLIP** in red. Keep peaks below about −6 dBFS. Hidden whenever a Canon or ML menu is open |
+| Top buttons | Prefs → **Top buttons (movie)** — in movie LiveView, **AF**, **ISO** and **DRIVE / metering / AF-point** (one setting: the camera reports the three identically) each toggle an overlay of your choice. Canon's own screen still flashes up; ISO stays adjustable with the dial until its screen closes. The light button can't be used: the rear dial sends the same signal |
+| Audio level meter | Movie → Scratch audio → **Level meter** — two peak bars in dBFS at the top left of LiveView while the WAV records (L on top), a 1.5 s peak-hold tick, the peak values, the mic in use (int / ext) and **CLIP** in red. Keep peaks below about −6 dBFS. Hidden whenever a Canon or ML menu is open |
 | Clean HDMI | Overlay → **Clean HDMI out** — no ML overlays or bars while HDMI is connected |
-| Temperature | the LiveView top bar shows the camera's **board temperature** (orange from 50 °C, red from 60 °C); also Debug → **Internal Temp**. Canon protects itself regardless: a thermometer icon, then it stops recording |
+| Temperature | Debug → **Internal Temp** shows the camera's **board temperature**; from 45 °C it also appears in the LiveView top bar (orange from 50 °C, red from 60 °C). Canon protects itself regardless: a thermometer icon, then it stops recording |
 | False colour | Overlay → False color → **Source: Preview (YUV) / RAW sensor** |
 | Waveform | Overlay → Waveform → **Source: Preview (YUV) / RAW sensor** |
 | Shutter angle | shown in the LiveView info bar |

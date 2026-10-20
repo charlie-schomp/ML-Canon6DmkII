@@ -12,7 +12,7 @@ built on [Magic Lantern](https://www.magiclantern.fm/).
 
 | Your camera's firmware | Download | Status |
 |---|---|---|
-| **1.1.1** | [**ML-6D2-fw1.1.1-v87.zip**](6D2/download/ML-6D2-fw1.1.1-v87.zip) | Tested on a camera |
+| **1.1.1** | [**ML-6D2-fw1.1.1-v88.zip**](6D2/download/ML-6D2-fw1.1.1-v88.zip) | Tested on a camera |
 | 1.2.0 | — | Not supported in current releases |
 
 To check your firmware: Canon menu → Wrench (setup) tab → **Firmware**. This build needs 1.1.1.
@@ -51,8 +51,8 @@ The official Magic Lantern build for this camera only boots and shows the menu. 
 - **Focus peaking, zebras, false colour, waveform, vectorscope, histograms, magic zoom**, frame
   guides for the area you're recording, clean HDMI out — aligned with the flip screen in any
   position.
-- **Top buttons as overlay toggles**: in movie mode the AF, ISO, DRIVE and light buttons each switch
-  an overlay of your choice on and off, the way cinema cameras use assignable buttons.
+- **Top buttons as overlay toggles**: in movie mode the AF, ISO and DRIVE buttons each switch an
+  overlay of your choice on and off, the way cinema cameras use assignable buttons.
 - **Format card, keep ML**: clear a card in the camera without reinstalling.
 - **Dual ISO** for photos, and for video in crop mode.
 

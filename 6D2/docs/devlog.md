@@ -1,6 +1,6 @@
 # Magic Lantern for the Canon EOS 6D Mark II — development log
 
-**Build v87 · 20 October 2026 · firmware 1.1.1 · base `magiclantern_simplified` @ `40c0a133b`**
+**Build v88 · 20 October 2026 · firmware 1.1.1 · base `magiclantern_simplified` @ `40c0a133b`**
 
 The 6D Mark II is a DIGIC 7 body. The official ML build for it boots and shows the menu, and not
 much else. This port adds raw video at 10/12/14-bit with an in-camera H.264 proxy, the full
@@ -14,11 +14,11 @@ hard way are collected in the appendices.
 
 ---
 
-## Status at v87
+## Status at v88
 
 | | |
 |---|---|
-| **Working** | Raw video (MLV) 14/12/10-bit · 1080p up to 2048 wide · 1:1 crop mode up to 3072×926 · **RAW + H.264 proxy on one card** · scratch WAV with clip-named files and a level meter · video dual ISO (crop readout) · focus peaking, zebras, false colour, waveform, histogram, vectorscope, spotmeter, magic zoom (YUV and raw sources) · recorded-area frame guides · flip-screen overlays in all three positions · top buttons (AF, ISO, DRIVE/metering/AF-point, light) as overlay toggles · **Format card, keep ML** · clean HDMI · shutter angle · photo dual ISO · `mlv_play` (10/12/14-bit, slow) |
+| **Working** | Raw video (MLV) 14/12/10-bit · 1080p up to 2048 wide · 1:1 crop mode up to 3072×926 · **RAW + H.264 proxy on one card** · scratch WAV with clip-named files and a level meter · video dual ISO (crop readout) · focus peaking, zebras, false colour, waveform, histogram, vectorscope, spotmeter, magic zoom (YUV and raw sources) · recorded-area frame guides · flip-screen overlays in all three positions · top buttons (AF, ISO, DRIVE/metering/AF-point) as overlay toggles · **Format card, keep ML** · clean HDMI · shutter angle · photo dual ISO · `mlv_play` (10/12/14-bit, slow) |
 | **Not possible so far** | FPS override · 24p in the crop readout · lossless compression · 4K / custom crop windows · expo override · video dual ISO in 1080p · ML audio capture (`mlv_snd`) · H.264 bitrate control · telling DRIVE, metering and the AF-point button apart (the MPU sends identical messages) |
 | **Firmware 1.2.0** | Source kept in step; last booted in QEMU at v83; not shipped |
 
@@ -392,6 +392,34 @@ Seven clips on card 2, every one intact with no dropped frames:
   `PROP_TEMP_STATUS` (`0x8004000F`) drives its warning icon and the shutdown.
 - **Dual ISO menu text** says how it works in video on this body: Crop mode only.
 
+### v88 · 20 October — v87 on the camera, and a blind code review
+
+**v87 field report.** The rear dial around SET toggled the light button's overlay: like the light
+button, it sends the generic "button pressed" event and nothing else, so the light-button toggle
+is gone (three toggles remain, still under Prefs). The level meter drew over a "WAV rec (int mic)"
+message that stayed for the whole take: on this body `redraw()` does not clear ML's layer during a
+take (a full clear mid-take killed takes), so every NotifyBox shown during a take used to stay up
+until it ended. NotifyBox now erases its own rectangle while recording, and with the meter on the
+message is skipped (the meter shows the mic). The temperature item shifted the other top-bar items,
+so it now appears only from 45 °C. Spotmeter is off by default. The format screen showed a clean
+LiveView until a dial was turned: NotifyBox's `redraw()` repainted LiveViewApp's dialog over
+Canon's format dialog; `redraw()` now repaints the open format dialog instead.
+
+**Dual ISO at 10 and 12-bit** works in crop mode (M20-1449, M20-1450). At Canon ISO 100 with
+Recovery 800 the line pairs differ by 3.3× (1.7 EV) on unclipped pixels, not the nominal 8×; base
+1600 against 800 gave the full 1 EV. The per-line gain switch covers only part of Canon's ISO
+gain on this body, so the dynamic range gained is smaller than the menu's estimate. The 1080p
+clips were correctly single-ISO and tagged inactive.
+
+**Code review.** A blind review (no project context; upstream and the other ports as reference)
+found 2 high, 7 medium and 11 low issues. The worst two were in shared code: mlv_lite called the
+6D2-only scratch-WAV functions as plain externs, so every other camera's build silently dropped the
+module, and bitmap cropmarks were removed for every camera. v88 fixes the first and four 6D2 ones:
+the next take now waits until the last WAV is filed (a quick REC press could file audio under the
+wrong clip), *Record WAV now* runs only in Manual (in Auto it could leave Canon's recorder running
+with nothing to stop it), the recording trace checks for NULL, and the top buttons check Canon's
+event pointer. The rest is listed in the roadmap.
+
 ---
 
 ## Appendix A — Measurements
@@ -510,6 +538,9 @@ Narrower widths are centre crops of the readout, not downscales.
 
 - Peaking needs one ML menu open/close after power-on and after a bit-depth change.
 - The temperature scale (raw − 128) is assumed, not yet checked against a cold camera.
+- Video dual ISO gains less than the ISO gap suggests (1.7 EV at 100 / 800).
+- What the level meter's second bar shows (right channel or a held peak) is being checked.
+- Open review items for other cameras and an upstream merge: see the roadmap.
 - `mlv_play` needs `silent` loaded, and is slow. Review the proxy MP4 in Canon's player (disable
   `mlv_play`, which otherwise takes over PLAY).
 - Scratch WAVs on 10-bit and crop takes ran up to 2.2 s *shorter* than the clip in v81; the v86

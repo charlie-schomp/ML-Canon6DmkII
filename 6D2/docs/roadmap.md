@@ -27,17 +27,36 @@ recording). That is what the audio meter got wrong and what the zoom bounce was 
   upstream and should stay that way (a v79 read-only hook for d7probe was removed again once the
   top buttons were mapped).
 
-## Open list (as of v87, 2026-10-20)
+## Open list (as of v88, 2026-10-20)
 
 The port is feature-complete for the maintainer's own shooting. Settled since v79: playback picture
 at every depth, the 8-pixel peaking offset, the H.264 proxy, *Format card, keep ML*, the top
-buttons (v87: the light button is a fourth toggle; DRIVE, metering and AF-point stay one, see
-below), the audio level meter (v87), and the research tools (v87: one developer module, off by
-default).
+buttons (three toggles; the light button was tried in v87 and dropped in v88 because the rear dial
+sends the same signal), the audio level meter (v87), the research tools (v87: one developer
+module, off by default), and dual ISO at 10/12/14-bit in crop mode (v87 field round).
 
 **Being tested**
-- **v87 on the camera**: the light button, the level meter, the temperature scale (raw − 128 = °C,
-  to check against a cold camera), dual ISO at 10/12-bit in crop mode.
+- **v88 on the camera**: the format screen keeping Canon's Cancel / OK, the meter clear of the
+  WAV message, and the temperature scale (raw − 128 = °C, to check against a cold camera).
+- **The level meter's second bar** looked like a held peak rather than the right channel. v88's
+  developer module logs the audio peak register during a clap take to settle what its two halves
+  are.
+
+**From the v87 code review** (blind review against upstream and the other ports; fixed in v88:
+mlv_lite's 6D2-only WAV calls made weak so it builds for other cameras, the recording trace's NULL
+check, the top buttons' pointer check, Record WAV now limited to Manual, the next take waiting for
+the last WAV to be filed). Still open, mostly matters for other cameras or an upstream merge:
+- Bitmap cropmarks are removed for every camera, not just the 6D2 (`src/cropmarks.c`).
+- mlv_lite's 6D2 defaults (H.264 proxy on, sync beep off, aspect fit on) and the 2048 preset
+  inserted mid-list apply to every camera; the crop-mode entry shows everywhere.
+- Focus-peaking defaults (lines, steady) changed for every camera.
+- Scratch WAV: `FA_AudioRecStop` runs without checking that the recorder started (a full card or
+  all 256 Sample names taken could assert).
+- The extra MMU page is allocated with interrupts off and the second core parked (plausible hang
+  when loading the developer module).
+- A REC press during the bit-depth zoom bounce can start a take mid-bounce.
+- The 1.2.0 tree lacks the 1.1.1 recording-property and frame-rate fixes.
+- Stale comments and dead code (`_EngDrvOut` whitelist, unused cropmark helpers).
 
 **Settled in the v86 field round**
 - **Long proxy takes**: a 12.5-minute 2048×856 12-bit take with a complete MP4.
