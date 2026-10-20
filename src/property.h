@@ -200,6 +200,11 @@
 
 #ifdef CONFIG_5DC
 #define PROP_EFIC_TEMP          0x80030013
+#elif defined(CONFIG_6D2)
+/* 6D2: the MPU never sends 0x80030014 (MPU 03 17); it sends the board
+ * temperature, 0x80030035 (MPU 03 38), every ~30 s - seen rising 153..156
+ * over 90 s of LiveView in a d7probe MPU log.  Used as ML's temperature. */
+#define PROP_EFIC_TEMP          0x80030035
 #else
 #define PROP_EFIC_TEMP          0x80030014
 #endif

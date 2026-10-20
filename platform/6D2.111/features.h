@@ -20,6 +20,7 @@
 // Half works?  shutter_count_plus_lv_actuations seems to go up correctly,
 // but shutter_count doesn't seem to change
 #define FEATURE_SHOW_SHUTTER_COUNT
+#define FEATURE_SHOW_CMOS_TEMPERATURE   // board temperature: Debug menu + LiveView info bar
 
 #define CONFIG_SGI_HANDLERS
 #define CONFIG_MMU_REMAP
