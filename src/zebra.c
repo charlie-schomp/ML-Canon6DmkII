@@ -53,6 +53,10 @@
 #endif
 
 extern uint32_t ml_refresh_display_needed;
+#ifdef FEATURE_RAW_FALSE_COLOR
+extern int falsecolor_raw;          /* falsecolor.c */
+extern void draw_false_raw(void);   /* falsecolor.c */
+#endif
 
 #if defined(FEATURE_RAW_HISTOGRAM) || defined(FEATURE_RAW_ZEBRAS) || defined(FEATURE_RAW_SPOTMETER)
 #define FEATURE_RAW_OVERLAYS
@@ -606,6 +610,69 @@ static inline void waveform_add_pixel(int x, int Y)
 }
 #endif
 
+#ifdef FEATURE_RAW_WAVEFORM
+/* Waveform built from the sensor instead of Canon's preview.
+ *
+ * The YUV waveform plots the LiveView image after picture style, contrast
+ * curve and white balance. That is the right reference for the H.264 and the
+ * wrong one for raw: its "100%" is Canon's, not the sensor's, so it shows
+ * clipping that has not happened and hides headroom that has. This one uses
+ * the same 12-stop scale as the RAW histogram, so the top of the graph is raw
+ * clipping and the bottom is 12 stops under it - meaning the raw waveform,
+ * raw histogram and RAW false colour ramp all agree with each other.
+ */
+static void FAST waveform_build_raw(void)
+{
+    if (!waveform) return;
+    /* raw_update_params() rewrites the shared raw_info, and mlv_lite reads
+     * that same struct from the recording task. Re-deriving the geometry
+     * underneath a running take is a data race on state the recorder depends
+     * on - and "recording stopped when rolling with false colour" was reported
+     * before, which I wrongly put down to CPU cost. While a take is running,
+     * use whatever mlv_lite has already set up and never touch it. */
+    if (NOT_RECORDING)
+    {
+        if (!raw_update_params()) return;
+    }
+    else if (!raw_lv_is_enabled() || raw_info.bits_per_pixel != 14)
+    {
+        return;
+    }
+
+    /* raw -> 0..255 for the waveform's vertical axis. Rebuilt only when the
+     * levels actually move - the RAW histogram rebuilds its equivalent every
+     * single frame, which is 16384 float logs there is no reason to repeat. */
+    static uint8_t r2y[16384];
+    static int lut_white = -1, lut_black = -1;
+    if (lut_white != raw_info.white_level || lut_black != raw_info.black_level)
+    {
+        for (int i = 0; i < 16384; i++)
+            r2y[i] = COERCE((raw_to_ev(i) + 12) * 255 / 12, 0, 255);
+        lut_white = raw_info.white_level;
+        lut_black = raw_info.black_level;
+    }
+
+    int step = lv ? 4 : 2;
+    for (int i = os.y0; i < os.y_max; i += step)
+    {
+        int y = BM2RAW_Y(i);
+        if (y < raw_info.active_area.y1 + 8 || y > raw_info.active_area.y2 - 8) continue;
+
+        for (int j = os.x0; j < os.x_max; j += 2)
+        {
+            int x = BM2RAW_X(j);
+            if (x < raw_info.active_area.x1 + 8 || x > raw_info.active_area.x2 - 8) continue;
+
+            /* Green: the luma proxy, and the channel that runs out first in
+             * most light, so it is the honest one to plot against clipping. */
+            int g = raw_green_pixel_dark(x, y);
+            if (g == 0) continue;                   /* bad pixel */
+            waveform_add_pixel(j, r2y[COERCE(g, 0, 16383)]);
+        }
+    }
+}
+#endif
+
 #if defined(FEATURE_HISTOGRAM)
 static void
 hist_build()
@@ -641,13 +708,24 @@ hist_build()
     }
     #endif
     
+#ifdef FEATURE_RAW_WAVEFORM
+    int waveform_is_raw = (waveform_draw && waveform_raw && can_use_raw_overlays());
+    if (waveform_is_raw)
+    {
+        waveform_build_raw();
+    }
+#else
+    const int waveform_is_raw = 0;
+#endif
+
     histogram.is_rgb =
         histogram.is_raw ||    /* RAW histogram is always RGB-based */
         ((hist_type == 1 ||    /* Use YUV RGB histogram if selected */
           hist_type == 2) &&   /* Fall back to YUV RGB if we can't use the RAW RGB histogram */
          !EXT_MONITOR_RCA);    /* However, we cannot use YUV RGB histogram on RCA monitors, because they use YUV411 instead of YUV422 */
     
-    if (!waveform_draw && !vectorscope_draw && (!hist_draw || histogram.is_raw))
+    if ((!waveform_draw || waveform_is_raw) && !vectorscope_draw &&
+        (!hist_draw || histogram.is_raw))
     {
         /* optimization: no YUV-based histogram/waveform/scope enabled
          * => no need to scan the entire image */
@@ -674,7 +752,7 @@ hist_build()
             }
             
             #ifdef FEATURE_WAVEFORM
-            if (waveform_draw) 
+            if (waveform_draw && !waveform_is_raw)
             {
                 waveform_add_pixel(x, Y);
             }
@@ -3101,6 +3179,16 @@ struct menu_entry zebra_menus[] = {
                 .update = falsecolor_display_palette,
                 .help = "False color palettes for exposure, banding, green screen...",
             },
+            #ifdef FEATURE_RAW_FALSE_COLOR
+            {
+                .name = "Source       ",
+                .priv = &falsecolor_raw,
+                .max = 1,
+                .choices = CHOICES("Preview (YUV)", "RAW sensor"),
+                .help  = "RAW reads the sensor, ignoring picture style and contrast curve.",
+                .help2 = "Use RAW when the deliverable is raw video - clipping shown is real.",
+            },
+            #endif
             MENU_EOL
         }
     },
@@ -3183,6 +3271,16 @@ struct menu_entry zebra_menus[] = {
                 .icon_type = IT_SIZE,
                 .help = "Waveform size: Small / Large / FullScreen.",
             },
+            #ifdef FEATURE_RAW_WAVEFORM
+            {
+                .name = "Source",
+                .priv = &waveform_raw,
+                .max = 1,
+                .choices = CHOICES("Preview (YUV)", "RAW sensor"),
+                .help  = "RAW plots the sensor. Top of graph = raw clipping,",
+                .help2 = "bottom = 12 stops under. Same scale as RAW histogram.",
+            },
+            #endif
             MENU_EOL
         },
         //.essential = FOR_LIVEVIEW | FOR_PLAYBACK,
@@ -4383,6 +4481,12 @@ livev_hipriority_task( void* unused )
             if (hist_draw && RAW_HISTOGRAM_ENABLED) raw_needed = 1;          /* raw hisogram (any kind) */
             #endif
             if (spotmeter_draw && spotmeter_formula == 3) raw_needed = 1;   /* spotmeter, units: raw */
+            #ifdef FEATURE_RAW_FALSE_COLOR
+            if (falsecolor_draw && falsecolor_raw) raw_needed = 1;          /* raw false colour */
+            #endif
+            #ifdef FEATURE_RAW_WAVEFORM
+            if (waveform_draw && waveform_raw) raw_needed = 1;              /* raw waveform */
+            #endif
         }
 
         if (!raw_flag && raw_needed)
@@ -4430,6 +4534,14 @@ livev_hipriority_task( void* unused )
             display_filter_step(k);
             #endif
             
+            #ifdef FEATURE_RAW_FALSE_COLOR
+            if (falsecolor_draw && falsecolor_raw && can_use_raw_overlays())
+            {
+                if (k % 4 == 0)
+                    BMP_LOCK( if (lv) draw_false_raw(); )
+            }
+            else
+            #endif
             #ifdef FEATURE_FALSE_COLOR
             if (falsecolor_draw)
             {

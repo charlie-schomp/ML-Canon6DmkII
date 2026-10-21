@@ -6,6 +6,9 @@
 #include "zebra.h"
 #include "imgconv.h"
 #include "greenscreen.h"
+#ifdef FEATURE_RAW_FALSE_COLOR
+#include "raw.h"
+#endif
 
 CONFIG_INT( "falsecolor.draw", falsecolor_draw, 0);
 CONFIG_INT( "falsecolor.palette", falsecolor_palette, 0);
@@ -36,6 +39,136 @@ int falsecolor_fordraw(int i)
 
 extern uint8_t* get_bvram_mirror();
 
+
+#ifdef FEATURE_RAW_FALSE_COLOR
+/* False colour computed from the RAW sensor data rather than Canon's preview.
+ *
+ * The existing false colour reads the YUV LiveView buffer, which has picture
+ * style, contrast curve and white balance already baked in - so its idea of
+ * "clipped" is Canon's, not the sensor's. When the deliverable is raw video
+ * that is the wrong reference: it will show red long before the photosites are
+ * actually full, and it cannot show you the headroom you still have.
+ *
+ * This maps each pixel to stops below raw clipping and colours it on the usual
+ * cinema ramp, so magenta really does mean "this pixel is gone".
+ *
+ * Uses the same bvram_mirror bookkeeping as draw_false_downsampled() so it
+ * co-exists with the other overlays, and the same 2px step for speed.
+ */
+
+#ifdef CONFIG_6D2
+/* 6D2 default: the port's shooting setup (settings files store only values
+ * that differ from the default, so a user's own choice still wins) */
+CONFIG_INT("falsecolor.raw", falsecolor_raw, 1);
+#else
+CONFIG_INT("falsecolor.raw", falsecolor_raw, 0);
+#endif
+
+/* stops relative to raw white level -> ML palette index */
+static inline int raw_fc_color(float ev)
+{
+    if (ev >= -0.10f) return COLOR_MAGENTA;    /* clipped / no data left   */
+    if (ev >= -0.50f) return COLOR_RED;        /* right at the edge        */
+    if (ev >= -1.00f) return COLOR_ORANGE;     /* highlights              */
+    if (ev >= -2.00f) return COLOR_YELLOW;     /* bright                  */
+    if (ev >= -4.00f) return COLOR_GREEN1;     /* mid tones - the target  */
+    if (ev >= -6.00f) return COLOR_CYAN;       /* low mids                */
+    if (ev >= -8.00f) return COLOR_LIGHT_BLUE; /* shadows                 */
+    return COLOR_BLUE;                         /* down in the noise       */
+}
+
+void FAST draw_false_raw(void)
+{
+    /* raw_update_params() rewrites the shared raw_info, and mlv_lite reads
+     * that same struct from the recording task. Re-deriving the geometry
+     * underneath a running take is a data race on state the recorder depends
+     * on - and "recording stopped when rolling with false colour" was reported
+     * before, which I wrongly put down to CPU cost. While a take is running,
+     * use whatever mlv_lite has already set up and never touch it. */
+    if (NOT_RECORDING)
+    {
+        if (!raw_update_params()) return;
+    }
+    else if (!raw_lv_is_enabled() || raw_info.bits_per_pixel != 14)
+    {
+        return;
+    }
+
+    uint8_t * const bvram = bmp_vram_overlay();
+    if (!bvram) return;
+    uint8_t * const bvram_mirror = get_bvram_mirror();
+    if (!bvram_mirror) return;
+
+    int white = raw_info.white_level;
+    int black = raw_info.black_level;
+    if (white <= black) return;
+
+    int off = get_y_skip_offset_for_overlays();
+
+    /* Work out the raw value at each colour boundary once per pass, so the
+     * inner loop is integer compares rather than a raw_to_ev() float log per
+     * pixel. That call ran ~70k times a frame on this LV and was the bulk of
+     * the cost - enough to crawl visibly and to starve the raw recorder.
+     * Multipliers are 2^ev in 16.16 fixed point, so no float math at all. */
+    static const int fc_mul[] = { 61147, 46341, 32768, 16384, 4096, 1024, 256 };
+    static const int fc_col[] = { COLOR_MAGENTA, COLOR_RED, COLOR_ORANGE,
+                                  COLOR_YELLOW, COLOR_GREEN1, COLOR_CYAN,
+                                  COLOR_LIGHT_BLUE };
+    int fc_thr[COUNT(fc_mul)];
+    for (unsigned i = 0; i < COUNT(fc_mul); i++)
+        fc_thr[i] = black + (int)(((int64_t)(white - black) * fc_mul[i]) >> 16);
+
+    for (int y = os.y0 + off; y < os.y_max - off; y += 2)
+    {
+        int ry = BM2RAW_Y(y);
+
+        for (int x = os.x0; x < os.x_max; x += 2)
+        {
+            int rx = BM2RAW_X(x);
+
+            /* Sample the whole 2x2 Bayer quad rather than a single photosite.
+             * Neighbouring photosites are different colours and sit a stop or
+             * two apart once white balance is applied, so reading them one at a
+             * time produced a mosaic rather than a tonal map - the reported
+             * "not debayered properly" look. Taking the max of the quad also
+             * keeps the clipping warning honest: whichever channel runs out
+             * first is the one that actually costs you data. */
+            int rx0 = rx & ~1, ry0 = ry & ~1;
+            int raw = raw_get_pixel(rx0,     ry0);
+            int rp  = raw_get_pixel(rx0 + 1, ry0);     if (rp > raw) raw = rp;
+            rp      = raw_get_pixel(rx0,     ry0 + 1); if (rp > raw) raw = rp;
+            rp      = raw_get_pixel(rx0 + 1, ry0 + 1); if (rp > raw) raw = rp;
+            if (raw <= black) raw = black + 1;
+
+            int c = COLOR_BLUE;
+            for (unsigned i = 0; i < COUNT(fc_thr); i++)
+                if (raw >= fc_thr[i]) { c = fc_col[i]; break; }
+
+            uint16_t * const bp = (uint16_t *)(bvram        + BM(x, y));
+            uint16_t * const mp = (uint16_t *)(bvram_mirror + BM(x, y));
+
+            #define BP (*bp)
+            #define MP (*mp)
+            #define BN (*(bp + BMPPITCH/2))
+            #define MN (*(mp + BMPPITCH/2))
+
+            if (BP != 0 && BP != MP) { little_cleanup(bp, mp); continue; }
+            if (BN != 0 && BN != MN) { little_cleanup(bp + BMPPITCH/2, mp + BMPPITCH/2); continue; }
+            if ((MP & 0x80808080) || (MN & 0x80808080)) continue;
+
+            int cc = c | (c << 8);
+            MP = BP = cc;
+            MN = BN = cc;
+
+            #undef BP
+            #undef MP
+            #undef BN
+            #undef MN
+        }
+    }
+}
+#endif /* FEATURE_RAW_FALSE_COLOR */
+
 #ifdef FEATURE_FALSE_COLOR
 void draw_false_downsampled( void )
 {
@@ -53,7 +186,7 @@ void draw_false_downsampled( void )
     }
 
     //~ bvram_mirror_init();
-    uint8_t * const bvram = bmp_vram_real();
+    uint8_t * const bvram = bmp_vram_overlay();
     if (!bvram) return;
     uint8_t * const bvram_mirror = get_bvram_mirror();
     if (!bvram_mirror) return;
