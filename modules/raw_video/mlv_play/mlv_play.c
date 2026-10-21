@@ -111,6 +111,11 @@ static uint32_t mlv_play_info = 1;
 static uint32_t mlv_play_timer_stop = 1;
 static uint32_t mlv_play_frames_skipped = 0;
 
+/* per-frame cost, shown with the frame counter: card read vs drawing, to
+ * tell which one limits the playback rate */
+static volatile int mlv_play_read_ms = 0;
+static volatile int mlv_play_draw_ms = 0;
+
 /* this structure is used to build the mlv_xref_t table */
 typedef struct 
 {
@@ -995,6 +1000,17 @@ static mlv_xref_hdr_t *mlv_play_load_index(char *base_filename)
     return block_hdr;
 }
 
+/* A write that fails part way (card full, seen on hardware) used to leave the
+ * .IDX behind - empty or truncated.  The loader rejects it, so the clip still
+ * plays, but the index is rebuilt on every open and the stub looks like data.
+ * Remove it and say why. */
+static void mlv_play_index_failed(FILE *out_file, char *filename)
+{
+    FIO_CloseFile(out_file);
+    FIO_RemoveFile(filename);
+    NotifyBox(4000, "Index not saved (card full?)");
+}
+
 static void mlv_play_save_index(char *base_filename, mlv_file_hdr_t *ref_file_hdr, int fileCount, frame_xref_t *index, int entries)
 {
     char filename[128];
@@ -1019,7 +1035,11 @@ static void mlv_play_save_index(char *base_filename, mlv_file_hdr_t *ref_file_hd
     file_hdr.audioFrameCount = 0;
     file_hdr.fileNum = fileCount + 1;
     
-    FIO_WriteFile(out_file, &file_hdr, sizeof(mlv_file_hdr_t));
+    if(FIO_WriteFile(out_file, &file_hdr, sizeof(mlv_file_hdr_t)) != sizeof(mlv_file_hdr_t))
+    {
+        mlv_play_index_failed(out_file, filename);
+        return;
+    }
 
     /* now write XREF block */
     mlv_xref_hdr_t hdr;
@@ -1031,7 +1051,7 @@ static void mlv_play_save_index(char *base_filename, mlv_file_hdr_t *ref_file_hd
     
     if(FIO_WriteFile(out_file, &hdr, sizeof(mlv_xref_hdr_t)) != sizeof(mlv_xref_hdr_t))
     {
-        FIO_CloseFile(out_file);
+        mlv_play_index_failed(out_file, filename);
         return;
     }
     
@@ -1076,7 +1096,7 @@ static void mlv_play_save_index(char *base_filename, mlv_file_hdr_t *ref_file_hd
             if(FIO_WriteFile(out_file, buffer, write_size) != write_size)
             {
                 free(buffer);
-                FIO_CloseFile(out_file);
+                mlv_play_index_failed(out_file, filename);
                 return;
             }
         }
@@ -1528,8 +1548,10 @@ static void mlv_play_render_task(uint32_t priv)
             break;
         }
 
+        int draw_start = get_ms_clock();
         mlv_play_render_frame(buffer);
-        
+        mlv_play_draw_ms = get_ms_clock() - draw_start;
+
         /* if info display is requested, paint it. todo: thats OSD stuff, so it should be removed from here */
         if(mlv_play_info)
         {
@@ -1992,7 +2014,10 @@ static void mlv_play_mlv(char *filename, FILE **chunk_files, uint32_t chunk_coun
             FIO_SeekSkipFile(in_file, position + sizeof(mlv_vidf_hdr_t) + vidf_block.frameSpace, SEEK_SET);
 
             /* finally read the raw data */
-            if(FIO_ReadFile(in_file, read_buffer, read_size) != (int32_t)read_size)
+            int read_start = get_ms_clock();
+            int read_ok = (FIO_ReadFile(in_file, read_buffer, read_size) == (int32_t)read_size);
+            mlv_play_read_ms = get_ms_clock() - read_start;
+            if(!read_ok)
             {
                 bmp_printf(FONT_MED, 30, 190, "File ends prematurely during VIDF raw data");
                 beep();
@@ -2063,7 +2088,8 @@ static void mlv_play_mlv(char *filename, FILE **chunk_files, uint32_t chunk_coun
                 }
                 
                 snprintf(buffer->messages.botLeft, SCREEN_MSG_LEN, "%s: %dx%d %dbpp%s", filename, rawi_block.xRes, rawi_block.yRes, rawi_block.raw_info.bits_per_pixel, (main_header.videoClass & MLV_VIDEO_CLASS_FLAG_LJ92)?" LJ92":"");
-                snprintf(buffer->messages.botRight, SCREEN_MSG_LEN, "%d/%d", vidf_block.frameNumber + 1, frame_count);
+                snprintf(buffer->messages.botRight, SCREEN_MSG_LEN, "rd %dms dr %dms  %d/%d",
+                         mlv_play_read_ms, mlv_play_draw_ms, vidf_block.frameNumber + 1, frame_count);
                 
                 
                 if (mlv_play_exact_fps)
@@ -2553,6 +2579,12 @@ static void mlv_play_leave_playback()
     
     vram_clear_lv();
     exit_play_qr_mode();
+
+    /* The player's controls and info lines are drawn on ML's own layer.
+     * Older cameras lose them when Canon redraws on leaving playback; on
+     * DIGIC 6/7/8 Canon never clears that layer, so they stayed on screen. */
+    clrscr();
+    redraw();
 }
 
 static void mlv_play_enter_playback()
