@@ -7,8 +7,8 @@ autoexpo
 crop_rec
 deflick
 dot_tune
-# dual_iso: supported on 6D2 1.1.1 (photo only, no FRAME_CMOS video path),
-# unhidden so it appears in the ML menu.
+# dual_iso: supported on 6D2 1.1.1 - photos, and video in mlv_lite's crop
+# mode (the 1:1 readout's ISO table); unhidden so it appears in the ML menu.
 edmac
 ettr
 img_name

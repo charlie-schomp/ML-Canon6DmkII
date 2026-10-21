@@ -4598,12 +4598,13 @@ cleanup:
 
         raw_recording_state = RAW_IDLE;
         rec_log("========== TAKE END (state back to IDLE)");
+        rec_trace = 0;      /* the next take reads the switch again */
 
         if (file_wav)
         {
             /* Rename last, after the state machine is already back to IDLE.
              * The recorder was stopped before the flush; this only moves the
-             * finished file, and it sleeps half a second waiting for Canon to
+             * finished file, and it waits (up to 10 s) for Canon to
              * close it - so it has no business happening while the task still
              * counts as recording. Canon wrote SampleN.wav to the card root;
              * move it next to the clip as <clip>.WAV. raw_movie_filename is

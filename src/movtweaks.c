@@ -1598,7 +1598,7 @@ int wav_scratch_auto_enabled(void)
  * leaves no way to change the value - which is exactly how v13 trapped the user
  * in "Manual" with every button toggling the recorder instead of navigating.
  * The setting below now uses stock navigation and nothing else. */
-/* The move waits for Canon to finish writing (up to 4 s), which the menu task
+/* The move waits for Canon to finish writing (up to 10 s), which the menu task
  * must not sit through - so a manual stop hands it to a short-lived task. */
 static void wav_file_task(void * unused)
 {

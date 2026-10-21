@@ -1,7 +1,10 @@
 /**
- * d7probe - read-only research probe for the 6D Mark II (DIGIC 7).
+ * d7probe - "6D2 developer tools": the port's research tools in one module.
  *
- * Two questions, one build, no register writes:
+ * Mostly read-only (logs, dumps, the state / button / MPU logger, the
+ * recording-trace switch).  Two menu experiments DO write registers - the
+ * binned-readout frame timer and the SD clock - and say so in the menu.
+ * It started with two questions:
  *
  *  1. RAW bit depth.  Canon's LiveView pre-processing driver
  *     (./LiveView/LvPathCore/Driver/PreproPath.c, update at 0xe014493e) takes a

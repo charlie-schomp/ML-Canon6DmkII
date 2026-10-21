@@ -43,7 +43,7 @@
 // FA_AudioRecStop eventprocs).  There is no ML audio backend on this cam - no
 // ASIF stubs exist for any DIGIC 7 body - so mlv_snd cannot run, and the only
 // other option was mlv_lite's H.264 proxy at several MB/s.  This is ~0.19 MB/s
-// and records no video.  EXPERIMENTAL, not yet confirmed on hardware.
+// and records no video.  Confirmed on hardware (v71 on): files a WAV per take.
 #define FEATURE_WAV_AUDIO
 
 // Report the nominal frame rate (23.976 / 25.000 / ...) instead of the value

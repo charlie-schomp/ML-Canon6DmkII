@@ -145,8 +145,8 @@ extern struct vram_info vram_lv;
 #define BM2LV_Xu(x) ((((x) * bm2lv.sx) >> 10) + bm2lv.tx)
 #ifdef CONFIG_MIRROR_OVERLAYS
 /* Flipped-screen support: reflect the screen y about the image centre before
- * mapping, when asked. Plain exported ints (no struct access) so the modules
- * that use this macro - dual_iso, silent - resolve them at load. See vram.c. */
+ * mapping, when asked.  Core code only: modules are compiled without
+ * CONFIG_MIRROR_OVERLAYS and use the plain BM2LV_Y below. See vram.c. */
 extern int overlay_mirror_y;
 extern int overlay_mirror_y_sum;    /* os.y0 + os.y_max - 1, kept current by vram.c */
 #define BM2LV_Y(y) ((((overlay_mirror_y ? (overlay_mirror_y_sum - (y)) : (y)) * bm2lv.sy) >> 10) + bm2lv.ty)
