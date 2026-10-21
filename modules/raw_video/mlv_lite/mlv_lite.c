@@ -128,8 +128,16 @@ static int cam_5d3_123 = 0;
  * use roughly 10% increments
  **/
 
-static const int resolution_presets_x[] = {  640,  960,  1280,  1600,  1920,  2048,  2240,  2560,  2880,  3072,  3520,  4096,  5796 };
+/* 6D2: the binned 1080p readout is 2080 wide, so 2048 (DCI 2K) sits between
+ * 1920 and 2240.  Every other body keeps upstream's list: the saved choice is
+ * an index, and inserting a preset would shift every saved pick after it.
+ * raw_rec_init() switches to the upstream list on other bodies. */
+static const int resolution_presets_x_6d2[] = {  640,  960,  1280,  1600,  1920,  2048,  2240,  2560,  2880,  3072,  3520,  4096,  5796 };
 #define  RESOLUTION_CHOICES_X CHOICES("640","960","1280","1600","1920","2048","2240","2560","2880","3072","3520","4096","5796")
+static const int resolution_presets_x_std[] = {  640,  960,  1280,  1600,  1920,  2240,  2560,  2880,  3072,  3520,  4096,  5796 };
+static const char * resolution_choices_std[] = {"640","960","1280","1600","1920","2240","2560","2880","3072","3520","4096","5796"};
+static const int * resolution_presets_x = resolution_presets_x_6d2;
+static int resolution_presets_n = COUNT(resolution_presets_x_6d2);
 
 /* "1.90:1 (DCI)" = 256:135, i.e. 2048x1080 / 4096x2160.  Appended rather than
  * sorted in: the saved setting is an index, and inserting would silently
@@ -157,7 +165,9 @@ static CONFIG_INT("raw.aspect.ratio", aspect_ratio_index, 10);
  * 1:1 and 1:2 at 1920 wide all quietly record the same 1920x1192 and only the
  * help text admits it. 1 = shrink the width instead so the ratio is honoured
  * and the recorded-area guide tells the truth. */
-static CONFIG_INT("raw.aspect.fit", aspect_fit_width, 1);
+/* -1 = never set: raw_rec_init() picks the body's default (6D2: shrink width;
+ * others: upstream's clamp height) - see the note at raw.h264.proxy */
+static CONFIG_INT("raw.aspect.fit", aspect_fit_width, -1);
 
 static int default_lv_raw_width(void);  /* below */
 
@@ -211,12 +221,17 @@ static CONFIG_INT("raw.warm.up", warm_up, 0);
 static CONFIG_INT("raw.use.srm.memory", use_srm_memory, 1);
 static CONFIG_INT("raw.small.hacks", small_hacks, 1);
 
-/* on by default in this fork (6D2 builds only): the H.264 proxy is the
- * in-camera review copy, ~3.6 MB/s on top of the raw stream */
-static CONFIG_INT("raw.h264.proxy", h264_proxy_menu, 1);
-/* off by default in this fork: the scratch WAV is the sync track, and the
- * beep is audible on set and lands in the WAV and the proxy's audio */
-static CONFIG_INT("raw.sync_beep", sync_beep, 0);
+/* Per-body defaults.  This module is built once for every camera, so a 6D2
+ * default cannot be compiled in, and settings files are loaded before the
+ * module's init runs - so an init can't tell "never set" from "set to the
+ * upstream value".  These start at -1 ("never set"); raw_rec_init() resolves
+ * them: 6D2 - H.264 proxy on (the in-camera review copy, ~3.6 MB/s on top of
+ * the raw stream) and sync beep off (the scratch WAV is the sync track, and
+ * the beep lands in it and in the proxy's audio); every other body - the
+ * upstream defaults, proxy off and beep on.  The cost: these are always
+ * written to the settings file. */
+static CONFIG_INT("raw.h264.proxy", h264_proxy_menu, -1);
+static CONFIG_INT("raw.sync_beep", sync_beep, -1);
 
 static CONFIG_INT("raw.output_format", output_format, 3);
 #define OUTPUT_14BIT_NATIVE 0
@@ -1259,7 +1274,7 @@ static MENU_UPDATE_FUNC(resolution_update)
          * set within this same range. */
         res_menu_entry->priv = res_index();
         int mx = 0;
-        while (mx + 1 < (int)COUNT(resolution_presets_x) && resolution_presets_x[mx + 1] <= max_res_x) mx++;
+        while (mx + 1 < (int)resolution_presets_n && resolution_presets_x[mx + 1] <= max_res_x) mx++;
         mx = MAX(mx, 5);
         res_menu_entry->max = mx;
     }
@@ -1323,7 +1338,7 @@ static MENU_SELECT_FUNC(resolution_change_fine_value)
         /* pickbox: select a preset - within the menu's range, which on the
          * 6D2 is capped to what the current readout delivers (res_menu_entry,
          * set by resolution_update); elsewhere every preset is offered */
-        int top = res_menu_entry ? res_menu_entry->max : (int)COUNT(resolution_presets_x) - 1;
+        int top = res_menu_entry ? res_menu_entry->max : (int)resolution_presets_n - 1;
         *idx = COERCE(*idx + delta, 0, top);
         res_x_fine = 0;
         return;
@@ -1335,7 +1350,7 @@ static MENU_SELECT_FUNC(resolution_change_fine_value)
 
     /* select the closest preset */
     int max_delta = INT_MAX;
-    for (int i = 0; i < COUNT(resolution_presets_x); i++)
+    for (int i = 0; i < resolution_presets_n; i++)
     {
         int preset_res = resolution_presets_x[i];
         int delta = MAX(cur_res * 1024 / preset_res, preset_res * 1024 / cur_res);
@@ -4673,7 +4688,7 @@ static struct menu_entry raw_video_menu[] =
             {
                 .name = "Resolution",
                 .priv = &resolution_index_x,
-                .max = COUNT(resolution_presets_x) - 1,
+                .max = COUNT(resolution_presets_x_6d2) - 1,   /* other bodies: set in raw_rec_init */
                 .select = resolution_change_fine_value,
                 .update = resolution_update,
                 .choices = RESOLUTION_CHOICES_X,
@@ -5264,7 +5279,31 @@ static unsigned int raw_rec_init()
         }
     }
 
-    if (is_camera("6D2", "*"))
+    int cam_6d2 = is_camera("6D2", "*");
+    if (h264_proxy_menu < 0)  h264_proxy_menu  = cam_6d2 ? 1 : 0;
+    if (sync_beep < 0)        sync_beep        = cam_6d2 ? 0 : 1;
+    if (aspect_fit_width < 0) aspect_fit_width = cam_6d2 ? 1 : 0;
+
+    if (!cam_6d2)
+    {
+        /* upstream's resolution list (see resolution_presets_x_6d2) */
+        resolution_presets_x = resolution_presets_x_std;
+        resolution_presets_n = COUNT(resolution_presets_x_std);
+        struct menu_entry * e = raw_video_submenu_entry(&resolution_index_x);
+        if (e)
+        {
+            e->choices = resolution_choices_std;
+            e->max = resolution_presets_n - 1;
+        }
+        resolution_index_x = COERCE(resolution_index_x, 0, resolution_presets_n - 1);
+
+        /* crop mode holds the 6D2's 5x readout; nothing to hold elsewhere */
+        e = raw_video_submenu_entry(&crop_zoom);
+        if (e) e->shidden = 1;
+        crop_zoom = 0;
+    }
+
+    if (cam_6d2)
     {
         /* start with the 1080p cap (2080-wide readout: up to 2048);
          * resolution_update() raises it in the 3164-wide crop readout.  The
@@ -5279,7 +5318,7 @@ static unsigned int raw_rec_init()
             resolution_index_crop = resolution_index_x;
             resolution_index_x = 5;
         }
-        resolution_index_crop = COERCE(resolution_index_crop, 0, (int)COUNT(resolution_presets_x) - 1);
+        resolution_index_crop = COERCE(resolution_index_crop, 0, (int)resolution_presets_n - 1);
 
         /* 14/12/10-bit uncompressed: raw.c switches the depth through Canon's
          * own raw-tap driver (CONFIG_LV_BPP_MEM1_PATCH); lossless stays hidden */
@@ -5347,6 +5386,7 @@ MODULE_CONFIGS_START()
     MODULE_CONFIG(resolution_index_crop)
     MODULE_CONFIG(res_x_fine)
     MODULE_CONFIG(aspect_ratio_index)
+    MODULE_CONFIG(aspect_fit_width)
     MODULE_CONFIG(crop_zoom)
     MODULE_CONFIG(measured_write_speed)
     MODULE_CONFIG(pre_record)
