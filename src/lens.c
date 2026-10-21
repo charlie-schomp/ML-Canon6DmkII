@@ -2926,6 +2926,11 @@ static LVINFO_UPDATE_FUNC(temp_update)
     LVINFO_BUFFER(8);
     
     int t = EFIC_CELSIUS;
+  #ifdef CONFIG_6D2
+    /* only as a warning: shown all the time it shifted the other top-bar
+     * items and could push the clock out (Debug > Internal Temp has it) */
+    if (t < 45) return;
+  #endif
     snprintf(buffer, sizeof(buffer), "%d"SYM_DEGREE"C", t);
     if (t >= 60)
     {

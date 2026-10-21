@@ -1152,7 +1152,10 @@ static struct menu_entry debug_menus[] = {
         .name = "Internal Temp",
         .update = efictemp_display,
         .icon_type = IT_ALWAYS_ON,
-	 #ifdef EFIC_CELSIUS
+	 #if defined(CONFIG_6D2)
+        .help = "Mainboard temperature, also shown in the LiveView info bar.",
+        .help2 = "Canon warns (thermometer icon) and stops by itself when too hot.",
+	 #elif defined(EFIC_CELSIUS)
         .help = "EFIC chip temperature (somewhere on the mainboard).",
 	 #else
 	.help = "EFIC chip temperature (raw values).",
