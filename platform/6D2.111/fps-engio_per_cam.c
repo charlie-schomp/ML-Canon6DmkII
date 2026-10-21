@@ -1,10 +1,26 @@
 #include "dryos.h"
 #include "fps-engio_per_cam.h"
 
+/* Canon's getters (0xe044726a / 0xe04471de) ASSERT "m_VSize" when the
+ * ImgSeqCoopStore field is 0 - which it is for a moment during every LiveView
+ * mode change (zoom in/out, the bit-depth bounce).  ML reads the frame rate
+ * from the shoot task all the time (info bar, mlv_lite at record start), so
+ * that assert killed the shoot task on the camera (CRASH00.LOG, 2026-09-19):
+ * crop-mode zoom hold and the 10/12-bit switch silently stopped working.
+ * Read the store directly and hold the last non-zero value across the gap. */
+#define FPS_STORE 0x1c928       /* ImgSeqCoopStore: +0x1c timer B, +0x2c timer A */
+
+static int fps_store_read(uint32_t off, int *last)
+{
+    int v = MEM(FPS_STORE + off);
+    if (v > 0 && v < 0x100000) *last = v;
+    return *last;
+}
+
 int get_fps_register_a(void)
 {
-    extern int _get_fps_register_a(void);
-    return _get_fps_register_a();
+    static int last = 944;      /* 1080p24 value, only used before the first good read */
+    return fps_store_read(0x2c, &last);
 }
 
 int get_fps_register_a_default(void)
@@ -28,6 +44,12 @@ int get_fps_register_a_default(void)
 
 int get_fps_register_b(void)
 {
-    extern int _get_fps_register_b(void);
-    return _get_fps_register_b();
+    static int last = 1968;
+    return fps_store_read(0x1c, &last);
 }
+
+/* Crop mode 24p: four rounds of experiments (v50-v74) - timer B by direct
+ * MMIO, the RAM mode list, Canon's own apply function, and the ROM
+ * sensor-interface words of both zoom lists - all measured 29.97.  In the 1:1
+ * readout the frame period is fixed on the sensor side.  The code is in the
+ * git history (v58-v73); the findings are in 6D2/DEVLOG.md. */

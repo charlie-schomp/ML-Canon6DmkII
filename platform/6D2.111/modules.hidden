@@ -1,17 +1,20 @@
 # Module names in this file will be hidden in ML GUI
+# adtglog2: research logger (see modules.included)
+adtglog2
 adv_int
 arkanoid
 autoexpo
 crop_rec
 deflick
 dot_tune
-dual_iso
+# dual_iso: supported on 6D2 1.1.1 - photos, and video in mlv_lite's crop
+# mode (the 1:1 readout's ISO table); unhidden so it appears in the ML menu.
 edmac
 ettr
 img_name
 lua
-mlv_play
+# mlv_play unhidden - see modules.included
 mlv_snd
 pic_view
 selftest
-silent
+# silent unhidden - dependency of mlv_play, leave it disabled

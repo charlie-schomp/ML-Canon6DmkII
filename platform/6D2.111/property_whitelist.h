@@ -28,7 +28,13 @@
 // deny reads / do not register property handlers for these
 const uint32_t prop_handler_deny[] =
 {
-    PROP_MVR_REC_START // probably related to MVR stubs being all wrong
+    /* PROP_MVR_REC_START was listed here from the first port ("probably related
+     * to MVR stubs being all wrong"). Denying it left ML unable to see Canon
+     * recording at all: RECORDING_H264 stayed 0, so the H.264 proxy never got
+     * its buffers back and never stopped Canon's recording on giving up. Its
+     * handler that touches hardware - audio-common.c's enable_recording(),
+     * which wakes the AK audio-chip task - is disabled for this body instead. */
+    0   /* no property is 0; keeps the array non-empty */
 };
 
 // allow writes / allow prop_request_change() for these:
@@ -40,7 +46,10 @@ const uint32_t prop_write_allow[] =
                     // will trigger a hard lock on cam.  See issue 307
     PROP_BUTTON_ASSIGNMENT,
     PROP_REMOTE_SW1,
-    PROP_REMOTE_SW2
+    PROP_REMOTE_SW2,
+    PROP_LV_DISPSIZE,  // mlv_lite crop mode: request Canon's 5x zoom (1:1 readout)
+    PROP_SHUTTER       // shutter angle lock: the same request turning the dial makes; ML reads
+                       // this property for its shutter display, so the ID and length are known good
 };
 
 // anything not listed above will allow reads but not writes

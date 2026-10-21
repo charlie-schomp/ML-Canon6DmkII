@@ -3,3 +3,33 @@ bench
 dual_iso
 file_man
 mlv_lite
+# mlv_play: in-camera MLV review.  Enable BOTH mlv_play and silent in the
+# Modules menu - mlv_play's only unresolved symbol is lossless_decompress_raw,
+# which silent exports, and cross-module symbols resolve only if both modules
+# are actually loaded.
+#
+# silent is a dependency here, not a feature: leave "Silent Picture" switched
+# OFF.  Its silent_pic_polling_cbr() returns on the first line when the feature
+# is disabled, and its raw_lv_request() calls only run while a silent picture is
+# actually being taken, so a loaded-but-disabled silent costs one comparison per
+# shoot-task tick and nothing else.  (It was briefly suspected of causing the
+# second-take recording failure; that turned out to be the buffer realloc bug in
+# mlv_lite - see DEVLOG.)
+#
+# Our MLVs are uncompressed - lossless encoding is DIGIC 5 only - so the
+# decompressor is never actually called.  Playback of 1920-wide 14-bit is slow;
+# it is for checking a take, not reviewing at speed.
+mlv_play
+silent
+# adtglog2: hooks CMOS_write (0xe053cdc4) and logs every register list Canon
+# sends to the sensor, with the caller's LR, to adtg.log in the card root.
+# Research tool for video dual ISO (which LiveView ISO table is live) and for
+# crop modes (which list each readout mode sends).  Enable in Modules only
+# for a logging session; it costs a little CPU on every CMOS write.
+# Hidden in the Modules menu (modules.hidden): Debug > Modules debug >
+# "Show hidden modules" brings it back.
+adtglog2
+# d7probe: "6D2 developer tools" - every research tool of the port in one
+# module (state/button/MPU logger, recording trace, dumps, two register
+# experiments).  Off unless enabled in the Modules menu (ML/SETTINGS/d7probe.en).
+d7probe
