@@ -1029,7 +1029,7 @@ static int wav_is_recording = 0;
 static int wav_mic_now = 0;     /* 0 internal, 1 external: the take in progress */
 static int wav_is_manual = 0;   /* the open recording was started by Record WAV now */
 #ifdef AUDIO_PEAK_REG
-static CONFIG_INT("wav.meter", wav_meter, 1);          /* level meter while the WAV records: 0 off, 1 peak hold, 2 live L/R */
+static CONFIG_INT("wav.meter", wav_meter, 1);          /* level meter while the WAV records: 0 off, 1 on */
 #else
 static const int wav_meter = 0;
 #endif
@@ -1287,10 +1287,14 @@ void wav_scratch_stop(void)
 #ifdef AUDIO_PEAK_REG
 /* ---- level meter --------------------------------------------------------
  *
- * L/R peak bars in dBFS with a 1.5 s peak hold and CLIP, while the scratch
- * WAV records.  AUDIO_PEAK_REG holds the current L/R peaks (what Canon's own
- * meter reads, 0xe04b576e); it is only meaningful while the recorder has the
- * input live, so the meter only runs then.
+ * Two bars in dBFS with a 1.5 s hold tick and CLIP, while the scratch WAV
+ * records, from AUDIO_PEAK_REG (what Canon's own meter reads, 0xe04b576e).
+ * Its halves are NOT left and right: drawn raw (v89's "Live L/R", no ML
+ * ballistics at all) the low half moved like an average level and the high
+ * half like a peak the hardware holds, while a WAV of the same claps had
+ * clearly different L and R channels.  So: top bar = level, bottom = peak.
+ * The register is only meaningful while the recorder has the input live, so
+ * the meter only runs then.
  *
  * Brought back from v64-v66 under the rule the v67 revert taught: on this
  * body ML draws into its own layer, and every draw makes the compositor push
@@ -1344,38 +1348,33 @@ static void wav_db10_text(char * buf, int len, int db10)
 
 static void wav_meter_draw(int full, int with_text)
 {
-    int live = (wav_meter == 2);
     if (full) bmp_fill(COLOR_BLACK, WAV_BOX_X, WAV_BOX_Y, WAV_BOX_W, WAV_BOX_H);
 
     for (int ch = 0; ch < 2; ch++)
     {
-        /* top bar = left channel (low half of the register), bottom = right */
+        /* top bar = level (low half of the register), bottom = peak (high half) */
         int y = WAV_METER_Y + ch * (WAV_METER_H + 3);
         int db10 = wav_meter_db10[ch];
         int w = COERCE((db10 + WAV_METER_DB * 10) * WAV_METER_W / (WAV_METER_DB * 10), 0, WAV_METER_W);
+        int hx = COERCE((wav_meter_hold10[ch] + WAV_METER_DB * 10) * WAV_METER_W / (WAV_METER_DB * 10), 0, WAV_METER_W - 2);
         bmp_fill(COLOR_BLACK, WAV_METER_X - 2, y - 1, WAV_METER_W + 4, WAV_METER_H + 2);
         if (w > 0) bmp_fill(wav_db_color(db10), WAV_METER_X, y, w, WAV_METER_H);
-        if (!live && wav_meter_hold10[ch] > -999)
-        {
-            int hx = COERCE((wav_meter_hold10[ch] + WAV_METER_DB * 10) * WAV_METER_W / (WAV_METER_DB * 10), 0, WAV_METER_W - 2);
-            bmp_fill(COLOR_WHITE, WAV_METER_X + hx, y, 2, WAV_METER_H);
-        }
+        if (wav_meter_hold10[ch] > -999) bmp_fill(COLOR_WHITE, WAV_METER_X + hx, y, 2, WAV_METER_H);
         /* ticks every 6 dB */
         for (int d = 6; d < WAV_METER_DB; d += 6)
             bmp_fill(COLOR_GRAY(50), WAV_METER_X + WAV_METER_W - d * WAV_METER_W / WAV_METER_DB, y + WAV_METER_H - 2, 1, 2);
     }
 
     if (!with_text) return;
-    char l[8], r[8];
-    /* peak hold: the held values; live: what the bars show right now */
-    wav_db10_text(l, sizeof(l), live ? wav_meter_db10[0] : wav_meter_hold10[0]);
-    wav_db10_text(r, sizeof(r), live ? wav_meter_db10[1] : wav_meter_hold10[1]);
+    char lvl_s[8], pk_s[8];
+    wav_db10_text(lvl_s, sizeof(lvl_s), wav_meter_hold10[0]);
+    wav_db10_text(pk_s, sizeof(pk_s), wav_meter_hold10[1]);
     int clip = get_ms_clock() < wav_clip_until;
     /* spaces draw nothing on the RGBA layer, so blank the old text first -
      * in black, the meter's own background */
     bmp_fill(COLOR_BLACK, WAV_TEXT_X, WAV_BOX_Y, WAV_TEXT_W, WAV_BOX_H);
     bmp_printf(FONT(FONT_SMALL, clip ? COLOR_RED : COLOR_WHITE, COLOR_BLACK),
-               WAV_TEXT_X, WAV_METER_Y - 2, "L %s R %s %s%s", l, r,
+               WAV_TEXT_X, WAV_METER_Y - 2, "lvl %s pk %s %s%s", lvl_s, pk_s,
                wav_mic_now ? "ext" : "int", clip ? " CLIP" : "");
 }
 
@@ -1388,14 +1387,13 @@ static void wav_meter_task(void * unused)
 {
     int drawn = 0, tick = 0;
     int hold_t[2] = { 0, 0 };
-    int window10[2] = { -999, -999 };   /* live: loudest reading since the last draw */
     TASK_LOOP
     {
+        if (wav_meter > 1) wav_meter = 1;   /* v89's "Live L/R" (2), withdrawn */
         if (!wav_meter || !wav_is_recording)
         {
             wav_meter_db10[0] = wav_meter_db10[1] = -999;
             wav_meter_hold10[0] = wav_meter_hold10[1] = -999;
-            window10[0] = window10[1] = -999;
             if (drawn) { BMP_LOCK( wav_meter_clear(); ) drawn = 0; }
             msleep(200);
             continue;
@@ -1408,37 +1406,23 @@ static void wav_meter_task(void * unused)
         for (int ch = 0; ch < 2; ch++)
         {
             int db10 = wav_peak_to_db10(pk[ch]);
-            window10[ch] = MAX(window10[ch], db10);
-            if (wav_meter == 1)
+            /* bar: instant attack, 20 dB/s release */
+            wav_meter_db10[ch] = MAX(db10, wav_meter_db10[ch] - 10);
+            /* hold the highest reading for 1.5 s */
+            if (db10 >= wav_meter_hold10[ch] || now - hold_t[ch] > 1500)
             {
-                /* peak hold: instant attack, 20 dB/s release ... */
-                wav_meter_db10[ch] = MAX(db10, wav_meter_db10[ch] - 10);
-                /* ... and the highest peak held for 1.5 s */
-                if (db10 >= wav_meter_hold10[ch] || now - hold_t[ch] > 1500)
-                {
-                    wav_meter_hold10[ch] = db10;
-                    hold_t[ch] = now;
-                }
+                wav_meter_hold10[ch] = db10;
+                hold_t[ch] = now;
             }
             if (pk[ch] >= 32700) wav_clip_until = now + 1500;
         }
 
         /* draw at 10 Hz, and only over plain LiveView */
         if (++tick & 1) continue;
-        if (wav_meter == 2)
-        {
-            /* live: each channel's level over the last 100 ms, nothing held */
-            for (int ch = 0; ch < 2; ch++)
-            {
-                wav_meter_db10[ch] = window10[ch];
-                window10[ch] = -999;
-            }
-        }
         int show = lv && liveview_display_idle() && get_global_draw() && !gui_menu_shown();
         if (show)
         {
-            int text_every = (wav_meter == 2) ? 4 : 8;
-            BMP_LOCK( wav_meter_draw(!drawn, !drawn || (tick % text_every) == 0); )
+            BMP_LOCK( wav_meter_draw(!drawn, !drawn || (tick % 8) == 0); )
             drawn = 1;
         }
         else if (drawn)
@@ -1872,10 +1856,10 @@ static struct menu_entry mov_menus[] = {
             {
                 .name       = "Level meter",
                 .priv       = &wav_meter,
-                .max        = 2,
-                .choices    = CHOICES("OFF", "Peak hold", "Live L/R"),
-                .help       = "Bars in dBFS while the WAV records: top = left, bottom = right.",
-                .help2      = "Peak hold: slow fall + 1.5 s hold tick. Live: level now, no hold.",
+                .max        = 1,
+                .choices    = CHOICES("OFF", "While recording"),
+                .help       = "Bars in dBFS while the WAV records: top = level, bottom = peak.",
+                .help2      = "1.5 s hold tick, CLIP at full scale. Keep peaks below about -6.",
             },
             #endif
             #ifdef SOUNDDEV_SET_VOLUME_IN

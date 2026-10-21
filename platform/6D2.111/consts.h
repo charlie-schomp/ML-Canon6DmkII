@@ -208,8 +208,10 @@ extern int winsys_bmp_dirty_bit_neg;
  * 0.375 dB steps, looked up from a 64-entry table per input (level 0 = mute,
  * 0xffff0000).  It always writes table[LEFT level] to BOTH registers - the
  * right level it stores is never used - so ML writes R itself.
- * AUDIO_PEAK_REG: low half = left peak, high half = right peak (read by
- * 0xe04b576e for Canon's level meter; plain read, no side effect).
+ * AUDIO_PEAK_REG: two signed 16-bit halves (read by 0xe04b576e for Canon's
+ * level meter; plain read, no side effect).  Measured v89: the low half acts
+ * as an average level, the high half as a peak held by the hardware - not
+ * left and right.
  * Tables: _INT / _EXT, and the _ATT variants used when Canon's attenuator is
  * on (SoundDevice +0x30): internal -12 dB, external -20.25 dB. */
 #define AUDIO_GAIN_REG_L            0xd8000550
