@@ -12,7 +12,7 @@ built on [Magic Lantern](https://www.magiclantern.fm/).
 
 | Your camera's firmware | Download | Status |
 |---|---|---|
-| **1.1.1** | [**ML-6D2-fw1.1.1-v89.zip**](6D2/download/ML-6D2-fw1.1.1-v89.zip) | Tested on a camera |
+| **1.1.1** | [**ML-6D2-fw1.1.1-v90.zip**](6D2/download/ML-6D2-fw1.1.1-v90.zip) | Tested on a camera |
 | 1.2.0 | — | Not supported in current releases |
 
 To check your firmware: Canon menu → Wrench (setup) tab → **Firmware**. This build needs 1.1.1.

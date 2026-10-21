@@ -1,6 +1,6 @@
 # Magic Lantern for the Canon EOS 6D Mark II — development log
 
-**Build v89 · 20 October 2026 · firmware 1.1.1 · base `magiclantern_simplified` @ `40c0a133b`**
+**Build v90 · 21 October 2026 · firmware 1.1.1 · base `magiclantern_simplified` @ `40c0a133b`**
 
 The 6D Mark II is a DIGIC 7 body. The official ML build for it boots and shows the menu, and not
 much else. This port adds raw video at 10/12/14-bit with an in-camera H.264 proxy, the full
@@ -14,7 +14,7 @@ hard way are collected in the appendices.
 
 ---
 
-## Status at v89
+## Status at v90
 
 | | |
 |---|---|
@@ -437,6 +437,15 @@ The format screen fix was confirmed on the camera.
   channels genuinely differ (right about 6 dB under left, correlation 0.16), so the bars should
   too.
 
+### v90 · 21 October — what the meter register is
+
+On the camera the shutter angle lock worked, and so did the meter's black box. *Live L/R* did not:
+drawn raw, with no ML ballistics at all, it looked exactly like the normal meter — an average level
+on top and a held peak on the bottom. So the two halves of `0xd8000190` are the audio hardware's
+level and peak, not left and right; the WAV's separate L and R channels never reach it. The option
+is withdrawn and the meter says what it shows (`lvl … pk …`). The temperature scale was checked: a
+camera left off in a 21 °C (70 °F) room read 22–23 °C at power-on, so raw − 128 = °C holds.
+
 ---
 
 ## Appendix A — Measurements
@@ -542,7 +551,7 @@ Narrower widths are centre crops of the readout, not downscales.
 | ROM1 tune-data store | ROM1 offset `0xb30000` |
 | `FA_AudioRecStart` / `Stop` | `0xe008c0a0` / `0xe008c0ac` |
 | WAV path builder | `0xe064fc6e` (`B:/Sample%d.wav`) |
-| Audio gain registers | `0xd8000550` (L) / `0xd8000554` (R); meter `0xd8000190` |
+| Audio gain registers | `0xd8000550` (L) / `0xd8000554` (R); meter `0xd8000190` (level / held peak) |
 | Timer-B store / apply | `0x1c928 + 0x1c` / `0xe03029bc` |
 | Format dialogs | Begin `0x229d0`, Execute `0x27734` |
 | Shutter (read and, from v89, write) | `PROP_SHUTTER` `0x80000005` |
@@ -555,10 +564,9 @@ Narrower widths are centre crops of the readout, not downscales.
 ## Appendix D — Known issues
 
 - Peaking needs one ML menu open/close after power-on and after a bit-depth change.
-- The temperature scale (raw − 128) is assumed, not yet checked against a cold camera.
 - Video dual ISO gains less than the ISO gap suggests (1.7 EV at 100 / 800).
-- The shutter angle lock depends on Canon accepting ML's shutter requests in movie Manual
-  (first camera test pending).
+- The level meter shows level and peak, not left and right (the register has no per-channel
+  reading).
 - Open review items for other cameras and an upstream merge: see the roadmap.
 - `mlv_play` needs `silent` loaded, and is slow. Review the proxy MP4 in Canon's player (disable
   `mlv_play`, which otherwise takes over PLAY).
