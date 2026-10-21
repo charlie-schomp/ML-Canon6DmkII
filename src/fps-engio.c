@@ -303,7 +303,30 @@ static void fps_read_current_timer_values();
     // multiplier / divisor?
 
 #elif defined(CONFIG_6D2)
-    #define TG_FREQ_BASE 66800000
+    /* Calibrated 2026-09-02 against real recordings, replacing 66800000.
+     *
+     * fps_x1000 = TG_FREQ_BASE / (timerA * timerB), so an incorrect base scales
+     * every derived figure: the fps shown in the LiveView info bar, and - more
+     * damagingly - sourceFpsNom in the MLV file header, which makes every clip
+     * play back at the wrong speed in post.
+     *
+     * With 66800000 the camera reported 35.900 fps while actually recording a
+     * rock-steady 23.976.  That is not jitter or a variable frame rate: measured
+     * from MLV VIDF per-frame timestamps over a 74 s clip (1773 frames), the
+     * interval was 41707 us with a p05..p95 spread of 0.6%.
+     *
+     *   66800000 * 23.976 / 35.900 = 44.614 MHz   (74 s clip, 1773 frames)
+     *   66800000 * 23.976 / 35.863 = 44.658 MHz   (13 s clip,  315 frames)
+     *
+     * The ~0.1% spread between the two is ML's own quantisation when reading the
+     * timer registers.  44636000 is the midpoint; both clips then report within
+     * 0.06% of 23.976.
+     *
+     * Only affects displayed/derived values - FPS override cannot write anything
+     * on this cam anyway, since _EngDrvOut() is a stub in function_overrides.c.
+     * Calibrated in 1080p movie mode; worth re-checking in other video modes.
+     */
+    #define TG_FREQ_BASE 44636000
     #define FPS_TIMER_A_MIN (fps_timer_a_orig)
     // values from logging (timer_a, timer_b):
     // LV, photo mode:
@@ -921,6 +944,66 @@ int fps_get_current_x1000()
         return 0;
     int fps_timer = (get_fps_register_b() & 0xFFFF) + 1;
     int fps_x1000 = TIMER_TO_FPS_x1000(fps_timer);
+
+#ifdef FEATURE_FPS_SNAP_TO_NOMINAL
+    /* Report the nominal rate rather than the timer-derived one.
+     *
+     * The timer registers are RAM shadows maintained by Canon (see
+     * _get_fps_register_a/b), and their values move slightly during LiveView, so
+     * this figure wobbles in its last digits even though the sensor readout is
+     * rock steady - measured from MLV frame timestamps, a 74 s clip held
+     * 23.976 fps with under a millisecond of cumulative drift.
+     *
+     * The wobble matters because mlv_lite samples this ONCE, at record start, to
+     * fill sourceFpsNom in the MLV header.  Two clips shot back to back could
+     * therefore be tagged with different frame rates, which is a real problem
+     * when syncing external audio.
+     *
+     * Snapping to "nearest standard rate" would not be safe: 23.976 and 24.000
+     * are only 0.1% apart, the same order as the wobble, so it would be a coin
+     * flip between them.  Instead derive it, which is deterministic - Canon uses
+     * exact integers in PAL and the /1.001 variants in NTSC.
+     *
+     * Only applied when the measured value agrees to within 2%, so an unexpected
+     * mode falls back to the raw reading rather than being mislabelled.  Skipped
+     * entirely if FPS override is driving the rate.
+     */
+    if (!get_fps_override() && video_mode_fps > 0)
+    {
+        int nominal_x1000 = video_system_pal
+            ? video_mode_fps * 1000                          /* 25.000, 50.000  */
+            : (video_mode_fps * 1000000 + 500) / 1001;       /* 23.976, 29.970  */
+
+#ifdef CONFIG_6D2
+        /* Measured from MLV frame timestamps (2026-09-18): the timer reading is
+         * only right in the 1080p24/30 readout.  The 5x/10x zoom readout always
+         * runs at 30p (29.963 fps measured, header said 76-98), and 1080p60 at
+         * 59.934 (header said 76.8) - the timing generator base differs per
+         * readout mode, so the A*B formula cannot be trusted across modes.
+         * Report what the sensor is known to do instead of the timer figure. */
+        /* Decide by the readout actually on the DMAC when raw is on: the
+         * zoom property flips before Canon rebuilds the path, and a clip
+         * started in that window was tagged 29.97 while it recorded 1080p
+         * at 23.976 (M19-1640: 2128-wide frames, 29.97 header). */
+        int zoom_readout = lv && lv_dispsize > 1;
+        if (lv && raw_lv_is_enabled() && (raw_info.width == 2128 || raw_info.width == 3264))
+            zoom_readout = (raw_info.width == 3264);
+        if (zoom_readout)
+        {
+            /* the 1:1 readout is sensor-fixed at 29.97 (25 in PAL) - four
+             * rounds of 24p experiments measured nothing else - so report
+             * what the sensor does; a wrong header breaks playback speed */
+            return video_system_pal ? 25000 : 29970;
+        }
+        if (nominal_x1000 > 0)
+            return nominal_x1000;
+#endif
+
+        if (nominal_x1000 > 0 && ABS(fps_x1000 - nominal_x1000) * 50 < nominal_x1000)
+            return nominal_x1000;
+    }
+#endif
+
     return fps_x1000;
 }
 
