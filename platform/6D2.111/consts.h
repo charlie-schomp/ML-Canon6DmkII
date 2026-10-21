@@ -219,9 +219,8 @@ extern int winsys_bmp_dirty_bit_neg;
 #define AUDIO_PEAK_REG              0xd8000190
 
 /* Temperature: PROP_EFIC_TEMP is the board temperature on this body (see
- * property.h).  Scale assumed as on 5D2 / 50D / 100D (raw - 128 = deg C): it
- * reads 25..28 C after a minute of LiveView indoors, which is plausible, but
- * it has not been checked against a cold camera at a known room temperature. */
+ * property.h).  Scale as on 5D2 / 50D / 100D, raw - 128 = deg C - checked:
+ * a cold camera in a 21 C (70 F) room read 22..23 C at power-on. */
 #define EFIC_CELSIUS ((int)efic_temp - 128)
 #define AUDIO_GAIN_TABLE_INT        0xe08e7cdc
 #define AUDIO_GAIN_TABLE_INT_ATT    0xe08e7adc
