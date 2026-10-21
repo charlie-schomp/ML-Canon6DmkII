@@ -77,6 +77,36 @@ static CONFIG_INT("dual_iso.iso", dual_iso_alternate_iso, 3);
 static CONFIG_INT("dual_iso.alt", dual_iso_every_other, 0);
 static CONFIG_INT("dual_iso.prefix", dual_iso_file_prefix, 0);
 
+/* 6D2 movie dual ISO: the LiveView ISO tables in Canon's sensor-config block.
+ *
+ * ROM 0xe1980000 is DMA-copied to heap at boot (get_photo_cmos_iso_start_6d2()
+ * finds that copy, 0x415a7000 on 1.1.1; the photo ladder is at +0xb30).
+ * Further in are four 26-row tables - ISO 100..40000 in 1/3 stops, 7 CMOS
+ * words per row, stride 0x1c - whose first word is the same register 0
+ * "0d03a[A][B]0" that photo dual ISO patches.
+ *
+ * Which one Canon reads was settled by disassembly: the per-frame sensor
+ * update (0xe0525410) rebuilds the mode's working command list through
+ * 0xe0524642 -> 0xe0515e60, which copies row LUT[iso_code] from
+ *   +0x14a4 (ST2) in every normal LiveView mode, and
+ *   +0x177c (ST3) in the 5x/10x zoom modes (mode 8),
+ * into the list that CMOS_write (0xe053cdc4) sends EVERY FRAME.  The LUT
+ * (ROM 0xe096324c, indexed by Canon's raw ISO code) maps 100/200/400/... to
+ * rows 0/3/6/..., so SIZE = 3 rows, COUNT = 8, and a patched row is on the
+ * sensor one frame later with no ISO nudge.
+ *
+ * Measured on the camera:
+ *   5x/10x zoom (1:1 readout, 3164x926 active) - the line pairs alternate
+ *     as on every other body; cr2hdr-compatible pattern, 2.85x at 100/800.
+ *   1080p (3x3 binned) - the patched ST2 row demonstrably reaches the sensor
+ *     (read back from Canon's per-frame list), yet the noise floor is the
+ *     same on every line pair with either gain field set to 5 stops.  The
+ *     binned readout applies one gain; that is the sensor, not this code.
+ * So movie dual ISO is offered in the zoom readout only (mlv_lite's Crop
+ * mode holds it), and in 1080p the module stays inactive - the MLV is then
+ * not tagged as dual ISO, which keeps MLV App / cr2hdr honest. */
+#define DUAL_ISO_6D2_ZOOM_TABLE   0x177c    /* ST3, relative to the block's RAM copy */
+
 extern WEAK_FUNC(ret_0) int raw_lv_is_enabled();
 extern WEAK_FUNC(ret_0) int get_dxo_dynamic_range();
 extern WEAK_FUNC(ret_0) int is_play_or_qr_mode();
@@ -348,7 +378,7 @@ static int patch_cmos_iso_values_6d2(uint32_t start_addr, int item_size, int cou
 
     uint32_t other_iso_i = get_alternate_iso_index();
     // could use CMOS_ISO_BITS for the mask, with some shifts, like dual_iso_enable() does:
-    uint32_t other_iso_bits = *(uint32_t *)(old_values + item_size * other_iso_i) & iso_mask;
+    uint32_t other_iso_bits = *(uint32_t *)(old_values + item_size * other_iso_i) & 0xf0;
     if (other_iso_bits != 0x00
         && other_iso_bits != 0x10
         && other_iso_bits != 0x20
@@ -376,8 +406,12 @@ static int patch_cmos_iso_values_6d2(uint32_t start_addr, int item_size, int cou
         // logic used doesn't work for the 6D2 data structure.
 
         uint32_t val = *(uint32_t *)(old_values + item_size * i);
-        if ((val & 0xffff0000) == 0x0d030000) // Sanity check.  You can log the commands with adtglog2.mo
-                                              // to find patterns.
+        // Sanity check: CMOS register 0 (top byte 0x0d) with the 'a' nibble.
+        // The next byte is NOT fixed: photo and zoom tables carry 0d03a..., the
+        // 1080p movie table (ST2) carries 0d01a... - the old 0d03 test silently
+        // skipped every row there, which is why movie dual ISO only worked in
+        // 5x zoom on the first try.  Log commands with adtglog2.mo to see them.
+        if ((val & 0xff00f000) == 0x0d00a000)
         {
             val &= (~iso_mask); // mask out old other ISO
             val |= other_iso_bits; // mask in new
@@ -648,6 +682,7 @@ static unsigned int dual_iso_refresh(unsigned int ctx)
     static int prev_sig = 0;
     int sig = dual_iso_alternate_iso + (lvi << 16) + (raw_mv << 17) + (raw_ph << 18)
             + (dual_iso_hdr << 24) + (dual_iso_every_other << 25) + (dual_iso_file_prefix << 26)
+            + ((is_6d2 && lv_dispsize > 1) << 30)
             + get_shooting_card()->file_number * dual_iso_every_other + lens_info.raw_iso * 1234;
     int setting_changed = (sig != prev_sig);
     prev_sig = sig;
@@ -664,6 +699,17 @@ static unsigned int dual_iso_refresh(unsigned int ctx)
         enabled_ph = 0;
     }
 
+    if (is_6d2 && !enabled_lv)
+    {
+        /* movie dual ISO lives in the 1:1 zoom readout only (see the note at
+         * the top); safe to re-point now, nothing is patched through the old
+         * address.  A zero start leaves the LV side inactive in 1080p. */
+        uint32_t base = PHOTO_CMOS_ISO_START ? PHOTO_CMOS_ISO_START - 0xb30 : 0;
+        FRAME_CMOS_ISO_START = (base && lv_dispsize > 1) ? base + DUAL_ISO_6D2_ZOOM_TABLE : 0;
+        FRAME_CMOS_ISO_COUNT = 8;
+        FRAME_CMOS_ISO_SIZE  = 3 * 0x1c;
+    }
+
     if (dual_iso_hdr && raw_ph && !enabled_ph && PHOTO_CMOS_ISO_START
         && ((get_shooting_card()->file_number % 2) || !dual_iso_every_other))
     {
@@ -677,6 +723,7 @@ static unsigned int dual_iso_refresh(unsigned int ctx)
         enabled_lv = 1;
         int err = dual_iso_enable(FRAME_CMOS_ISO_START, FRAME_CMOS_ISO_SIZE, FRAME_CMOS_ISO_COUNT, backup_lv);
         if (err) { NotifyBox(10000, "ISOless LV err(%d)", err); enabled_lv = 0; }
+
     }
 
     if (setting_changed)
@@ -732,6 +779,11 @@ int dual_iso_is_enabled()
 
 int dual_iso_is_active()
 {
+    /* 6D2: the patched table only drives the 1:1 (3264-wide) readout, so
+     * report active only when that is what the DMAC is really delivering -
+     * otherwise the MLV DISO block claims dual ISO on a plain 1080p clip */
+    if (is_6d2 && is_movie_mode() && enabled_lv && raw_lv_is_enabled())
+        return raw_info.width == 3264;
     return is_movie_mode() ? enabled_lv : enabled_ph;
 }
 
@@ -935,6 +987,13 @@ static MENU_UPDATE_FUNC(dual_iso_update)
     int iso2 = (lens_info.iso_analog_raw)/8*8;
 
     MENU_SET_VALUE("%d/%d", raw2iso(iso2), raw2iso(iso1));
+
+    if (is_6d2 && is_movie_mode() && lv && lv_dispsize == 1)
+    {
+        /* measured: the binned 1080p readout applies one gain to every line
+         * pair; only the 1:1 zoom readout (RAW video -> Crop mode) alternates */
+        MENU_SET_WARNING(MENU_WARN_ADVICE, "Inactive in 1080p: turn on RAW video > Crop mode (1:1 readout).");
+    }
 
     dual_iso_check(entry, info);
     if (info->warning_level >= MENU_WARN_ADVICE)
@@ -1621,6 +1680,13 @@ static unsigned int dual_iso_init()
 
     if (FRAME_CMOS_ISO_START || PHOTO_CMOS_ISO_START)
     {
+        if (is_6d2)
+        {
+            /* how it works in video on this body (measured, see the note at
+             * the top): only the 1:1 readout alternates the line pairs */
+            dual_iso_menu[0].help  = "Two ISOs in alternating line pairs. Video: RAW video > Crop mode";
+            dual_iso_menu[0].help2 = "only (1:1 readout at 5x, up to 3072 wide); nothing in 1080p.";
+        }
         menu_add("Expo", dual_iso_menu, COUNT(dual_iso_menu));
     }
     else
