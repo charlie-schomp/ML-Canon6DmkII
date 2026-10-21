@@ -40,6 +40,25 @@ static uint8_t generic_mmu_space[MMU_PAGE_SIZE + MMU_L1_TABLE_SIZE
 
 #include "platform/mmu_patches.h"
 
+#ifdef CONFIG_MMU_EXTRA_PAGES
+/* Grow the remap pool without growing the binary.
+ *
+ * Cams that reserve the pool inside magiclantern.bin (no
+ * CONFIG_ALLOCATE_MEMORY_POOL) get exactly ONE 64 kB backing page and one L2
+ * table, so every patch/hook must sit in the same 64 kB of ROM - the second
+ * one fails with E_PATCH_BAD_MMU_PAGE.  On the 6D2 the binary cannot grow
+ * either: user_mem is ~11 kB above the DryOS boot minimum.  So: a few extra L2
+ * tables and their info structs are static (small), and every backing page
+ * beyond the first is taken from the system heap when a patch first needs
+ * it (64 kB-aligned inside a 128 kB AllocateMemory block, never freed - the
+ * MMU tables point at it for the rest of the session). */
+#define MMU_EXTRA_L2 3
+static uint8_t extra_L2_tables[MMU_EXTRA_L2 * MMU_L2_TABLE_SIZE]
+               __attribute__((aligned(MMU_L2_TABLE_SIZE)));
+static struct mmu_L2_page_info extra_L2_infos[1 + MMU_EXTRA_L2];
+extern void *_AllocateMemory(size_t size);
+#endif
+
 extern uint32_t is_cpu1_ready; // set via task_create_ex() on cpu1, cpu1_ready()
 
 // This function expects a bitfield of cpu_ids. Bit 0 is cpu0, bit 1 cpu1, etc.
@@ -69,7 +88,23 @@ static int assign_64k_to_L2_table(struct patch *patch,
     if (pages[i] == NULL)
     {
         if (backing_page_index >= global_mmu_conf.max_64k_pages_remapped)
+        {
+#ifdef CONFIG_MMU_EXTRA_PAGES
+            /* static pool exhausted: back this page from the heap */
+            uint8_t *blk = _AllocateMemory(MMU_PAGE_SIZE * 2);
+            if (blk == NULL)
+                return -1;
+            pages[i] = (uint8_t *)ROUND_UP((uint32_t)blk, MMU_PAGE_SIZE);
+            qprintf("Rom->Ram copy (heap): 0x%08x, 0x%08x\n", (uint32_t)patch->addr & 0xffff0000, pages[i]);
+            memcpy_dryos(pages[i],
+                         (uint8_t *)((uint32_t)patch->addr & 0xffff0000),
+                         MMU_PAGE_SIZE);
+            backing_page_index++;
+            return 0;
+#else
             return -1;
+#endif
+        }
 
         pages[i] = global_mmu_conf.phys_mem_pages + MMU_PAGE_SIZE * backing_page_index;
         qprintf("Rom->Ram copy: 0x%08x, 0x%08x\n", (uint32_t)patch->addr & 0xffff0000, pages[i]);
@@ -453,6 +488,24 @@ static int calc_mmu_globals(uint32_t start_addr, uint32_t size)
         global_mmu_conf.L2_tables[i].virt_page_mapped = 0x0;
         global_mmu_conf.L2_tables[i].in_use = 0x0;
     }
+
+#ifdef CONFIG_MMU_EXTRA_PAGES
+    /* move the info structs to the static array with room for more 1 MB
+     * regions; region 0 keeps the L2 table computed above, the extra ones use
+     * the static tables (their backing pages come from the heap on demand) */
+    for (uint32_t i = 0; i < 1 + MMU_EXTRA_L2; i++)
+    {
+        for (uint8_t j = 0; j < 16; j++)
+            extra_L2_infos[i].phys_mem[j] = NULL;
+        extra_L2_infos[i].L2_table = (i == 0) ? global_mmu_conf.L2_tables[0].L2_table
+                                              : extra_L2_tables + (i - 1) * MMU_L2_TABLE_SIZE;
+        extra_L2_infos[i].virt_page_mapped = 0x0;
+        extra_L2_infos[i].in_use = 0x0;
+    }
+    global_mmu_conf.L2_tables = extra_L2_infos;
+    global_mmu_conf.max_L2_tables = 1 + MMU_EXTRA_L2;
+    qprintf("extra L2 tables: %d (backing pages from heap)\n", MMU_EXTRA_L2);
+#endif
 
     return 0;
 }
