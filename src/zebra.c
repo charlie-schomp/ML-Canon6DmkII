@@ -316,13 +316,23 @@ CONFIG_INT( "focus.peaking.grayscale", focus_peaking_grayscale, 0); // R,G,B,C,M
 /* Vertical scan step for LV peaking. Each hit paints a 2x2 block, so a step of
  * 3 leaves a one-row gap and edges read as a dotted trail; a step of 2 makes
  * them continuous strokes, for 1.5x the scan cost. */
+#ifdef CONFIG_6D2
+/* 6D2 default: lines and steady (the port's shooting setup); OFF on other
+ * bodies reproduces upstream's peaking exactly (step 3, no history buffer) */
 static CONFIG_INT( "focus.peaking.lines", focus_peaking_lines, 1);
+#else
+static CONFIG_INT( "focus.peaking.lines", focus_peaking_lines, 0);
+#endif
 /* Noise rejection for the LV peaking.
  *   0  off
  *   1  temporal: a block must fire on two consecutive frames before it is drawn
  *   2  temporal + wide-support Laplacian (samples at +/-2 px instead of +/-1)
  * See peak_hist_* and calc_peak_wide() for the reasoning. */
+#ifdef CONFIG_6D2
 static CONFIG_INT( "focus.peaking.steady", focus_peaking_steady, 1);
+#else
+static CONFIG_INT( "focus.peaking.steady", focus_peaking_steady, 0);
+#endif
 
 /* Clean HDMI: when an HDMI monitor or recorder is attached, draw nothing of
  * ours on it. On this body the compositor feeds the LCD and HDMI from the same
