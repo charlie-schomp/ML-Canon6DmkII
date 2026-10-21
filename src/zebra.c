@@ -357,6 +357,13 @@ static CONFIG_INT( "waveform.draw", waveform_draw,
 #endif
  );
 static CONFIG_INT( "waveform.size", waveform_size,  0 );
+#ifdef CONFIG_6D2
+/* 6D2 default: the port's shooting setup (settings files store only values
+ * that differ from the default, so a user's own choice still wins) */
+static CONFIG_INT( "waveform.raw",  waveform_raw,   1 );
+#else
+static CONFIG_INT( "waveform.raw",  waveform_raw,   0 );
+#endif
 static CONFIG_INT( "waveform.bg",   waveform_bg,    COLOR_ALMOST_BLACK ); // solid black
 
 int histogram_or_small_waveform_enabled()
@@ -386,7 +393,12 @@ static CONFIG_INT( "clear.preview.delay", clearscreen_delay, 1000); // ms
 //~ #define clearscreen (clearscreen_enabled ? clearscreen_mode+1 : 0)
 
 static CONFIG_INT( "spotmeter.size",        spotmeter_size, 5 );
+#ifdef CONFIG_6D2
+/* 6D2 default: off (the port's shooting setup; false colour covers it) */
+static CONFIG_INT( "spotmeter.draw",        spotmeter_draw, 0 );
+#else
 static CONFIG_INT( "spotmeter.draw",        spotmeter_draw, 1 );
+#endif
 static CONFIG_INT( "spotmeter.formula",     spotmeter_formula, 0 ); // 0 percent, 1 IRE AJ, 2 IRE Piers
 static CONFIG_INT( "spotmeter.position",        spotmeter_position, 1 ); // fixed / attached to AF frame
 
@@ -799,7 +811,13 @@ hist_build()
 
 #ifdef FEATURE_RAW_ZEBRAS
 
+#ifdef CONFIG_6D2
+/* 6D2 default: the port's shooting setup (settings files store only values
+ * that differ from the default, so a user's own choice still wins) */
+static CONFIG_INT("raw.zebra", raw_zebra_enable, 1); /* 1 = always, 2 = photo only */
+#else
 static CONFIG_INT("raw.zebra", raw_zebra_enable, 2); /* 1 = always, 2 = photo only */
+#endif
 #define RAW_ZEBRA_ENABLE (raw_zebra_enable == 1 || (raw_zebra_enable == 2 && !lv))
 
 static void FAST draw_zebras_raw()
