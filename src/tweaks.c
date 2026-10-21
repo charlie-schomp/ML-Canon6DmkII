@@ -3053,9 +3053,9 @@ static void defish_draw_lv_color()
         if (!defish_lut) return;
     
         info_led_on();
-        for (int y = BM2LV_Y(os.y0); y < BM2LV_Y(os.y0 + os.y_ex/2); y++)
+        for (int y = BM2LV_Yu(os.y0); y < BM2LV_Yu(os.y0 + os.y_ex/2); y++)
         {
-            for (int x = BM2LV_X(os.x0); x < BM2LV_X(os.x0 + os.x_ex/2); x += 2)
+            for (int x = BM2LV_Xu(os.x0); x < BM2LV_Xu(os.x0 + os.x_ex/2); x += 2)
             {
                 // i,j are normalized values: [0,0 ... 720x480)
                 int j = LV2N_X(x);
@@ -3079,8 +3079,8 @@ static void defish_draw_lv_color()
                 int k;
                 for (k = 0; k < 4; k++)
                 {
-                    int Y = (off_i[k] ? N2LV_Y(off_i[k]) - y + BM2LV_Y(os.y0) - 1 : y);
-                    int X = (off_j[k] ? N2LV_X(off_j[k]) - x + BM2LV_X(os.x0) : x);
+                    int Y = (off_i[k] ? N2LV_Y(off_i[k]) - y + BM2LV_Yu(os.y0) - 1 : y);
+                    int X = (off_j[k] ? N2LV_X(off_j[k]) - x + BM2LV_Xu(os.x0) : x);
                     
                     int is = COERCE(LV(X,Y)/8, 0, 720*120-1);
                     int ids;
@@ -3129,9 +3129,9 @@ void defish_draw_play()
 
     memcpy(aux_buf, lvram, buf_size);
     
-    for (int y = BM2LV_Y(os.y0); y < BM2LV_Y(os.y0 + os.y_ex/2); y++)
+    for (int y = BM2LV_Yu(os.y0); y < BM2LV_Yu(os.y0 + os.y_ex/2); y++)
     {
-        for (int x = BM2LV_X(os.x0); x < BM2LV_X(os.x0 + os.x_ex/2); x++)
+        for (int x = BM2LV_Xu(os.x0); x < BM2LV_Xu(os.x0 + os.x_ex/2); x++)
         {
             // i,j are normalized values: [0,0 ... 720x480)
             int j = LV2N_X(x);
@@ -3152,8 +3152,8 @@ void defish_draw_play()
             int k;
             for (k = 0; k < 4; k++)
             {
-                int Y = (off_i[k] ? N2LV_Y(off_i[k]) - y + BM2LV_Y(os.y0) - 1 : y);
-                int X = (off_j[k] ? N2LV_X(off_j[k]) - x + BM2LV_X(os.x0) : x);
+                int Y = (off_i[k] ? N2LV_Y(off_i[k]) - y + BM2LV_Yu(os.y0) - 1 : y);
+                int X = (off_j[k] ? N2LV_X(off_j[k]) - x + BM2LV_Xu(os.x0) : x);
                 int Id = (off_i[k] ? off_i[k] - id : id);
                 int Jd = (off_j[k] ? off_j[k] - jd : jd);
                 

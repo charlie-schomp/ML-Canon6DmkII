@@ -143,10 +143,25 @@ extern struct vram_info vram_lv;
 
  // offsets on one axis, in pixels
 #define BM2LV_Xu(x) ((((x) * bm2lv.sx) >> 10) + bm2lv.tx)
+#ifdef CONFIG_MIRROR_OVERLAYS
+/* Flipped-screen support: reflect the screen y about the image centre before
+ * mapping, when asked.  Core code only: modules are compiled without
+ * CONFIG_MIRROR_OVERLAYS and use the plain BM2LV_Y below. See vram.c. */
+extern int overlay_mirror_y;
+extern int overlay_mirror_y_sum;    /* os.y0 + os.y_max - 1, kept current by vram.c */
+#define BM2LV_Y(y) ((((overlay_mirror_y ? (overlay_mirror_y_sum - (y)) : (y)) * bm2lv.sy) >> 10) + bm2lv.ty)
+#else
 #define BM2LV_Y(y) ((((y) * bm2lv.sy) >> 10) + bm2lv.ty)
+#endif
 
 extern int bm2lv_x_cache[];
 #define BM2LV_X(x) bm2lv_x_cache[(x) - BMP_W_MINUS]
+
+/* The plain screen -> LiveView mapping, never mirrored.  BM2LV_X / BM2LV_Y
+ * answer "which image pixel is under this screen pixel", which the flip-screen
+ * option reflects; geometry (where the image area starts, a row range) must
+ * use these instead, or a reflected edge turns the whole mapping inside out. */
+#define BM2LV_Yu(y) ((((y) * bm2lv.sy) >> 10) + bm2lv.ty)
 
 #define LV2BM_X(x) (((x) << 10) / bm2lv.sx - (bm2lv.tx << 10) / bm2lv.sx)
 #define LV2BM_Y(y) (((y) << 10) / bm2lv.sy - (bm2lv.ty << 10) / bm2lv.sy)
@@ -163,9 +178,11 @@ extern int bm2lv_x_cache[];
 #define HD2BM_X(x) LV2BM_X(HD2LV_X(x))
 #define HD2BM_Y(y) LV2BM_Y(HD2LV_Y(y))
 
-// scaling a distance between image buffers
-#define BM2LV_DX(x) (BM2LV_X(x) - BM2LV_X(0))
-#define BM2LV_DY(y) (BM2LV_Y(y) - BM2LV_Y(0))
+// scaling a distance between image buffers - never mirrored: with the
+// flip-screen option on, BM2LV_X(x) - BM2LV_X(0) is negative, and every scale
+// derived from it (raw preview, recorded-area shading, magic zoom) inverts
+#define BM2LV_DX(x) (BM2LV_Xu(x) - BM2LV_Xu(0))
+#define BM2LV_DY(y) (BM2LV_Yu(y) - BM2LV_Yu(0))
 
 #define LV2BM_DX(x) (LV2BM_X(x) - LV2BM_X(0))
 #define LV2BM_DY(y) (LV2BM_Y(y) - LV2BM_Y(0))

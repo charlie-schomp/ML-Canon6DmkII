@@ -80,7 +80,7 @@ uint32_t indexed2rgb(uint8_t color);
 
 void rgba_buffer_clear(void);
 
-#define RGB_LUT_SIZE 80
+#define RGB_LUT_SIZE 256 /* padded; see indexed2rgbLUT in bmp.c */
 inline uint8_t *bmp_vram_raw() {
     struct MARV *marv = rgb_vram_info;
     return marv ? marv->bitmap_data : NULL;
@@ -200,6 +200,29 @@ void bmp_idle_copy(int direction, int fullsize);
 
 void bmp_putpixel(int x, int y, uint8_t color);
 void bmp_putpixel_fast(uint8_t * const bvram, int x, int y, uint8_t color);
+
+/**
+ * Buffer the LiveView overlays (zebra, focus peaking, false colour, magic zoom)
+ * must draw into.
+ *
+ * These all write 8-bit palette indices at BMPPITCH stride.  That is correct for
+ * Canon's BMP vram on DIGIC 4/5, but on D678X (FEATURE_VRAM_RGBA) the real Canon
+ * buffer is a 32bpp RGBA layer, so an 8bpp write at BMPPITCH lands in a thin band
+ * at the top of the screen with meaningless alpha - which is exactly how this
+ * failed on the 6D2.  ML keeps its own 8bpp indexed shadow buffer for these cams;
+ * refresh_yuv_from_rgb() converts it to RGBA and composites it.  Overlays have to
+ * target that instead, and then set ml_refresh_display_needed so it gets composed.
+ *
+ * Menus and text were unaffected because they already go through bmp_vram().
+ */
+static inline uint8_t *bmp_vram_overlay(void)
+{
+#ifdef FEATURE_VRAM_RGBA
+    return bmp_vram();
+#else
+    return bmp_vram_real();
+#endif
+}
 
 
 /** Font specifiers include the font, the fg color and bg color, shadow flag, text alignment, expanded/condensed */

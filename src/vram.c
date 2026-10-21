@@ -55,6 +55,15 @@ ________________________________________________________________________________
 // cached LUTs for BM2LV-like macros
 
 int bm2lv_x_cache[BMP_W_PLUS - BMP_W_MINUS];
+
+#ifdef CONFIG_MIRROR_OVERLAYS
+/* 1 while the flip-out screen is facing forward and Canon is mirroring the
+ * image. Set from the PROP_LCD_POSITION handler in zebra.c, or forced from
+ * the menu. Consumed only here, when the x lookup table is (re)built. */
+int overlay_mirror_x = 0;
+int overlay_mirror_y = 0;
+int overlay_mirror_y_sum = 479;
+#endif
 //~ int bm2n_x_cache [BMP_W_PLUS - BMP_W_MINUS];
 //~ int bm2hd_r_cache[BMP_H_PLUS - BMP_H_MINUS];
 int y_times_BMPPITCH_cache[BMP_H_PLUS - BMP_H_MINUS];
@@ -63,18 +72,56 @@ static void vram_update_luts()
 {
     static int prev_bm2lv_tx = 0;
     static int prev_bm2lv_sx = 0;
+    #ifdef CONFIG_MIRROR_OVERLAYS
+    /* The mirror state has to be part of this check, or asking for a mirrored
+     * table while tx/sx are unchanged returns here and the table never
+     * rebuilds - which is exactly what shipped in v32: the option toggled,
+     * the screen redrew, and nothing was actually reflected. */
+    static int prev_mirror = -1;
+    int mirror_now = overlay_mirror_x | (overlay_mirror_y << 1) |
+                     ((os.x0 + os.x_max + os.y0 + os.y_max) << 2);
+    if (bm2lv.tx == prev_bm2lv_tx &&
+        bm2lv.sx == prev_bm2lv_sx &&
+        mirror_now == prev_mirror)
+    {
+        /* unchanged */
+        return;
+    }
+    prev_mirror = mirror_now;
+    #else
     if (bm2lv.tx == prev_bm2lv_tx &&
         bm2lv.sx == prev_bm2lv_sx)
     {
         /* unchanged */
         return;
     }
+    #endif
     prev_bm2lv_tx = bm2lv.tx;
     prev_bm2lv_sx = bm2lv.sx;
 
-    for (int x = BMP_W_MINUS; x < BMP_W_PLUS; x++) 
+    #ifdef CONFIG_MIRROR_OVERLAYS
+    overlay_mirror_y_sum = os.y0 + os.y_max - 1;
+    #endif
+
+    for (int x = BMP_W_MINUS; x < BMP_W_PLUS; x++)
     {
+        #ifdef CONFIG_MIRROR_OVERLAYS
+        /* Reflect the mapping about the centre of the image area on screen,
+         * so screen column x reads the LiveView pixel Canon is actually
+         * showing there. Everything that goes screen->image (peaking, zebras,
+         * false colour, magic zoom, the raw overlays via BM2RAW_X) inherits
+         * this; text and menus never use it and stay readable. */
+        int xs = overlay_mirror_x ? (os.x0 + os.x_max - 1 - x) : x;
+        int lvx = BM2LV_Xu(xs);
+        /* Clamp. A reflected column that lands outside the LiveView buffer
+         * would otherwise wrap through the row pitch, so successive screen
+         * columns read successive ROWS - the overlay smears into a diagonal
+         * and looks rotated rather than mirrored. Seen on hardware. */
+        if (vram_lv.width > 0) lvx = COERCE(lvx, 0, vram_lv.width - 1);
+        bm2lv_x_cache[x - BMP_W_MINUS] = lvx;
+        #else
         bm2lv_x_cache[x - BMP_W_MINUS] = BM2LV_Xu(x);
+        #endif
         //~ bm2n_x_cache[x - BMP_W_MINUS] = BM2N_Xu(x);
     }
 
@@ -309,6 +356,34 @@ void _update_vram_params()
     // This should probably be per cam, not bodged into a src/ file
     vram_lv.height = 480;
     vram_lv.pitch = vram_lv.width * 2;
+
+#if defined(CONFIG_6D2)
+    /* Do what the FIXME above asks, for this cam at least.
+     *
+     * The DISP vram struct carries {buffer, width, height} at +0x90/+0x94/+0x98.
+     * On a 6D2 1.1.1 in movie mode it reports 736 x 408, not 736 x 480 - the
+     * buffer is 16:9, so the hardcoded 480 makes every consumer of
+     * get_yuv422_vram() read ~72 rows past the end of the buffer.  The height is
+     * mode dependent (3:2 vs 16:9), so it has to be read at runtime, not swapped
+     * for another constant.
+     *
+     * Sanity-bounded, and falls back to the values above if the struct is not
+     * populated yet (it holds 0x01000000 as an "uninitialised" marker). */
+    {
+        uint32_t *disp_vram = (uint32_t *)(*(uint32_t *)0x7dc8);
+        if (disp_vram)
+        {
+            uint32_t w = disp_vram[0x94 / 4];
+            uint32_t h = disp_vram[0x98 / 4];
+            if (w >= 320 && w <= 1920 && h >= 240 && h <= 1080)
+            {
+                vram_lv.width  = w;
+                vram_lv.height = h;
+                vram_lv.pitch  = w * 2;
+            }
+        }
+    }
+#endif
     os.x0 = 0;
     os.y0 = 0;
     os.x_ex = 720;
@@ -316,7 +391,14 @@ void _update_vram_params()
     os.x_max = os.x0 + os.x_ex;
     os.y_max = os.y0 + os.y_ex;
     os.off_43 = 0;
-    os.off_169 = 0;
+    /* The panel stays 480 rows in every mode, but in movie mode the LV image
+     * is only 408 of them - confirmed on hardware, disp struct +0x98 reads 408
+     * in movie and 480 in photo. So the image is letterboxed by (480-408)/2 =
+     * 36 top and bottom, and off_169 is exactly that inset. Left at 0, the
+     * bottom-anchored histogram and waveform were positioned into the
+     * letterbox, underneath Canon's settings readout. */
+    os.off_169 = (vram_lv.height >= 240 && vram_lv.height < 480)
+               ? (480 - (int) vram_lv.height) / 2 : 0;
     os.off_1610 = 0;
 #elif defined(CONFIG_R)
     // false, depends on Panel, HDMI, EVF and if HDMI is clean or not.
@@ -440,6 +522,38 @@ void _update_vram_params()
     bm2lv.tx = 0;
     bm2lv.ty = 0;
     //~ bm2lv.ty = (PLAY_MODE || QR_MODE)? -48 : 0;     
+#elif defined(CONFIG_6D2)
+    /* The LiveView buffer is shown 1:1 on the 720x480 panel:
+     *   photo LV  736x480 -> buffer columns 0..719 shown, no letterbox
+     *   movie LV  736x408 -> columns 0..719, 36 rows of letterbox top and
+     *                        bottom (the same 36 that os.off_169 carries)
+     * Columns 720..735 are not picture: d7probe's alignment dump (v81, mean
+     * luma per buffer column) shows the image running smoothly to column 719
+     * and a flat bright band at 720..735, in every screen position and after
+     * a bit-depth switch.  This used to centre the panel (tx = 8), which put
+     * every overlay 8 px left of the picture, 8 px right in the mirrored
+     * position 1, and read the noise band at the left edge there - a stray
+     * column of peaking dots.
+     * The generic branch below assumes "no black bars" and scales the buffer
+     * height onto all 480 rows, so only screen row 240 read the LV row it
+     * drew on; row 36 read row 30, row 444 read row 377. Width/height come
+     * from the DISP struct at runtime (see the block above), so this holds if
+     * Canon changes them. Off an HDMI monitor the generic branch is still the
+     * right one. */
+    if (hdmi_code < 5 && !EXT_MONITOR_RCA)
+    {
+        bm2lv.sx = 1024;
+        bm2lv.sy = 1024;
+        bm2lv.tx = 0;
+        bm2lv.ty = -((480 - (int)vram_lv.height) / 2);
+    }
+    else
+    {
+        bm2lv.tx = hdmi_code >= 5 ?  240 : 4;
+        bm2lv.ty = hdmi_code >= 5 ? (video_mode_resolution>0 ? 30 : 60) : 0;
+        bm2lv.sx = hdmi_code >= 5 ? 2048 : 768;
+        bm2lv.sy = 1024 * vram_lv.height / (hdmi_code >= 5 ? 540 : 480);
+    }
 #else
     // bmp to lv transformation
     // LCD: (0,0) -> (0,0)
@@ -501,8 +615,8 @@ void _update_vram_params()
     // HD buffer does not contain pillarboxes, LV does
     // and HD may or may not contain bars 
     // the offset needs to be specified in HD units
-    lv2hd.tx = -LV2HD_DX(BM2LV_X(os.x0 + bar_x));
-    lv2hd.ty = -LV2HD_DY(BM2LV_Y(os.y0 + bar_y));
+    lv2hd.tx = -LV2HD_DX(BM2LV_Xu(os.x0 + bar_x));
+    lv2hd.ty = -LV2HD_DY(BM2LV_Yu(os.y0 + bar_y));
 
 //~ #ifndef CONFIG_5DC
     if (!lv) // HD buffer not active, use LV instead

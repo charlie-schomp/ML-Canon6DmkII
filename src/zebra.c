@@ -392,19 +392,93 @@ PROP_HANDLER(PROP_LV_OUTPUT_TYPE)
     if (ml_started) redraw();
 }
 
-#ifdef CONFIG_VARIANGLE_DISPLAY
+#if defined(CONFIG_VARIANGLE_DISPLAY) || defined(CONFIG_MIRROR_OVERLAYS)
 static volatile int lcd_position = 0;
 static volatile int display_dont_mirror_dirty;
+#endif
+
+#ifdef CONFIG_MIRROR_OVERLAYS
+/* 0 auto (follow PROP_LCD_POSITION), 1 never, 2 always. "Always" exists so the
+ * feature is usable even if this body reports the flipped position with a
+ * value other than the 1 that ML's property notes document. */
+/* Canon mirrors the image horizontally when the screen faces forward
+ * (PROP_LCD_POSITION == 1). Confirmed on hardware once the peaking cache
+ * actually rebuilt - see zebra_update_lut(). The transform was briefly
+ * selectable while that was being chased; it is a plain horizontal mirror. */
+static CONFIG_INT("overlay.mirror", overlay_mirror_mode, 1);       /* 0 off, 1 on */
+/* What Canon does to its image layer in each screen position, as a transform
+ * for ML's overlays: 0 none, 1 mirror (left-right), 2 flip (upside down),
+ * 3 rotate 180.  PROP_LCD_POSITION: 0 stowed facing out, 1 facing forward,
+ * 2 flipped outside.  Both confirmed on hardware: position 1 = mirror (v32,
+ * again v79), position 2 = none (v79).  The defaults are right, so the
+ * settings live in the Debug menu. */
+static CONFIG_INT("overlay.mirror.pos1", overlay_xform_pos1, 1);
+static CONFIG_INT("overlay.mirror.pos2", overlay_xform_pos2, 0);
+extern int overlay_mirror_x;   /* vram.c */
+extern int overlay_mirror_y;   /* vram.c */
+
+static void overlay_mirror_apply(void)
+{
+    int t = !overlay_mirror_mode ? 0
+          : lcd_position == 1 ? overlay_xform_pos1
+          : lcd_position == 2 ? overlay_xform_pos2 : 0;
+    int wx = (t == 1 || t == 3);
+    int wy = (t == 2 || t == 3);
+    if (wx != overlay_mirror_x || wy != overlay_mirror_y)
+    {
+        overlay_mirror_x = wx;
+        overlay_mirror_y = wy;
+        vram_params_set_dirty();
+        get_yuv422_vram();         /* rebuild BM2LV_X now, not on some later pass */
+        redraw_after(100);         /* and wipe overlays drawn the old way */
+    }
+}
+
+static MENU_UPDATE_FUNC(overlay_mirror_update)
+{
+    overlay_mirror_apply();
+    MENU_SET_RINFO("screen pos %d", lcd_position);
+}
+
+static MENU_UPDATE_FUNC(overlay_xform_update)
+{
+    overlay_mirror_apply();
+    int pos = (entry->priv == &overlay_xform_pos1) ? 1 : 2;
+    if (lcd_position == pos)
+        MENU_SET_RINFO("active now");
+    else
+        MENU_SET_WARNING(MENU_WARN_INFO, "Put the screen in position %d to see this one (now %d).", pos, lcd_position);
+}
+#endif
+
+#if defined(CONFIG_VARIANGLE_DISPLAY) || defined(CONFIG_MIRROR_OVERLAYS)
 PROP_HANDLER(PROP_LCD_POSITION)
 {
     if (lcd_position != (int)buf[0]) display_dont_mirror_dirty = 1;
     lcd_position = buf[0];
+    #ifdef CONFIG_MIRROR_OVERLAYS
+    overlay_mirror_apply();
+    #else
     redraw_after(100);
+    #endif
 }
 #endif
 
 /* from powersave.c */
 extern int idle_globaldraw_disable;
+
+/* Clean HDMI: when an HDMI monitor or recorder is attached, draw nothing of
+ * ours on it. On this body the compositor feeds the LCD and HDMI from the same
+ * layer, so "nothing on HDMI" necessarily means "nothing on the LCD" while
+ * HDMI is connected - which is the trade you want when the HDMI end is a
+ * recorder rather than a monitor. Canon's own info display is separate; the
+ * INFO button cycles that to clean as usual. */
+static CONFIG_INT( "clean.hdmi", clean_hdmi_out, 0);
+
+int clean_hdmi_active(void)
+{
+    return clean_hdmi_out && ext_monitor_hdmi;
+}
 
 int get_global_draw() // menu setting, or off if 
 {
@@ -426,7 +500,13 @@ int get_global_draw() // menu setting, or off if
     extern int ml_started;
     if (!ml_started) return 0;
     if (!global_draw) return 0;
-    
+
+    /* Clean HDMI wins over everything, including the playback exception below:
+     * a recorder on the HDMI port should get pixels and nothing else. Every
+     * overlay, the info bars and mlv_lite's on-screen indicator all route
+     * through this one gate. */
+    if (clean_hdmi_active()) return 0;
+
     if (PLAY_MODE) return 1; // exception, always draw stuff in play mode
     
     #ifdef CONFIG_CONSOLE
@@ -603,8 +683,13 @@ hist_build()
             #ifdef FEATURE_VECTORSCOPE
             if (vectorscope_draw)
             {
-                int8_t U = (pixel >>  0) & 0xFF;
-                int8_t V = (pixel >> 16) & 0xFF;
+                /* DIGIC 6/7/8 store chroma biased by +0x80, and UYVY_GET_U/V
+                 * exist precisely to strip it - this site was bypassing them
+                 * with a raw cast. Every neutral pixel therefore arrived as
+                 * -128, landed outside the circle and got painted on the rim:
+                 * a red edge with an empty centre. Upstream bug, all DIGIC 6+. */
+                int8_t U = UYVY_GET_U(pixel);
+                int8_t V = UYVY_GET_V(pixel);
                 vectorscope_addpixel(Y, U, V);
             }
             #endif
@@ -803,7 +888,7 @@ static void FAST draw_zebras_raw_lv()
 {
     if (!raw_update_params()) return;
 
-    uint8_t * const bvram = bmp_vram_real();
+    uint8_t * const bvram = bmp_vram_overlay();
     if (!bvram) return;
     uint8_t * const bvram_mirror = get_bvram_mirror();
     if (!bvram_mirror) return;
@@ -1132,12 +1217,27 @@ static uint16_t bm_lv_x_cache[BMP_W_PLUS - BMP_W_MINUS];
 
 static void zebra_update_lut()
 {
-    static int prev_bm2lv_sx = 0;
+    /* Peaking reads its own uint16 copy of the BM2LV_X mapping. This guard
+     * used to watch only bm2lv.sx, so anything that changed the mapping
+     * without changing the scale went unseen: the tx = 8 correction in
+     * vram.c (peaking kept its 8px rightward offset after the fix shipped),
+     * and the flipped-screen mirror (the source table reflected, this copy
+     * did not, and the option appeared to do nothing at all). Watch
+     * everything the mapping depends on. */
+    /* Keyed on what the source table actually CONTAINS at the image edges,
+     * not on the flag that asks for it to change. Keying on the flag raced:
+     * this rebuilt the instant the flag flipped, from a source table vram.c
+     * had not yet reflected, and then sat on a stable signature forever. The
+     * two edge samples swap when the reflection lands, so this follows the
+     * real state whichever order the two updates run in. */
+    static int prev_sig = -1;
+    int sig = bm2lv.sx ^ (bm2lv.tx << 12) ^ ((os.x0 + os.x_max) << 20)
+            ^ (BM2LV_X(os.x0 + 4) << 8) ^ (BM2LV_X(os.x_max - 5) << 24);
     int rebuild = 0;
 
-    if(unlikely(prev_bm2lv_sx != bm2lv.sx))
+    if(unlikely(prev_sig != sig))
     {
-        prev_bm2lv_sx = bm2lv.sx;
+        prev_sig = sig;
         rebuild = 1;
     }
     
@@ -1163,7 +1263,7 @@ static int zebra_digic_dirty = 0;
 
 static void draw_zebras( int Z )
 {
-    uint8_t * const bvram = bmp_vram_real();
+    uint8_t * const bvram = bmp_vram_overlay();
     int zd = Z && zebra_draw && (lv_luma_is_accurate() || PLAY_OR_QR_MODE) && (zebra_rec || NOT_RECORDING); // when to draw zebras
     if (zd)
     {
@@ -1709,7 +1809,7 @@ draw_zebra_and_focus( int Z, int F )
 {
     if (unlikely(!get_global_draw())) return 0;
 
-    uint8_t * const bvram = bmp_vram_real();
+    uint8_t * const bvram = bmp_vram_overlay();
     if (unlikely(!bvram)) return 0;
     if (unlikely(!bvram_mirror)) return 0;
     
@@ -2694,6 +2794,7 @@ struct menu_entry zebra_menus[] = {
         .help = "Enable/disable ML overlay graphics (zebra, cropmarks...)",
         //.essential = FOR_LIVEVIEW,
     },
+
     #endif
     #ifdef FEATURE_ZEBRA
     {
@@ -3090,16 +3191,57 @@ struct menu_entry zebra_menus[] = {
     MENU_PLACEHOLDER("Vectorscope"),
     #ifdef FEATURE_LEVEL_INDICATOR
     {
-        .name = "Level Indicator", 
-        .priv = &electronic_level, 
-        .max  = 1, 
+        .name = "Level Indicator",
+        .priv = &electronic_level,
+        .max  = 1,
         .help = "Electronic level indicator in 0.5 degree steps.",
         .depends_on = DEP_GLOBAL_DRAW,
     },
     #endif
+    {
+        .name = "Clean HDMI out",
+        .priv = &clean_hdmi_out,
+        .max = 1,
+        .help  = "With HDMI connected, draw no ML overlays or info bars at all.",
+        .help2 = "For a recorder on the HDMI port. Canon's info: cycle INFO to clean.",
+        .depends_on = DEP_GLOBAL_DRAW,
+    },
 };
 
 static struct menu_entry livev_dbg_menus[] = {
+    #ifdef CONFIG_MIRROR_OVERLAYS
+    {
+        .name = "Flip-screen overlays",
+        .priv = &overlay_mirror_mode,
+        .max = 1,
+        .update = overlay_mirror_update,
+        .help  = "Transform peaking/zebras/false colour to follow Canon's image",
+        .help2 = "when the vari-angle screen is flipped. Text and menus stay upright.",
+        .depends_on = DEP_GLOBAL_DRAW,
+        .submenu_width = 700,
+        .children = (struct menu_entry[]) {
+            {
+                .name = "Facing forward (pos 1)",
+                .priv = &overlay_xform_pos1,
+                .max = 3,
+                .update = overlay_xform_update,
+                .choices = CHOICES("None", "Mirror", "Flip", "Rotate 180"),
+                .help  = "Screen turned to face the subject. Canon mirrors the image here:",
+                .help2 = "Mirror (default, confirmed on the camera).",
+            },
+            {
+                .name = "Flipped outside (pos 2)",
+                .priv = &overlay_xform_pos2,
+                .max = 3,
+                .update = overlay_xform_update,
+                .choices = CHOICES("None", "Mirror", "Flip", "Rotate 180"),
+                .help  = "Screen flipped outside. Canon does not transform the image here:",
+                .help2 = "None (default, confirmed on the camera).",
+            },
+            MENU_EOL,
+        },
+    },
+    #endif
     #ifdef FEATURE_SHOW_OVERLAY_FPS
     {
         .name = "Show Overlay FPS",
@@ -3447,16 +3589,16 @@ static void draw_zoom_overlay(int dirty)
             zb_y0_lv = H/2 + 50;
             break;
         case 2: // NE
-            zb_x0_lv = BM2LV_X(os.x_max) - W/2 - 50;
+            zb_x0_lv = BM2LV_Xu(os.x_max) - W/2 - 50;
             zb_y0_lv = H/2 + 50;
             break;
         case 3: // SE
-            zb_x0_lv = BM2LV_X(os.x_max) - W/2 - 50;
-            zb_y0_lv = BM2LV_Y(os.y_max) - H/2 - 50;
+            zb_x0_lv = BM2LV_Xu(os.x_max) - W/2 - 50;
+            zb_y0_lv = BM2LV_Yu(os.y_max) - H/2 - 50;
             break;
         case 4: // SV
             zb_x0_lv = W/2 + 50;
-            zb_y0_lv = BM2LV_Y(os.y_max) - H/2 - 50;
+            zb_y0_lv = BM2LV_Yu(os.y_max) - H/2 - 50;
             break;
         default:
             return;
@@ -3625,6 +3767,17 @@ int zebra_should_run()
 
 #ifdef FEATURE_OVERLAYS_IN_PLAYBACK_MODE
 static int overlays_playback_running = 0;
+
+#ifdef FEATURE_VRAM_RGBA
+/* Set when the playback / quick-review overlays have drawn into ML's layer.
+ * On DIGIC 4/5, Canon's own return to LiveView repainted the bitmap and wiped
+ * them; on RGBA bodies Canon never clears ML's layer, so the peaking of the
+ * photo just taken stayed on screen over the live view until something called
+ * redraw() (opening and closing the ML menu did).  The LiveView loop clears it
+ * once when overlays resume - see livev_hiprio_task. */
+static int playback_overlays_on_ml_layer = 0;
+#endif
+
 static void draw_overlays_playback()
 {
     overlays_playback_running = 1;
@@ -3655,6 +3808,10 @@ static void draw_overlays_playback()
     info_led_on();
 
     if (PLAY_OR_QR_MODE) EngDrvOut(DIGIC_ZEBRA_REGISTER, 0); // disable Canon highlight warning, looks ugly with both on the screen :)
+
+    #ifdef FEATURE_VRAM_RGBA
+    playback_overlays_on_ml_layer = 1;
+    #endif
 
 BMP_LOCK(
 
@@ -3793,6 +3950,15 @@ void draw_histogram_and_waveform(int allow_play)
 #ifdef FEATURE_VECTORSCOPE
     vectorscope_redraw();
 #endif
+
+#ifdef FEATURE_VRAM_RGBA
+    /* These graphs write the shadow buffer directly instead of going through
+     * bmp_fill/rbf_font, which are the only paths that flag a recomposite. On
+     * the RGBA compositor they therefore sat invisible until some unrelated
+     * text draw happened to flush the frame - the reported "only shows its
+     * full information when it gets updated". */
+    ml_refresh_display_needed = 1;
+#endif
 }
 
 
@@ -3808,8 +3974,58 @@ clearscreen_loop:
 #endif
         msleep(100);
 
+#if defined(FEATURE_VRAM_RGBA) && !defined(LV_OVERLAYS_MODE)
+        /* Clear our overlay the moment ML stops drawing.
+         *
+         * livev_lopriority_task() already does this, but only for bodies that
+         * define LV_OVERLAYS_MODE - which this one does not, so on the RGBA
+         * compositor nothing wiped the last frame of overlays. Canon never
+         * repaints our layer, so pressing INFO to leave ML's display mode left
+         * the overlay frozen on screen until some unrelated event forced a
+         * repaint (pressing Q, typically).
+         *
+         * Watching the falling edge of get_global_draw() covers every route
+         * out - INFO, leaving LiveView, global draw switched off - and cannot
+         * flicker, because by definition we have just stopped drawing. */
+        {
+            static int last_gd = -1;
+            int gd = get_global_draw();
+            /* liveview_display_idle() matters: the upstream LV_OVERLAYS_MODE
+             * version guards on it and I left it out, which let a full-buffer
+             * clrscr() fire while raw recording was running. mlv_lite drops
+             * global draw when it starts a take, so this was landing right on
+             * the start of a recording - a plausible cause of the ERR seen on
+             * alternate takes. Nothing here is worth risking a take for: if we
+             * are not idle, skip it and clear on the next transition. */
+            if (last_gd == 1 && gd == 0 &&
+                !gui_menu_shown() && liveview_display_idle())
+            {
+                clrscr();
+                ml_refresh_display_needed = 1;
+            }
+            last_gd = gd;
+        }
+#endif
+
+#ifdef CONFIG_MIRROR_OVERLAYS
+        /* Follow the screen position by polling, not only by event.
+         *
+         * PROP_LCD_POSITION fires while the hinge is moving and can settle on
+         * a value the handler last saw mid-swing; relying on the event alone
+         * gave a mirror that sometimes did not engage and sometimes did not
+         * release. Sample it here at 10 Hz, act only once it has held still
+         * for 300 ms, and keep re-applying - overlay_mirror_apply() is a
+         * no-op when nothing changed, so a missed rebuild heals itself. */
+        {
+            static int last_pos = -1, stable = 0;
+            if (lcd_position == last_pos) { if (stable < 3) stable++; }
+            else { last_pos = lcd_position; stable = 0; }
+            if (stable >= 3) overlay_mirror_apply();
+        }
+#endif
+
         //~ bmp_printf(FONT_MED, 100, 100, "%d %d %d", idle_countdown_display_dim, idle_countdown_display_off, idle_countdown_globaldraw);
-        
+
         /* blink LED if screen is turned off */
         idle_led_blink_step(k);
 
@@ -3919,9 +4135,42 @@ BMP_LOCK (
  *       with (PlayMain, ShootOlcApp, PlayMovieGuideApp?)
  */
     extern struct dialog* LiveViewApp_dialog;
-    if(LiveViewApp_dialog)
+
+#ifdef FEATURE_VRAM_RGBA
+    /* dialog_redraw() repaints CANON's layer. On the RGBA compositor ML draws
+     * into its own shadow buffer, which Canon never touches - so on this body
+     * redraw() erased nothing of ours and every bmp_printf lived forever:
+     * NotifyBox text that had already timed out, mlv_lite's "Flushing
+     * buffers..." line, and so on. Clear the ML overlay ourselves. Anything
+     * that should still be on screen is re-drawn by the next overlay pass,
+     * which is exactly how this works on the non-RGBA bodies.
+     *
+     * NOT while recording, though. This is a full-buffer memset into the
+     * compositor layer, and redraw() is called from mlv_lite's own stop path -
+     * so as shipped it fired on every take teardown and the camera threw a
+     * Canon ERR on the next record press, reproducibly on alternate takes.
+     * Stale text during a take is a cosmetic problem; killing the take is not.
+     * NOT_RECORDING covers H.264 and mlv_lite's custom raw state alike. */
+    if (NOT_RECORDING)
     {
-        dialog_redraw(LiveViewApp_dialog); // try to redraw (this has semaphores for winsys)
+        clrscr();
+    }
+#endif
+
+    struct dialog * canon_dialog = LiveViewApp_dialog;
+    #if defined(CONFIG_RESTORE_AFTER_FORMAT) && defined(DIALOG_MnCardFormatExecute)
+    /* Canon's format screens sit on top of LiveView.  Repainting LiveView
+     * instead (as NotifyBox's redraw() did for "Format card, keep ML") hid
+     * the format dialog and its Cancel / OK until a dial was turned. */
+    if (MEM(DIALOG_MnCardFormatExecute))
+        canon_dialog = (struct dialog *) MEM(DIALOG_MnCardFormatExecute);
+    else if (MEM(DIALOG_MnCardFormatBegin))
+        canon_dialog = (struct dialog *) MEM(DIALOG_MnCardFormatBegin);
+    #endif
+
+    if(canon_dialog)
+    {
+        dialog_redraw(canon_dialog); // try to redraw (this has semaphores for winsys)
     }
     else
     {
@@ -4089,6 +4338,15 @@ livev_hipriority_task( void* unused )
                 {
                     msleep(100);
                 }
+                #if defined(FEATURE_VRAM_RGBA) && defined(FEATURE_OVERLAYS_IN_PLAYBACK_MODE)
+                /* back in LiveView after a photo's quick review (or playback):
+                 * clear what those overlays left in ML's layer, once */
+                if (playback_overlays_on_ml_layer && lv && NOT_RECORDING && !gui_menu_shown())
+                {
+                    playback_overlays_on_ml_layer = 0;
+                    redraw();
+                }
+                #endif
                 vram_params_set_dirty();
                 zoom_overlay_triggered_by_focus_ring_countdown = 0;
                 crop_set_dirty(10);
@@ -4189,6 +4447,19 @@ livev_hipriority_task( void* unused )
                         ); 
                 )
             }
+
+            #ifdef FEATURE_VRAM_RGBA
+            /* On D678X the OSD is an RGBA buffer that only reaches the panel when
+             * refresh_yuv_from_rgb_task() (bmp.c) sees this flag set.  menu.c and
+             * rbf_font.c set it for their own drawing, which is why menus and text
+             * appear; the zebra / focus peaking / false colour path never did, so
+             * everything it drew was composed into the buffer and then discarded.
+             * That is why no D7 cam had these features working.
+             *
+             * The refresh task rate-limits itself to 20 fps, so setting this every
+             * pass costs nothing extra when nothing changed. */
+            ml_refresh_display_needed = 1;
+            #endif
         }
 
         #ifdef FEATURE_SPOTMETER
@@ -4284,6 +4555,14 @@ livev_lopriority_task( void* unused )
         #endif
 
         // here, redrawing cropmarks does not block fast zoom
+        //
+        // This is the *playback* cropmark redraw, and it is the only part of
+        // FEATURE_CROPMARKS that needs IMGPLAY_ZOOM_LEVEL_ADDR (it avoids fighting
+        // with playback zoom).  Cams that don't have that address found yet can
+        // still use cropmarks in LiveView - including the RAW recording-area frame
+        // that mlv_lite feeds through set_movie_cropmarks() - so gate just this
+        // block rather than the whole feature.
+        #ifdef IMGPLAY_ZOOM_LEVEL_ADDR
         if (crop_enabled && cropmarks_play && PLAY_MODE && DISPLAY_IS_ON && (int32_t)MEM(IMGPLAY_ZOOM_LEVEL_ADDR) <= 0)
         {
             msleep(500);
@@ -4293,6 +4572,7 @@ livev_lopriority_task( void* unused )
                 if ((int32_t)(int32_t)MEM(IMGPLAY_ZOOM_LEVEL_ADDR) >= 0) redraw(); // whoops, CTRL-Z, CTRL-Z :)
             }
         }
+        #endif
         #endif
 
         loprio_sleep();
@@ -4601,7 +4881,7 @@ static void show_overlay()
     }
 
     get_yuv422_vram();
-    uint8_t * const bvram = bmp_vram_real();
+    uint8_t * const bvram = bmp_vram_overlay();
     if (!bvram) return;
     
     clrscr();

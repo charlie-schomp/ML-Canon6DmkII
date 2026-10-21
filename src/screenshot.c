@@ -196,7 +196,21 @@ int take_screenshot( char* filename, uint32_t mode )
             {
                 /* get pixel at (x,y) */
                 p = bmp_copy[x + y*720];
-                
+
+                #ifdef FEATURE_VRAM_RGBA
+                /* No Canon palette behind ML's layer on these bodies: the
+                 * indexed buffer is composed through indexed2rgb() (ARGB).
+                 * Reading LCD_Palette here gave a green background. */
+                uint32_t argb = indexed2rgb(p);
+                if (argb >> 24)
+                {
+                    rgb[(y*720 + x)*3    ] = (argb >> 16) & 0xFF;
+                    rgb[(y*720 + x)*3 + 1] = (argb >>  8) & 0xFF;
+                    rgb[(y*720 + x)*3 + 2] = (argb      ) & 0xFF;
+                    continue;
+                }
+                pal = 0x00FF0000;   /* transparent: LiveView, or black, below */
+                #else
                 /* get palette entry (including our DIGIC pokes, if any) */
                 pal = shamem_read(LCD_Palette[3*p]);
                 if (!pal)
@@ -205,6 +219,7 @@ int take_screenshot( char* filename, uint32_t mode )
                 Y = (pal >> 16) & 0xFF;
                 U = (pal >>  8) & 0xFF;
                 V = (pal >>  0) & 0xFF;
+                #endif
             }
             else
             {
@@ -212,7 +227,10 @@ int take_screenshot( char* filename, uint32_t mode )
                 pal = 0x00FF0000;
             }
             
-            uint32_t uyvy = 0;
+            /* black with neutral chroma when the LiveView image is not saved:
+             * a plain 0 is neutral only on DIGIC <= 5 - DIGIC 6/7/8 bias chroma
+             * by 0x80, so 0 decoded as saturated green behind the overlays */
+            uint32_t uyvy = UYVY_PACK(0, 0, 0, 0);
 
             /* handle transparency (incomplete, needs more reverse engineering) */
             if (pal == 0x00FF0000) /* fully transparent */
