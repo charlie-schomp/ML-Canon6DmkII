@@ -4891,8 +4891,11 @@ void update_disp_mode_params_from_bits()
 #ifdef FEATURE_HISTOGRAM
     hist_draw            = bits & (1<<2) ? 1 : 0;
 #endif
-    /* presets only recorded on/off for bitmaps; keep OFF if it was OFF */
-    if (crop_mode != 0) crop_mode = bits & (1<<3) ? 2 : 1;
+#ifndef FEATURE_CROPMARKS_RECORDED_AREA
+    crop_enabled         = bits & (1<<3) ? 1 : 0;
+#endif
+    /* (with FEATURE_CROPMARKS_RECORDED_AREA, bit 3 is a bitmap cropmark that
+     * does not exist there: presets leave the cropmark mode alone) */
     waveform_draw        = bits & (1<<4) ? 1 : 0;
     falsecolor_draw      = bits & (1<<5) ? 1 : 0;
     spotmeter_draw       = bits & (1<<6) ? 1 : 0;

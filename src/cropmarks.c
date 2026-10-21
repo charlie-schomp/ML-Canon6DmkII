@@ -13,17 +13,21 @@ void cropmark_clear_cache();
 
 static struct bmp_file_t * cropmarks = 0;
 
-/* 1 = recorded area (mlv_lite's own rectangle, shaded outside), 2 = bitmap
- * file. Deliberately NOT 0/1: ML treats a 0..1 entry as a boolean and greys
- * every child of the submenu while it reads 0 - so with "Recorded area"
- * selected the framing guide, PLAY-mode and photo-mode options all looked
- * disabled. min=1 keeps it a plain choice. crop_enabled is what the rest of
- * this file has always tested; it now derives from the mode. */
-static CONFIG_INT( "crop.mode", crop_mode, 1);      /* 0 off, 1 recorded area, 2 bitmap */
-/* Bitmap cropmarks are compiled out on this body for now: the submenu that
- * hosts the picker was unstable and nothing in the workflow needs a static
- * file. crop_mode is 0 = off, 1 = recorded area. Mode 2 is never reachable. */
+#ifdef FEATURE_CROPMARKS_RECORDED_AREA
+/* Platforms that set this (6D2) get a cropmark menu built around the area
+ * mlv_lite records: 0 = genuinely off (upstream had no such state - its OFF
+ * still drew the default movie bars), 1 = recorded area, shaded outside, with
+ * an optional framing guide inside it.  Bitmap cropmarks are compiled out:
+ * on the 6D2 the submenu hosting the picker was unstable and nothing in the
+ * workflow needs a static file.  crop_enabled is what the rest of this file
+ * has always tested for "a bitmap is selected", so it is a constant 0 here. */
+static CONFIG_INT( "crop.mode", crop_mode, 1);      /* 0 off, 1 recorded area */
 #define crop_enabled (0)
+#else
+static CONFIG_INT( "crop.enable", crop_enabled, 0);  // index of crop file
+/* upstream has no off state: a bitmap, or the default recorded-area bars */
+#define crop_mode (crop_enabled ? 2 : 1)
+#endif
 static CONFIG_INT( "crop.index", crop_index, 0); // index of crop file
 static CONFIG_INT( "crop.movieonly", cropmark_movieonly, 0);
 static CONFIG_INT("crop.playback", cropmarks_play, 0);
@@ -34,7 +38,7 @@ static CONFIG_INT("crop.playback", cropmarks_play, 0);
 static CONFIG_INT("crop.guide", crop_guide, 0);
 static const int crop_guide_num[] = { 0, 4, 1, 185, 2, 239, 9, 4 };
 static const int crop_guide_den[] = { 1, 3, 1, 100, 1, 100, 16, 5 };
-#ifdef FEATURE_CROPMARKS     /* menu only; unused (and -Werror) without cropmarks */
+#if defined(FEATURE_CROPMARKS) && defined(FEATURE_CROPMARKS_RECORDED_AREA)   /* menu only */
 static const char * crop_guide_names[] =
     { "OFF", "4:3", "1:1", "1.85:1", "2:1", "2.39:1", "9:16", "4:5" };
 #endif
@@ -168,6 +172,14 @@ __attribute__((unused)) crop_toggle( void* priv, int sign )
 
 static MENU_UPDATE_FUNC(crop_display)
 {
+#ifndef FEATURE_CROPMARKS_RECORDED_AREA
+    /* upstream */
+    int index = crop_index;
+    index = COERCE(index, 0, num_cropmarks-1);
+    if (crop_enabled) MENU_SET_VALUE(
+         num_cropmarks ? cropmark_names[index] : "N/A"
+    );
+#else
     if (crop_enabled)
     {
         if (num_cropmarks <= 0)
@@ -195,6 +207,7 @@ static MENU_UPDATE_FUNC(crop_display)
          * misled people; say what it is. */
         MENU_SET_VALUE(lv && is_movie_mode() ? "Recorded area" : "Recorded area (movie)");
     }
+#endif
     if (cropmark_movieonly && !is_movie_mode())
         MENU_SET_WARNING(MENU_WARN_NOT_WORKING, "Cropmarks are configured only for movie mode");
 }
@@ -252,15 +265,23 @@ static __attribute__((unused)) MENU_UPDATE_FUNC(crop_display_submenu)
 static struct menu_entry cropmarks_menu[] = {
     {
         .name = "Cropmarks",
+#ifdef FEATURE_CROPMARKS_RECORDED_AREA
         .priv = &crop_mode,
         .update    = crop_display,
         .max = 1,
         .choices = CHOICES("OFF", "Recorded area"),
         .help  = "Recorded area: shades everything outside what mlv_lite records.",
+#else
+        .priv = &crop_enabled,
+        .update    = crop_display,
+        .max = 1,
+        .help = "Cropmarks or custom grids for framing.",
+#endif
         .depends_on = DEP_GLOBAL_DRAW,
         .submenu_width = 710,
         .submenu_height = 250,
         .children =  (struct menu_entry[]) {
+#ifdef FEATURE_CROPMARKS_RECORDED_AREA
             {
                 .name = "Framing guide",
                 .priv = &crop_guide,
@@ -269,6 +290,16 @@ static struct menu_entry cropmarks_menu[] = {
                 .help  = "Aspect frame inside the recorded area, for reframing in post.",
                 .help2 = "Record 16:9, frame for 4:3 or 2.39 - the rest stays as margin.",
             },
+#else
+            {
+                .name = "Bitmap",
+                .priv = &crop_index,
+                .select = crop_toggle,
+                .update    = crop_display_submenu,
+                .icon_type = IT_DICE,
+                .help = "You can draw your own cropmarks in Paint.",
+            },
+#endif
             {
                 .name = "Show in photo mode",
                 .priv = &cropmark_movieonly, 
@@ -383,9 +414,13 @@ static void cropmarks_frame_save()
 
 static int should_use_default_cropmarks()
 {
+#ifdef FEATURE_CROPMARKS_RECORDED_AREA
+    return crop_mode == 1;
+#else
     return
-        (crop_mode == 1) ||
-        (crop_enabled && cropmark_movieonly && !is_movie_mode() && lv);
+        (!crop_enabled) ||
+        (cropmark_movieonly && !is_movie_mode() && lv);
+#endif
 }
 
 
@@ -421,6 +456,10 @@ cropmark_draw()
     }
     #endif
     crop_dirty = 0;
+
+#ifndef FEATURE_CROPMARKS_RECORDED_AREA
+    reload_cropmark(); // reloads only when changed
+#endif
 
     if (cropmarks_frame_changed())
     {

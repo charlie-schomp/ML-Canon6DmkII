@@ -80,6 +80,7 @@
 // The old note said this wants IMGPLAY_ZOOM_LEVEL_ADDR; that symbol is only used by
 // playback-zoom code in tweaks.c, which is now guarded separately.
 #define FEATURE_CROPMARKS
+#define FEATURE_CROPMARKS_RECORDED_AREA   // cropmarks.c: OFF / recorded area + framing guide, no bitmaps
 
 // AF, ISO and DRIVE/metering toggle overlays in movie LiveView (src/topbuttons.c)
 #define FEATURE_TOP_BUTTON_SHORTCUTS
