@@ -2,6 +2,7 @@
  * Magic Lantern debugging and reverse engineering code
  */
 #include "dryos.h"
+#include "exmem.h"
 #include "bmp.h"
 #include "tasks.h"
 #include "debug.h"
@@ -651,7 +652,11 @@ debug_loop_task( void* unused ) // screenshot, draw_prop
         #endif
 
         #ifdef CONFIG_RESTORE_AFTER_FORMAT
+        #ifdef CONFIG_DIGIC_678X
+        if (MEM(DIALOG_MnCardFormatBegin) != 0)  /* see FORMAT_DIALOG_WATCH */
+        #else
         if (MENU_MODE)
+        #endif
         {
             HijackFormatDialogBox_main();
         }
@@ -1482,9 +1487,30 @@ PROP_HANDLER(PROP_ISO)
 
 static int keep_ml_after_format = 1;
 
+#ifdef CONFIG_DIGIC_678X
+/* DIGIC 6/7/8: Canon's format screen is a WinSys dialog that is not on
+ * gui_task_list, and its string slots differ from the DIGIC 4/5 ones these
+ * functions were written for, so editing its text could only go wrong.  ML
+ * tells the user through its own layer instead.  And MENU_MODE (gui_state /
+ * gui mode) is not known to hold in Canon's format screen here, so the
+ * format dialog's own handle - non-zero exactly while it is open - is what
+ * starts the watcher. */
+#define FORMAT_DIALOG_WATCH (MEM(DIALOG_MnCardFormatBegin) != 0)
+#define FORMAT_IN_MENU      1
+#else
+#define FORMAT_DIALOG_WATCH MENU_MODE
+#define FORMAT_IN_MENU      MENU_MODE
+#endif
+
 static void HijackFormatDialogBox()
 {
     if (MEM(DIALOG_MnCardFormatBegin) == 0) return;
+    #ifdef CONFIG_DIGIC_678X
+    NotifyBox(10000, keep_ml_after_format
+              ? "Format card, keep ML  (" FORMAT_BTN_NAME " to remove ML)"
+              : "Format card, REMOVE ML  (" FORMAT_BTN_NAME " to keep ML)");
+    return;
+    #endif
     struct gui_task * current = gui_task_list.current;
     struct dialog * dialog = current->priv;
     if (dialog && !streq(dialog->type, "DIALOG")) return;
@@ -1498,6 +1524,10 @@ static void HijackFormatDialogBox()
 
 static void HijackCurrentDialogBox(int string_id, char* msg)
 {
+    #ifdef CONFIG_DIGIC_678X
+    NotifyBox(5000, "%s", msg);
+    return;
+    #endif
     struct gui_task * current = gui_task_list.current;
     struct dialog * dialog = current->priv;
     if (dialog && !streq(dialog->type, "DIALOG")) return;
@@ -1507,7 +1537,7 @@ static void HijackCurrentDialogBox(int string_id, char* msg)
 
 int handle_keep_ml_after_format_toggle(struct event * event)
 {
-    if (event->param == FORMAT_BTN && MENU_MODE && MEM(DIALOG_MnCardFormatBegin))
+    if (event->param == FORMAT_BTN && FORMAT_IN_MENU && MEM(DIALOG_MnCardFormatBegin))
     {
         keep_ml_after_format = !keep_ml_after_format;
         fake_simple_button(MLEV_HIJACK_FORMAT_DIALOG_BOX);
@@ -1547,6 +1577,8 @@ static int tmp_file_index = 0;
 static void* tmp_buffer = 0;
 static void* tmp_buffer_ptr = 0;
 #define TMP_MAX_BUF_SIZE 15000000
+#define TMP_SMALL_BUF_SIZE 6000000
+static int tmp_buffer_size = TMP_MAX_BUF_SIZE;
 
 static int TmpMem_Init()
 {
@@ -1568,6 +1600,17 @@ static int TmpMem_Init()
     }
 
     if (!tmp_buffer) tmp_buffer = (void*)fio_malloc(TMP_MAX_BUF_SIZE);
+    if (!tmp_buffer)
+    {
+        /* ML itself is a few MB; the full size only matters for logs. With
+         * RAW video holding the shoot memory, the big block may never come. */
+        tmp_buffer = (void*)fio_malloc(TMP_SMALL_BUF_SIZE);
+        if (tmp_buffer) tmp_buffer_size = TMP_SMALL_BUF_SIZE;
+    }
+    else
+    {
+        tmp_buffer_size = TMP_MAX_BUF_SIZE;
+    }
     if (!tmp_buffer)
     {
         retries++;
@@ -1611,7 +1654,7 @@ static void TmpMem_AddFile(char* filename)
     int filesize = FIO_GetFileSize_direct(filename);
     if (filesize == -1) return;
     if (tmp_file_index >= 200) return;
-    if (tmp_buffer_ptr + filesize + 10 >= tmp_buffer + TMP_MAX_BUF_SIZE) return;
+    if (tmp_buffer_ptr + filesize + 10 >= tmp_buffer + tmp_buffer_size) return;
     
     /* don't add the same file twice */
     for (int i = 0; i < tmp_file_index; i++)
@@ -1766,6 +1809,11 @@ static void CopyMLFilesBack_AfterFormat()
 
 static void restart_after_format()
 {
+    #ifdef CONFIG_DIGIC_678X
+    /* PROP_REBOOT is not writable on these bodies (property whitelist) */
+    NotifyBox(10000, "Magic Lantern restored.\nTurn the camera off and on.");
+    return;
+    #endif
     /* restart the camera after formatting */
     HijackCurrentDialogBox(FORMAT_STR_LOC, "Restarting camera...");
     msleep(1000);
@@ -1776,7 +1824,7 @@ static void restart_after_format()
 
 static void HijackFormatDialogBox_main()
 {
-    if (!MENU_MODE) return;
+    if (!FORMAT_IN_MENU) return;
     if (MEM(DIALOG_MnCardFormatBegin) == 0) return;
     // at this point, Format dialog box is active
     
@@ -1794,8 +1842,21 @@ static void HijackFormatDialogBox_main()
 
     gui_uilock(UILOCK_EVERYTHING);
     
-    while (!TmpMem_Init())  /* may fail because of not enough memory */
+    /* may fail because of not enough memory - but never hold the UI locked
+     * for ever over it (it used to loop here until memory came, with every
+     * button locked out) */
+    int tries = 0;
+    while (!TmpMem_Init())
+    {
+        if (++tries >= 5)
+        {
+            gui_uilock(UILOCK_NONE);
+            NotifyBox(8000, "Not enough memory to keep ML.\nTurn RAW video off, then format.");
+            while (MEM(DIALOG_MnCardFormatBegin)) msleep(200);  /* this dialog only */
+            return;
+        }
         msleep(100);
+    }
 
     // before user attempts to do something, copy ML files to RAM
     CopyMLFilesToRAM_BeforeFormat();
@@ -1809,8 +1870,19 @@ static void HijackFormatDialogBox_main()
         msleep(200);
 
     // and maybe to finish formatting the card
+    #ifdef CONFIG_DIGIC_678X
+    /* Never restore while Canon may still be formatting.  The "formatting"
+     * dialog appears a moment after the confirmation closes; wait for it to
+     * appear (or 3 s, for a cancelled format) and then to go away, then let
+     * the card settle before looking at it. */
+    for (int i = 0; i < 60 && !MEM(DIALOG_MnCardFormatExecute); i++)
+        msleep(50);
+    #endif
     while (MEM(DIALOG_MnCardFormatExecute))
         msleep(50);
+    #ifdef CONFIG_DIGIC_678X
+    msleep(2000);
+    #endif
 
     // card was formatted (autoexec no longer there) => restore ML
     if (keep_ml_after_format && !check_autoexec())
