@@ -313,6 +313,26 @@ static CONFIG_INT( "focus.peaking.filter.edges", focus_peaking_filter_edges, 0);
 static CONFIG_INT( "focus.peaking.thr", focus_peaking_pthr, 5); // 1%
 static CONFIG_INT( "focus.peaking.color", focus_peaking_color, 7); // R,G,B,C,M,Y,cc1,cc2
 CONFIG_INT( "focus.peaking.grayscale", focus_peaking_grayscale, 0); // R,G,B,C,M,Y,cc1,cc2
+/* Vertical scan step for LV peaking. Each hit paints a 2x2 block, so a step of
+ * 3 leaves a one-row gap and edges read as a dotted trail; a step of 2 makes
+ * them continuous strokes, for 1.5x the scan cost. */
+#ifdef CONFIG_6D2
+/* 6D2 default: lines and steady (the port's shooting setup); OFF on other
+ * bodies reproduces upstream's peaking exactly (step 3, no history buffer) */
+static CONFIG_INT( "focus.peaking.lines", focus_peaking_lines, 1);
+#else
+static CONFIG_INT( "focus.peaking.lines", focus_peaking_lines, 0);
+#endif
+/* Noise rejection for the LV peaking.
+ *   0  off
+ *   1  temporal: a block must fire on two consecutive frames before it is drawn
+ *   2  temporal + wide-support Laplacian (samples at +/-2 px instead of +/-1)
+ * See peak_hist_* and calc_peak_wide() for the reasoning. */
+#ifdef CONFIG_6D2
+static CONFIG_INT( "focus.peaking.steady", focus_peaking_steady, 1);
+#else
+static CONFIG_INT( "focus.peaking.steady", focus_peaking_steady, 0);
+#endif
 
 #if defined(CONFIG_DISPLAY_FILTERS) && defined(FEATURE_FOCUS_PEAK_DISP_FILTER)
 static CONFIG_INT( "focus.peaking.disp", focus_peaking_disp, 0); // display as dots or blended
@@ -1643,9 +1663,67 @@ static inline int FAST calc_peak(const uint8_t* p8, const int pitch)
     return e;
 }
 
+/* Same Laplacian, sampled two pixels out instead of one.
+ *
+ * The 1-px kernel is the most noise-sensitive detector there is: a single
+ * noisy photosite in Canon's preview IS a maximal Laplacian response, so at
+ * anything above base ISO the peaking fills with sparkle that has nothing to do
+ * with focus. Doubling the sample distance turns the kernel into a band-pass
+ * that rejects the highest spatial frequency - which is where per-pixel noise
+ * lives - while an actual edge, which spans several pixels, still responds
+ * fully. UYVY packs Y at every second byte, so +/-2 px horizontally is +/-4
+ * bytes; vertically it is two rows of pitch. Costs nothing extra. */
+static inline int FAST calc_peak_wide(const uint8_t* p8, const int pitch)
+{
+    const int xm = (int)(*(p8 - 4));
+    const int xp = (int)(*(p8 + 4));
+    const int ym = (int)(*(p8 - 2 * pitch));
+    const int yp = (int)(*(p8 + 2 * pitch));
+
+    int result = ((int)(*p8) * 4) - (xp + xm + yp + ym);
+    int e = ABS(result);
+
+    if (focus_peaking_filter_edges)
+    {
+        int d1 = MAX(ABS(xp - xm), ABS(yp - ym));
+        e = MAX(e - ((d1 << focus_peaking_filter_edges) >> 2), 0) * 2;
+    }
+    return e;
+}
+
 static inline int FAST peak_d2xy(const uint8_t* p8)
 {
-    return calc_peak(p8, vram_lv.pitch);
+    return (focus_peaking_steady >= 2)
+         ? calc_peak_wide(p8, vram_lv.pitch)
+         : calc_peak(p8, vram_lv.pitch);
+}
+
+/* Temporal persistence for peaking.
+ *
+ * "Flashing" false positives are, by definition, hits that do not repeat:
+ * preview noise is uncorrelated from one frame to the next, so a block that
+ * fires from noise fires again next frame with probability p, while a real
+ * edge fires every frame. Requiring two consecutive hits before drawing cuts
+ * noise by a factor of roughly 1/p and leaves edges untouched - at the cost of
+ * one frame of latency on newly-arriving detail, which at 20 fps overlay
+ * refresh is 50 ms.
+ *
+ * One bit per 2x2 BMP block (the unit focus_found_pixel() paints), double-
+ * buffered: 360 x 240 bits x 2 = 21.6 KB. The adaptive threshold still counts
+ * every raw hit, so it settles exactly as before; only the drawing is gated. */
+#define PEAK_HIST_W   (720 / 2)
+#define PEAK_HIST_H   (480 / 2)
+#define PEAK_HIST_LEN ((PEAK_HIST_W * PEAK_HIST_H + 7) / 8)
+static uint8_t * peak_hist[2] = { 0, 0 };
+static int peak_hist_cur = 0;
+
+static inline int peak_hist_check_and_set(int x, int y)
+{
+    int bi = (y >> 1) * PEAK_HIST_W + (x >> 1);
+    if (bi < 0 || bi >= PEAK_HIST_W * PEAK_HIST_H) return 1;
+    uint8_t mask = 1 << (bi & 7);
+    peak_hist[peak_hist_cur][bi >> 3] |= mask;
+    return (peak_hist[peak_hist_cur ^ 1][bi >> 3] & mask) != 0;
 }
 
 #ifdef FEATURE_FOCUS_PEAK_DISP_FILTER
@@ -1974,8 +2052,25 @@ draw_zebra_and_focus( int Z, int F )
         int n_total = 0;
         if (lv) // fast, realtime
         {
-            n_total = ((yEnd - yStart) * (xEnd - xStart)) / 6;
-            for(int y = yStart; y < yEnd; y += 3)
+            if (focus_peaking_steady)
+            {
+                if (unlikely(!peak_hist[0])) peak_hist[0] = malloc(PEAK_HIST_LEN);
+                if (unlikely(!peak_hist[1])) peak_hist[1] = malloc(PEAK_HIST_LEN);
+                if (peak_hist[0] && peak_hist[1])
+                {
+                    memset(peak_hist[peak_hist_cur], 0, PEAK_HIST_LEN);
+                }
+            }
+
+            /* focus_found_pixel() paints rows y and y+1, so stepping by 3
+             * leaves a one-row hole and every edge reads as a dotted trail.
+             * Stepping by 2 makes the marks abut into a continuous stroke.
+             * n_total must track the step, or the adaptive threshold below
+             * (n_over/n_total vs focus_peaking_pthr) drifts and the peaking
+             * either floods the frame or goes blank. */
+            const int ystep = focus_peaking_lines ? 2 : 3;
+            n_total = ((yEnd - yStart) * (xEnd - xStart)) / (ystep * 2);
+            for(int y = yStart; y < yEnd; y += ystep)
             {
                 uint32_t row = vram + BM2LV_R(y);
                 
@@ -1990,9 +2085,23 @@ draw_zebra_and_focus( int Z, int F )
                     {
                         n_over++;
                         if (unlikely(dirty_pixels_num >= MAX_DIRTY_PIXELS)) break; // threshold too low, abort
+
+                        /* first sighting of this block? record it and wait
+                         * for next frame to confirm before drawing */
+                        if (focus_peaking_steady && peak_hist[0] && peak_hist[1] &&
+                            !peak_hist_check_and_set(x, y))
+                        {
+                            continue;
+                        }
+
                         focus_found_pixel(x, y, e, thr, bvram);
                     }
                 }
+            }
+
+            if (focus_peaking_steady && peak_hist[0] && peak_hist[1])
+            {
+                peak_hist_cur ^= 1;     /* this frame becomes "last frame" */
             }
         }
         else // playback - can be slower and more accurate
@@ -3011,10 +3120,26 @@ struct menu_entry zebra_menus[] = {
                 .icon_type = IT_DICE,
             },
             {
-                .name = "Grayscale image", 
+                .name = "Grayscale image",
                 .priv = &focus_peaking_grayscale,
                 .max = 1,
                 .help = "Display LiveView image in grayscale.",
+            },
+            {
+                .name = "Edge density",
+                .priv = &focus_peaking_lines,
+                .max = 1,
+                .choices = CHOICES("Dots (faster)", "Lines"),
+                .help  = "Lines scans every 2nd row instead of every 3rd, so the",
+                .help2 = "2x2 marks join into strokes. Costs ~1.5x the scan.",
+            },
+            {
+                .name = "Noise rejection",
+                .priv = &focus_peaking_steady,
+                .max = 2,
+                .choices = CHOICES("OFF", "Steady", "Steady + Wide"),
+                .help  = "Steady: draw only edges seen on 2 consecutive frames.",
+                .help2 = "Wide: detector ignores single-pixel noise. Try Steady+Wide at high ISO.",
             },
             MENU_EOL
         },
