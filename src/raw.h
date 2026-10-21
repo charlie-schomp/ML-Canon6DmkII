@@ -92,6 +92,36 @@ struct raw_pixblock
 /* returns 1=success, 0=failed */
 int raw_update_params();
 
+/* like raw_update_params(), but also valid below 14-bit (for raw recorders) */
+int raw_update_params_any_bpp();
+
+/* 6D2: what the last bit-depth switch asked of the write DMAC (bytes per line)
+ * and what it saw; returns raw_lv_apply_bpp()'s last result (0 = never ran) */
+int raw_lv_bpp_status(int * want, int * got, int * zoom);
+
+/* 6D2: make Canon rebuild the LiveView path now (one visible zoom bounce) so the
+ * depth armed by raw_lv_request_bpp() takes effect.  1 ok, -1 Canon kept the old
+ * depth, -2 zoom refused (Face+Tracking AF), -3 zoom not restored, 0 not now. */
+int raw_lv_apply_bpp(void);
+
+/* 6D2: true once Canon has finished the last LiveView mode change (the raw DMAC
+ * is programmed for the readout that matches the zoom) */
+int raw_lv_path_settled(void);
+
+/* 6D2: the depth Canon will build at its next LiveView path rebuild
+ * (-1 where this firmware has no depth switch) */
+int raw_lv_bpp_armed(void);
+
+/* 6D2: request a LiveView zoom and wait until the view has really arrived
+ * (property at the target and the raw DMAC programmed for that readout).
+ * 1 arrived, 0 Canon never moved (refused), -1 moved but not arrived in time. */
+int raw_lv_zoom_to(int to);
+
+/* 6D2: the last bounce, per leg (out t[0..3], back t[4..7]): lv_dispsize right
+ * after the first request, requests sent, frames to arrive (-1 = did not),
+ * readout changed */
+void raw_lv_bpp_trace(int * t);
+
 /* get a red/green/blue pixel near the specified coords (approximate) */
 int raw_red_pixel(int x, int y);
 int raw_green_pixel(int x, int y);
