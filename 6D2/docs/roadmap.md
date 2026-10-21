@@ -42,21 +42,19 @@ angle lock, the meter's black box, the temperature scale (raw − 128 = °C).
 - **A true left/right level meter.** The register Canon's meter reads carries a level and a held
   peak, not two channels. Per-channel levels would need another source in the audio block.
 
-**From the v87 code review** (blind review against upstream and the other ports; fixed in v88:
-mlv_lite's 6D2-only WAV calls made weak so it builds for other cameras, the recording trace's NULL
-check, the top buttons' pointer check, Record WAV now limited to Manual, the next take waiting for
-the last WAV to be filed). Still open, mostly matters for other cameras or an upstream merge:
-- Bitmap cropmarks are removed for every camera, not just the 6D2 (`src/cropmarks.c`).
-- mlv_lite's 6D2 defaults (H.264 proxy on, sync beep off, aspect fit on) and the 2048 preset
-  inserted mid-list apply to every camera; the crop-mode entry shows everywhere.
-- Focus-peaking defaults (lines, steady) changed for every camera.
+**From the v87 code review** (blind review against upstream and the other ports). Fixed in v88:
+mlv_lite's 6D2-only WAV calls made weak, the recording trace's NULL check, the top buttons' pointer
+check, Record WAV now limited to Manual, the next take waiting for the last WAV to be filed. Fixed
+after v90 (no change on the 6D2, verified by building 5D3, 200D and 650D): bitmap cropmarks are
+upstream's again on every other camera; mlv_lite's 6D2 defaults, 2048 preset and crop-mode entry
+apply to the 6D2 only; the peaking defaults changed only on the 6D2; stale comments, and an
+unreachable register-writing `_EngDrvOut`, removed. Still open:
 - Scratch WAV: `FA_AudioRecStop` runs without checking that the recorder started (a full card or
   all 256 Sample names taken could assert).
 - The extra MMU page is allocated with interrupts off and the second core parked (plausible hang
   when loading the developer module).
 - A REC press during the bit-depth zoom bounce can start a take mid-bounce.
 - The 1.2.0 tree lacks the 1.1.1 recording-property and frame-rate fixes.
-- Stale comments and dead code (`_EngDrvOut` whitelist, unused cropmark helpers).
 
 **Settled in the v86 field round**
 - **Long proxy takes**: a 12.5-minute 2048×856 12-bit take with a complete MP4.

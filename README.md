@@ -112,8 +112,10 @@ Based on [magiclantern_simplified](https://github.com/reticulatedpines/magiclant
 @ `40c0a133b`, with upstream history kept and the 6D2 work as commits on top. The camera ports
 are `platform/6D2.111` and `platform/6D2.120`; `modules/dev_tools/d7probe` is the **6D2 developer
 tools** module (state / button / MPU logger, recording trace, dumps, two register experiments),
-shipped but off by default. The [development log](6D2/docs/devlog.md) has the findings, ROM
-addresses and change history.
+shipped but off by default. [**DIGIC 7 findings**](6D2/docs/findings.md) summarises what this port
+found that is useful to other ML work; the [development log](6D2/docs/devlog.md) has the full
+history. Branch [`6d2-port`](https://github.com/charlie-schomp/ML-Canon6DmkII/tree/6d2-port) carries
+the code as one commit per feature on top of current upstream `dev`.
 
 ```sh
 cd platform/6D2.111 && make          # or platform/6D2.120
