@@ -96,6 +96,8 @@ extern WEAK_FUNC(ret_0) void wav_scratch_stop(void);
 extern WEAK_FUNC(ret_0) int  wav_scratch_auto_enabled(void);
 extern WEAK_FUNC(ret_0) int  wav_scratch_rename(const char * mlv_path);
 extern WEAK_FUNC(ret_0) int  wav_scratch_discard(void);
+static uint64_t ret_0_long() { return 0; }     /* as in silent.c: a 64-bit weak default */
+extern WEAK_FUNC(ret_0_long) uint64_t wav_scratch_start_us(void);
 /* src/zebra.c - weak so the module still loads on bodies without it */
 extern WEAK_FUNC(ret_0) int clean_hdmi_active(void);
 extern WEAK_FUNC(ret_0) int dual_iso_is_enabled(void);
@@ -510,6 +512,14 @@ static GUARDED_BY(RawRecTask)   mlv_rtci_hdr_t rtci_hdr;
 static GUARDED_BY(RawRecTask)   mlv_wbal_hdr_t wbal_hdr;
 static GUARDED_BY(LiveViewTask) mlv_vidf_hdr_t vidf_hdr;
 static GUARDED_BY(RawRecTask)   uint64_t mlv_start_timestamp = 0;
+/* Scratch WAV sync: when its audio input went live (get_us_clock, 0 = no WAV),
+ * written into the clip as an INFO block "scratch_wav_start_us=<n>", n
+ * relative to the clip's time zero (the VIDF timestamps' base; negative - the
+ * WAV starts first).  6D2/tools/scratch_sync.py lines the WAV up with the
+ * first frame from it, and stamps it with the Tentacle / LTC timecode. */
+static GUARDED_BY(RawRecTask)   uint64_t wav_start_us = 0;
+static GUARDED_BY(RawRecTask)   struct { mlv_info_hdr_t hdr; char text[48]; } wav_info_blk;
+static GUARDED_BY(RawRecTask)   int wav_info_ready = 0;
        GUARDED_BY(RawRecTask)   uint32_t raw_rec_trace_ctx = TRACE_ERROR;
 
 static int raw_rec_should_preview(void);
@@ -3615,6 +3625,18 @@ void init_mlv_chunk_headers(struct raw_info *raw_info)
     mlv_fill_lens(&lens_hdr, mlv_start_timestamp);
     mlv_fill_rtci(&rtci_hdr, mlv_start_timestamp);
     mlv_fill_wbal(&wbal_hdr, mlv_start_timestamp);
+
+    wav_info_ready = 0;
+    if (wav_start_us)
+    {
+        memset(&wav_info_blk, 0, sizeof(wav_info_blk));
+        mlv_set_type((mlv_hdr_t *)&wav_info_blk, "INFO");
+        mlv_set_timestamp((mlv_hdr_t *)&wav_info_blk, mlv_start_timestamp);
+        wav_info_blk.hdr.blockSize = sizeof(wav_info_blk);
+        int rel = (int)((int64_t)wav_start_us - (int64_t)mlv_start_timestamp);
+        snprintf(wav_info_blk.text, sizeof(wav_info_blk.text), "scratch_wav_start_us=%d", rel);
+        wav_info_ready = 1;
+    }
     
     /* init MLV header for each frame (VIDF) */
     memset(&vidf_hdr, 0, sizeof(mlv_vidf_hdr_t));
@@ -3642,6 +3664,7 @@ int write_mlv_chunk_headers(FILE *f, int chunk, int card_index)
         fail |= !mlv_write_hdr(f, (mlv_hdr_t *)&lens_hdr);
         fail |= !mlv_write_hdr(f, (mlv_hdr_t *)&rtci_hdr);
         fail |= !mlv_write_hdr(f, (mlv_hdr_t *)&wbal_hdr);
+        if (wav_info_ready) fail |= !mlv_write_hdr(f, (mlv_hdr_t *)&wav_info_blk);
         fail |= mlv_write_vers_blocks(f, mlv_start_timestamp);
     }
     
@@ -3866,11 +3889,15 @@ void raw_video_rec_task(uint32_t card_index)
          * Costs ~0.19 MB/s and records no video, unlike the H.264 proxy - which
          * matters on a body with no ML audio backend and no bandwidth to spare.
          * Started here rather than at RAW_RECORDING so the WAV covers the whole
-         * take; the two are driven by the same sensor clock, so the only offset
-         * is a fixed start delay, not drift. */
+         * take.  It therefore starts 0.4..1.6 s ahead of the first frame, by an
+         * amount that changes every take (buffer setup, the proxy's wait), so
+         * the moment its input went live is recorded in the clip (INFO block,
+         * see wav_start_us) for lining the two up at offload. */
+        wav_start_us = 0;
         if (wav_scratch_auto_enabled())
         {
             wav_scratch_start();
+            wav_start_us = wav_scratch_start_us();
             rec_log("scratch WAV started");
         }
 

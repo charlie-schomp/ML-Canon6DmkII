@@ -1028,6 +1028,17 @@ static CONFIG_INT("wav.scratch.mode", wav_scratch_audio, WAV_SCRATCH_OFF);
 static int wav_is_recording = 0;
 static int wav_mic_now = 0;     /* 0 internal, 1 external: the take in progress */
 static int wav_is_manual = 0;   /* the open recording was started by Record WAV now */
+/* get_us_clock() when Canon's audio input went live for the WAV now recording.
+ * mlv_lite writes it into the clip, relative to the clip's own time zero, so
+ * the scratch WAV can be lined up with the first frame at offload
+ * (6D2/tools/scratch_sync.py) - the WAV starts 0.4..1.6 s ahead, by an amount
+ * that changes every take. */
+static uint64_t wav_live_us = 0;
+
+uint64_t wav_scratch_start_us(void)
+{
+    return wav_is_recording ? wav_live_us : 0;
+}
 #ifdef AUDIO_PEAK_REG
 static CONFIG_INT("wav.meter", wav_meter, 1);          /* level meter while the WAV records: 0 off, 1 on */
 #else
@@ -1257,6 +1268,24 @@ void wav_scratch_start(void)
 
     call("FA_AudioRecStart", (int) (wav_file_number & 0xFF));
     wav_is_recording = 1;
+
+    /* Timestamp the moment the input goes live (SoundDevice +0x44, the flag
+     * the gain code below waits for), which is as close to the WAV's first
+     * sample as ML can see.  Busy-polled so it is not rounded to the
+     * scheduler tick; at most 200 ms (it is set within tens of ms), and the
+     * call time if the state cannot be read.  What remains between this and
+     * the first sample is a constant for the offload tool's calibration. */
+    wav_live_us = get_us_clock();
+    {
+        uint8_t * st = wav_sounddev_state();
+        if (st)
+        {
+            uint64_t t0 = wav_live_us;
+            while (!*(volatile uint32_t *)(st + 0x44) && get_us_clock() - t0 < 200000)
+                ;
+            wav_live_us = get_us_clock();
+        }
+    }
 
 #ifdef SOUNDDEV_SET_VOLUME_IN
     /* the driver only forwards a level to the IC once input is active */
