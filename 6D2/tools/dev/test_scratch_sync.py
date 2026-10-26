@@ -128,6 +128,11 @@ def main():
         write_wav(os.path.join(tmp, "D0001.WAV"), noise, noise)
         write_mlv(os.path.join(tmp, "D0001.MLV"), 48, 24000, 1001, None, 50000)
 
+        # E: a 40 s take whose camera clock runs 300 ppm fast against the Tentacle
+        ne = 44 * RATE
+        write_wav(os.path.join(tmp, "E0001.WAV"), [0] * ne, ltc_signal(ne, 1000, n0, 24, False, spf * (1 + 300e-6)))
+        write_mlv(os.path.join(tmp, "E0001.MLV"), 960, 24000, 1001, -1500000, 120000)
+
         # drop-frame arithmetic round trip
         ok = all(ss.tc_to_frames(*[int(x) for x in ss.frames_to_tc(k, 30, True).replace(";", ":").split(":")], 30, True) == k
                  for k in range(0, 200000, 7))
@@ -160,6 +165,11 @@ def main():
               and os.path.exists(os.path.join(out, "C0001.wav")))
         check("D: pre-v91 clip reported, not guessed", "before ML v91" in rows["D0001"]["note"]
               and not os.path.exists(os.path.join(out, "D0001.wav")))
+        e = rows["E0001"]
+        drift = 960 * 1001 / 24000.0 * 300e-6 * 24000 / 1001.0           # frames
+        check("E: camera clock +300 ppm measured (%s), %s frames by the end" % (e["clock_ppm"], e["drift_frames"]),
+              e["clock_ppm"] and abs(float(e["clock_ppm"]) - 300) < 3 and abs(float(e["drift_frames"]) - drift) < 0.01)
+        check("A: exact-rate take shows no drift (%s ppm)" % a["clock_ppm"], a["clock_ppm"] and abs(float(a["clock_ppm"])) < 3)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print("\n%d/%d checks passed" % (sum(results), len(results)))

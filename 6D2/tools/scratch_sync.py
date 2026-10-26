@@ -21,7 +21,11 @@ For every clip it writes <out>/<clip>.wav:
   - when one channel carries LTC (a Tentacle in the mic jack), stamped with the
     timecode of the first frame (Broadcast WAV time reference + iXML), so
     Resolve / Premiere can sync the sound recordist's files to it by timecode.
-and prints (and saves as scratch_sync.csv) each clip's start timecode.
+and prints (and saves as scratch_sync.csv) each clip's start timecode, and -
+from the LTC at its first and last frame - the camera's clock against the
+Tentacle's in ppm and how many frames picture has drifted off the recordist's
+sound by the end of the take (a camera crystal drifts as it warms; under a
+quarter frame is invisible).
 
 How the offset is known: the camera (ML v91 on) writes an INFO block
 "scratch_wav_start_us=<n>" into each MLV - when Canon's audio input went live,
@@ -37,7 +41,7 @@ that as --latency-ms from then on.
 
 Standard library only; Python 3.6+.
 """
-import os, re, struct, sys, wave, csv, subprocess, shutil, statistics
+import os, re, struct, sys, wave, csv, subprocess, shutil
 
 # ------------------------------------------------------------------ MLV
 
@@ -217,29 +221,28 @@ def frames_to_tc(n, base, df):
     return "%02d:%02d:%02d%s%02d" % (h, m, s, ";" if df else ":", f)
 
 
-def ltc_reference(samples, rate):
+def ltc_reference(samples, rate, at=0):
     """(frame count at a sample position, that position, samples per frame,
-    base, drop frame, LTC fps) from the LTC on one channel, or None."""
+    base, drop frame, LTC fps) from the LTC on one channel, or None. The
+    position is the confirmed frame word nearest sample `at`."""
     fr = ltc_frames(samples, rate)
     if len(fr) < 4:
         return None
     base = max(f[4] for f in fr) + 1
     base = 24 if base <= 24 else 25 if base == 25 else 30
     df = bool(sum(f[5] for f in fr) > len(fr) // 2)
-    spans = [b[0] - a[0] for a, b in zip(fr, fr[1:])
+    pairs = [(a, b) for a, b in zip(fr, fr[1:])
              if tc_to_frames(*b[1:5], base, df) - tc_to_frames(*a[1:5], base, df) == 1]
-    if len(spans) < 3:
+    if len(pairs) < 3:
         return None
-    # whole-sample spans round 1601.6 to 1602 (an hour of 29.97 would drift
-    # by a second): snap to the exact rate they belong to
-    num, den = rational(rate / statistics.median(spans))
+    # whole-sample spans are 1601 or 1602 for 1601.6 at 29.97, and the camera's
+    # clock may be off by some ppm: the mean span names the standard rate, whose
+    # exact spacing is used from the nearest confirmed word (a few frames at most,
+    # so a clock error cannot bend it)
+    num, den = rational(rate * len(pairs) / sum(b[0] - a[0] for a, b in pairs))
     spf = rate * den / num
-    # the frame word whose neighbours agree with it is the reference
-    for a, b in zip(fr, fr[1:]):
-        if tc_to_frames(*b[1:5], base, df) - tc_to_frames(*a[1:5], base, df) == 1:
-            n0 = tc_to_frames(*a[1:5], base, df)
-            return n0, a[0], spf, base, df, num / den
-    return None
+    ref = min((w for pair in pairs for w in pair), key=lambda w: abs(w[0] - at))
+    return tc_to_frames(*ref[1:5], base, df), ref[0], spf, base, df, num / den
 
 
 # ------------------------------------------------------------------ BWF out
@@ -299,7 +302,7 @@ def rational(fps):
 
 def sync_clip(name, mlv, wav, out_dir, latency_s):
     row = {"clip": name, "fps": "", "frames": "", "wav_lead_s": "", "ltc_channel": "",
-           "ltc_fps": "", "start_tc": "", "subframe": "", "note": ""}
+           "ltc_fps": "", "start_tc": "", "subframe": "", "clock_ppm": "", "drift_frames": "", "note": ""}
     if mlv["fps"] is None or mlv["first_ts"] is None:
         row["note"] = "no frames in the MLV"
         return row
@@ -329,7 +332,7 @@ def sync_clip(name, mlv, wav, out_dir, latency_s):
     best = None
     for c in range(ch):
         look0 = max(0, start - 2 * rate)
-        ref = ltc_reference(channel(data, ch, c, look0, 5 * rate), rate)
+        ref = ltc_reference(channel(data, ch, c, look0, 5 * rate), rate, start - look0)
         if ref:
             best = (c, ref, look0)
             break
@@ -349,6 +352,18 @@ def sync_clip(name, mlv, wav, out_dir, latency_s):
         row["subframe"] = "%+.2f" % (n - n_round)
         time_ref = int(round(n * spf))                    # samples since midnight
         tc_rate = rational(ltc_fps)
+        # the same at the last frame: the camera's clock against the Tentacle's
+        # over the take (a crystal drifts as the camera warms; a Tentacle does not)
+        end = start + length
+        look1 = max(0, end - 3 * rate)
+        ref1 = ltc_reference(channel(data, ch, c, look1, 5 * rate), rate, end - look1)
+        if ref1 and abs(ref1[5] - ltc_fps) < 1e-9:
+            n_end = ref1[0] + (end - look1 - ref1[1]) / spf
+            ltc_s = (n_end - n) * spf / rate
+            cam_s = length / rate
+            if ltc_s > 1 and abs(cam_s / ltc_s - 1) < 1e-3:
+                row["clock_ppm"] = "%+.1f" % ((cam_s / ltc_s - 1) * 1e6)
+                row["drift_frames"] = "%+.2f" % ((cam_s - ltc_s) * mlv["fps"])
     else:
         row["note"] = "no LTC on any channel - aligned only"
     write_bwf(os.path.join(out_dir, name + ".wav"), ch, rate, pcm, time_ref, tc_rate, df,
@@ -405,10 +420,12 @@ def main(argv):
             row["note"] = (row["note"] + "; " if row["note"] else "") + \
                 add_to_mov(mov_dir, name, os.path.join(out_dir, name + ".wav"), row["start_tc"])
         rows.append(row)
-    print("%-10s %8s %7s %9s %3s %8s %12s  %s" % ("clip", "fps", "frames", "WAV lead", "LTC", "LTC fps", "start TC", "note"))
+    print("%-10s %8s %7s %9s %3s %8s %12s %8s %7s  %s" % ("clip", "fps", "frames", "WAV lead", "LTC", "LTC fps", "start TC",
+                                                         "clock", "drift", "note"))
     for r in rows:
-        print("%-10s %8s %7s %9s %3s %8s %12s  %s" % (r["clip"], r["fps"], r["frames"], r["wav_lead_s"],
-              r["ltc_channel"], r["ltc_fps"], r["start_tc"], r["note"]))
+        print("%-10s %8s %7s %9s %3s %8s %12s %8s %7s  %s" % (r["clip"], r["fps"], r["frames"], r["wav_lead_s"],
+              r["ltc_channel"], r["ltc_fps"], r["start_tc"], r["clock_ppm"] and r["clock_ppm"] + "ppm",
+              r["drift_frames"] and r["drift_frames"] + "f", r["note"]))
     with open(os.path.join(out_dir, "scratch_sync.csv"), "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
         w.writeheader()
