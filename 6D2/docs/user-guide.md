@@ -75,7 +75,15 @@ video exactly, so his audio and your picture sync by timecode in Resolve or Prem
 
 It needs clips recorded with v91 or later (each clip records when its WAV started). **Calibrate
 once:** record a take with a sharp clap in shot, sync it, and measure how far the clap sound sits
-from the clap frame (sound late = positive); pass that as `--latency-ms` from then on.
+from the clap frame (sound late = positive); pass that as `--latency-ms` from then on
+([sync-test.md](sync-test.md) has the full calibration and clock test).
+
+**Clock drift.** Each take starts from the Tentacle's timecode at frame 1, so the camera's clock
+cannot drift from take to take; within a take, picture moves off the recordist's sound by the
+camera's clock error times the take's length, more as the camera heats up. `scratch_sync.py`
+lists each clip's `clock` (ppm against the Tentacle) and `drift` (frames by the last frame), from
+the LTC at both ends; under a quarter frame is invisible. MLV Drive does the same and notes it in
+the clip's folder.
 
 **Without a timecode box, sync with a clap.** The WAV starts a moment before the first frame, so it
 runs 0.4–1.6 s longer than the clip, at the front (longer with the H.264 proxy on). Some 10-bit and crop-mode takes in

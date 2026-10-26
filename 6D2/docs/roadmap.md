@@ -36,11 +36,24 @@ sends the same signal), the audio level meter (v87), the research tools (v87: on
 module, off by default), and dual ISO at 10/12/14-bit in crop mode (v87 field round).
 
 **Being tested (v91)**
-- **Dual-system sound**: each clip records when its scratch WAV started; `scratch_sync.py` lines
-  the WAV up with frame 1 and stamps it with Tentacle LTC timecode. Needs one clap take to
-  calibrate the constant, and one take with the Tentacle in the mic jack (are the jack's two
-  channels kept separate?).
+- **Dual-system sound**: each clip records when its scratch WAV started; `scratch_sync.py` and MLV
+  Drive line the WAV up with frame 1 and stamp it with Tentacle LTC timecode, and measure the
+  camera's clock against the Tentacle's over each take. The clap calibration and the clock/heat
+  test are in [sync-test.md](sync-test.md) (no Tentacle needed).
 - **Bit depth at power-on**: the saved depth now applies itself when movie LiveView starts.
+
+**Waiting for the Tentacle** (not to hand as of 2026-10-26)
+1. **Jack check:** Tentacle in the mic jack, Input External, Gain Manual low, 30 s take. Is LTC on
+   one channel only, with the other (the Tentacle's mic, or silence) free of it? Do the LTC peaks
+   stay well under CLIP?
+2. **Clap take through the Tentacle's mic** (sync-test.md Set A, External): the latency on the
+   path used on set.
+3. **Cold and hot 10-minute takes with LTC on the scratch:** the definitive heat-drift measurement
+   against a TCXO (`mlvdrive drift <clip>` follows it through the take; the clip folder and
+   `scratch_sync.py` report ppm and frames per take).
+4. **Resolve end to end:** a recordist's (or any Tentacle-jammed recorder's) files synced by
+   timecode to MLV Drive's DNGs and scratch, checked against a clap.
+5. **29.97 drop-frame** take, if 29.97 crop is used on set.
 
 **Settled on the camera (v88–v90)**: the format screen keeps Canon's Cancel / OK, the shutter
 angle lock, the meter's black box, the temperature scale (raw − 128 = °C).
