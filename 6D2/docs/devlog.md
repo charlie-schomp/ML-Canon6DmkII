@@ -1,6 +1,6 @@
 # Magic Lantern for the Canon EOS 6D Mark II — development log
 
-**Build v90 · 21 October 2026 · firmware 1.1.1 · base `magiclantern_simplified` @ `40c0a133b`**
+**Build v91 · 26 October 2026 · firmware 1.1.1 · base `magiclantern_simplified` @ `40c0a133b`**
 
 The 6D Mark II is a DIGIC 7 body. The official ML build for it boots and shows the menu, and not
 much else. This port adds raw video at 10/12/14-bit with an in-camera H.264 proxy, the full
@@ -14,7 +14,7 @@ hard way are collected in the appendices.
 
 ---
 
-## Status at v90
+## Status at v91
 
 | | |
 |---|---|
@@ -445,6 +445,29 @@ on top and a held peak on the bottom. So the two halves of `0xd8000190` are the 
 level and peak, not left and right; the WAV's separate L and R channels never reach it. The option
 is withdrawn and the meter says what it shows (`lvl … pk …`). The temperature scale was checked: a
 camera left off in a 21 °C (70 °F) room read 22–23 °C at power-on, so raw − 128 = °C holds.
+
+## Part 8 — Dual-system sound (26 October)
+
+### v91 · 26 October
+
+- **Bit depth at power-on.** The saved depth is meant to apply itself once when RAW video and
+  movie LiveView start, but the request was cleared before looking at the result. Right after
+  power-on the raw tap is not on yet, `raw_lv_apply_bpp()` returns 0 ("not possible now, nothing
+  done"), and the one attempt was spent on that — the depth went live only at the next ML menu
+  close. A 0 result now keeps the request for the next poll.
+- **Scratch WAV timing in every clip**, for a sound recordist with Tentacle Sync. The WAV starts
+  0.4–1.6 s ahead of the first frame, differently every take. `wav_scratch_start()` now timestamps
+  the moment Canon's audio input goes live (SoundDevice `+0x44`, busy-polled, at most 200 ms), and
+  mlv_lite writes it into the clip as an INFO block `scratch_wav_start_us=<n>` relative to the
+  clip's time zero — the base of every frame's timestamp.
+- **`scratch_sync.py`** (offload, standard library only): cuts each scratch WAV to start on frame 1
+  and run the clip's length; decodes LTC (biphase mark, any channel, 23.976 / 24 / 25 / 29.97 DF /
+  30) and stamps the WAV with the first frame's timecode as a Broadcast WAV time reference plus
+  iXML; optionally remuxes exported movies with the synced scratch and `-timecode` through ffmpeg.
+  The camera is not genlocked to the Tentacle, so frame 1 falls between LTC frames; the start
+  timecode is the nearest one and the time reference keeps the exact sample. Self-test: synthetic
+  LTC at 23.976 NDF and 29.97 DF across a minute boundary, 12/12. One constant — Canon's latency
+  between the input going live and the WAV's first sample — is left for a clap-take calibration.
 
 ---
 

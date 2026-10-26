@@ -33,7 +33,7 @@ changes.
 | | |
 |---|---|
 | RAW video | Movie → RAW video, the first entry (enable the `mlv_lite` module first). **Data format** 14 / 12 / 10-bit — 12-bit is lossless in practice and the default to use |
-| Changing bit depth | Pick it, then **close the ML menu**: the view zooms in and out once and the entry reads `live`. Needs the lens on **MF** (Canon refuses the zoom with the lens on AF); with AF, Canon's MENU and back applies it instead |
+| Changing bit depth | Pick it, then **close the ML menu**: the view zooms in and out once and the entry reads `live`. The setting is saved and applies itself the same way at power-on and on switching to movie mode. Needs the lens on **MF** (Canon refuses the zoom with the lens on AF); with AF, Canon's MENU and back applies it instead |
 | Crop mode | Movie → RAW video → **Crop mode** — holds Canon's 5x zoom: a 1:1 sensor window, 3160×926, always 29.97 fps. Lens on **MF**; switching the lens to MF (or closing the ML menu) brings it in |
 | Video dual ISO | enable `dual_iso`, turn on Expo → Dual ISO, and use RAW video → **Crop mode**: only the 1:1 readout alternates the line pairs (the binned 1080p readout applies one gain), and crop mode is also where the higher resolutions are, up to 3072 wide. The **Recovery ISO** is the second ISO: for the most range, Canon ISO 100 and Recovery 800–1600. On this body the line pairs differ by less than the ISO gap — measured 1.7 EV at 100 / 800 — so the gain is real but smaller than the menu's estimate. MLV App: Dual ISO **On**, pattern low-low-HIGH-HIGH |
 | Scratch audio | Movie → **Scratch audio**, the last entry, one submenu: **Mode** OFF / Auto with RAW / Manual, **Record WAV now** (Manual mode only), **Input** Auto (jack) / Internal / External, **Level meter** OFF / While recording, **Gain** Factory / Manual with **Left gain** in 3 dB stops (Mute, −12 … +42 dB), **Right channel** Same as left / Own level / Safety −6 … −24 dB, **Right gain** |
@@ -57,8 +57,28 @@ In **Auto**, the WAV starts and stops with the raw clip and is filed as `DCIM/AU
 ~0.19 MB/s and records no video, unlike the H.264 proxy. The **Safety** modes record the right
 channel lower than the left as a backup for clipped peaks; `wav_dualgain.py` merges them.
 
-**Sync with a clap.** The WAV starts a moment before the first frame, so it runs 0.4–1.6 s longer
-than the clip, at the front (longer with the H.264 proxy on). Some 10-bit and crop-mode takes in
+### Syncing with a sound recordist (Tentacle Sync)
+
+The scratch WAV can carry the same timecode as the recordist's files, and be lined up with your
+video exactly, so his audio and your picture sync by timecode in Resolve or Premiere.
+
+1. **On set:** a Tentacle on the camera, jammed from the recordist's, plugged into the mic jack
+   with timecode on one channel (and, if you like, a mic passed through on the other).
+   Movie → Scratch audio → **Input: External**, **Gain: Manual** at a low level — timecode is a
+   loud square wave; keep its peaks well under CLIP on the meter.
+2. **At offload:** `python extras/tools/scratch_sync.py <card>` writes `synced/<clip>.wav` for every
+   clip — starting on the clip's first frame, the clip's length, and stamped with the first frame's
+   timecode — plus a list of every clip's start timecode. It only reads the card.
+3. **In Resolve:** import the MLV App exports, the synced WAVs and the recordist's files; sync the
+   recordist's files by timecode. `--mov <export folder>` (needs ffmpeg) also writes `_tc.mov`
+   copies of the exports carrying the synced scratch and the start timecode.
+
+It needs clips recorded with v91 or later (each clip records when its WAV started). **Calibrate
+once:** record a take with a sharp clap in shot, sync it, and measure how far the clap sound sits
+from the clap frame (sound late = positive); pass that as `--latency-ms` from then on.
+
+**Without a timecode box, sync with a clap.** The WAV starts a moment before the first frame, so it
+runs 0.4–1.6 s longer than the clip, at the front (longer with the H.264 proxy on). Some 10-bit and crop-mode takes in
 earlier builds came out up to 2 s *shorter*; the v86 field round did not repeat it. Either way,
 slate or clap at the start of a take and sync on that rather than lining up the file starts.
 
@@ -129,7 +149,7 @@ Photo dual ISO works. Face-tracking AF works natively. See the [roadmap](roadmap
 | `README.txt` | install steps |
 | `SHA256SUMS.txt` | checksums of the camera files |
 | `extras/user-guide.md` | this guide |
-| `extras/tools/` | `cardcheck.py` (checks every clip on a card), `wav_dualgain.py` (merges a Safety-mode WAV into a 32-bit float file), `fix_mlv_black.py` (repairs pre-v62 black levels) |
+| `extras/tools/` | `cardcheck.py` (checks every clip on a card), `scratch_sync.py` (lines scratch WAVs up with their clips and stamps them with Tentacle timecode), `wav_dualgain.py` (merges a Safety-mode WAV into a 32-bit float file), `fix_mlv_black.py` (repairs pre-v62 black levels) |
 | `extras/testing/` | the fast-card test procedure, as text and as a fillable PDF |
 | `extras/developer/` | development log and roadmap |
 

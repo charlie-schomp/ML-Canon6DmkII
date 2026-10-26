@@ -41,7 +41,7 @@ DOCS = {
     "devlog": {
         "title": "6D Mark II ML development log",
         "breaks": ['<h2>Part 2', '<h2>Part 3', '<h2>Part 4', '<h2>Part 5', '<h2>Part 6',
-                   '<h2>Part 7', '<h2>Appendix A'],
+                   '<h2>Part 7', '<h2>Part 8', '<h2>Appendix A'],
         "css": "td:first-child { white-space: nowrap; }",
     },
     "findings": {
