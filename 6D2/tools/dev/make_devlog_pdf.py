@@ -1,9 +1,12 @@
-"""6D2/docs/<doc>.md -> <doc>.pdf next to it, via headless Edge (Windows).
+"""6D2/docs/<doc>.md -> <doc>.pdf next to it, via headless Chrome or Edge (Windows).
 Usage: python make_devlog_pdf.py [devlog|findings]   (default devlog; needs the markdown package)"""
-import os, re, subprocess, sys, markdown
+import os, re, subprocess, sys, tempfile, shutil, markdown
 
 HERE = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "docs"))
-EDGE = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
+# Chrome first: Edge 156 (October 2026) exits 0 from --print-to-pdf without writing a file
+BROWSERS = [r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"]
 REPO_URL = "https://github.com/charlie-schomp/ML-Canon6DmkII"
 
 CSS = """
@@ -69,11 +72,25 @@ def main():
     out_html = os.path.join(HERE, name + ".html")
     open(out_html, "w", encoding="utf-8").write(html)
     out_pdf = os.path.join(HERE, name + ".pdf")
-    subprocess.run([EDGE, "--headless", "--disable-gpu", "--no-pdf-header-footer",
-                    "--print-to-pdf=" + out_pdf, "file:///" + out_html.replace("\\", "/")],
-                   check=False, capture_output=True, timeout=120)
-    os.remove(out_html)   # only needed next to the charts while Edge prints it
-    print("pdf:", out_pdf, os.path.getsize(out_pdf) if os.path.exists(out_pdf) else "MISSING")
+    tmp_pdf = out_pdf + ".tmp"
+    ok = False
+    for exe in [b for b in BROWSERS if os.path.exists(b)]:
+        profile = tempfile.mkdtemp(prefix="pdfprofile-")   # never hand off to a running browser
+        if os.path.exists(tmp_pdf):
+            os.remove(tmp_pdf)
+        subprocess.run([exe, "--headless", "--disable-gpu", "--no-first-run", "--no-pdf-header-footer",
+                        "--user-data-dir=" + profile, "--print-to-pdf=" + tmp_pdf,
+                        "file:///" + out_html.replace("\\", "/")],
+                       check=False, capture_output=True, timeout=180)
+        shutil.rmtree(profile, ignore_errors=True)
+        if os.path.exists(tmp_pdf) and os.path.getsize(tmp_pdf) > 1000:
+            os.replace(tmp_pdf, out_pdf)
+            ok = True
+            print("pdf:", out_pdf, os.path.getsize(out_pdf), "via", os.path.basename(exe))
+            break
+    os.remove(out_html)   # only needed next to the charts while the browser prints it
+    if not ok:
+        sys.exit("pdf NOT written - no browser produced one (the old %s is unchanged)" % os.path.basename(out_pdf))
 
 
 if __name__ == "__main__":
