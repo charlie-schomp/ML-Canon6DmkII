@@ -13,7 +13,7 @@ Zip layout - the camera files at the top, everything else under extras/:
     README.txt                     install steps
     SHA256SUMS.txt                 checksums of the camera files
     extras/user-guide.md
-    extras/tools/                  cardcheck.py, wav_dualgain.py, fix_mlv_black.py
+    extras/tools/                  cardcheck.py, wav_dualgain.py, scratch_sync.py, fix_mlv_black.py
     extras/testing/                fast-card test (md + fillable pdf)
     extras/developer/              devlog.md, roadmap.md
 Older zips in 6D2/download are removed.
@@ -29,6 +29,7 @@ EXTRAS = [
     ('docs/user-guide.md', 'extras/user-guide.md'),
     ('tools/cardcheck.py', 'extras/tools/cardcheck.py'),
     ('tools/wav_dualgain.py', 'extras/tools/wav_dualgain.py'),
+    ('tools/scratch_sync.py', 'extras/tools/scratch_sync.py'),
     ('tools/fix_mlv_black.py', 'extras/tools/fix_mlv_black.py'),
     ('testing/fast-card-test.md', 'extras/testing/fast-card-test.md'),
     ('testing/fast-card-test.pdf', 'extras/testing/fast-card-test.pdf'),
