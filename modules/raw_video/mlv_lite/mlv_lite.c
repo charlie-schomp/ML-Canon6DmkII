@@ -2439,8 +2439,14 @@ unsigned int raw_rec_polling_cbr(unsigned int unused)
              * the depth is already there - raw_info may be a poll behind */
             if (bpp_apply_pending && lv_ours && raw_lv_path_settled())
             {
-                bpp_apply_pending = 0;
-                raw_lv_apply_bpp();
+                /* 0 = not possible yet, nothing done: the raw tap is not on or
+                 * the readout is not recognised - the usual state right after
+                 * power-on and on entering movie mode.  Spending the request on
+                 * that left the saved depth un-applied until the ML menu was
+                 * next closed, so keep it for the next poll.  Any other result
+                 * (live already, bounced, refused by lens AF) consumes it. */
+                if (raw_lv_apply_bpp() != 0)
+                    bpp_apply_pending = 0;
             }
         }
     }
