@@ -2429,11 +2429,22 @@ unsigned int raw_rec_polling_cbr(unsigned int unused)
     {
         static int bpp_apply_pending = 1;
         static int bpp_prev_af = -1;
+        static int bpp_refusals = 0;
+        static int bpp_not_before = 0;          /* ms; 0 = LiveView / RAW video not up */
         /* also the lens AF/MF switch: Canon refuses the zoom with the lens
          * on AF, so switching to MF is the moment it can work */
         if (!raw_video_active || gui_menu_shown() || af_mode != bpp_prev_af)
+        {
             bpp_apply_pending = 1;
+            bpp_refusals = 0;
+        }
         bpp_prev_af = af_mode;
+
+        /* Canon ignores zoom requests while LiveView is still settling after
+         * power-on or entering movie mode (v91: the saved depth then waited
+         * for the menu to close) - give it 2 s first */
+        if (!raw_video_active || !lv) bpp_not_before = 0;
+        else if (!bpp_not_before) bpp_not_before = get_ms_clock() + 2000;
 
         int armed = raw_lv_bpp_armed();         /* -1: no depth switch on this firmware */
         if (raw_video_active && raw_lv_is_enabled() && armed > 0)
@@ -2447,15 +2458,21 @@ unsigned int raw_rec_polling_cbr(unsigned int unused)
 
             /* raw_lv_apply_bpp() reads the DMAC itself and does nothing when
              * the depth is already there - raw_info may be a poll behind */
-            if (bpp_apply_pending && lv_ours && raw_lv_path_settled())
+            if (bpp_apply_pending && lv_ours && raw_lv_path_settled()
+                && get_ms_clock() >= bpp_not_before)
             {
                 /* 0 = not possible yet, nothing done: the raw tap is not on or
                  * the readout is not recognised - the usual state right after
                  * power-on and on entering movie mode.  Spending the request on
                  * that left the saved depth un-applied until the ML menu was
-                 * next closed, so keep it for the next poll.  Any other result
-                 * (live already, bounced, refused by lens AF) consumes it. */
-                if (raw_lv_apply_bpp() != 0)
+                 * next closed, so keep it for the next poll.  -2 = Canon did
+                 * not move (nothing visible happened): try again a second
+                 * later, three times at most (Face AF refuses for good).  Any
+                 * other result (live already, bounced) consumes it. */
+                int r = raw_lv_apply_bpp();
+                if (r == -2 && ++bpp_refusals < 3)
+                    bpp_not_before = get_ms_clock() + 1000;
+                else if (r != 0)
                     bpp_apply_pending = 0;
             }
         }
