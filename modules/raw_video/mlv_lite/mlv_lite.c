@@ -5309,8 +5309,10 @@ static unsigned int raw_rec_init()
         if (e && e->max > 2)
         {
             e->max = 2; // hide lossless options, which are 3, 4, 5
-            output_format = 0; // plain 14-bit, no lossless support on D4, D678 (yet)
         }
+        /* this runs after the config was read: only a lossless pick (none on
+         * D4, D678 yet) goes back to plain 14-bit, so a saved 12/10-bit stays */
+        if (output_format > OUTPUT_10BIT_UNCOMPRESSED) output_format = OUTPUT_14BIT_NATIVE;
     }
 
     int cam_6d2 = is_camera("6D2", "*");
