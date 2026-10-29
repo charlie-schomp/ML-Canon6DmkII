@@ -40,7 +40,9 @@
 
 #ifdef FEATURE_TOP_BUTTON_SHORTCUTS
 
-#define PRESS_WINDOW_MS 60
+/* the update came 0-90 ms after the press in d7probe logs at standby, more
+ * while rolling (v88's 60 ms missed about a third of presses) */
+#define PRESS_WINDOW_MS 250
 
 /* defaults: AF toggles focus peaking, DRIVE/metering false colour, ISO nothing
  * (ISO keeps Canon's ISO screen) - indices into action_vars below */
@@ -97,22 +99,25 @@ int handle_top_buttons(struct event * event)
 
     if (event->param != GMT_OLC_INFO_CHANGED) return 1;
     if (get_ms_clock() - last_press_ms > PRESS_WINDOW_MS) return 1;   /* Canon on its own */
-    last_press_ms = -1000;                                             /* one press, one action */
-
     if (!lv || !is_movie_mode() || gui_menu_shown()) return 1;
 
     /* same check as d7probe's: only read obj if it looks like a RAM pointer */
     uint32_t o = (uint32_t) event->obj;
     uint32_t * obj = (o >= 0x1000 && o < 0x40000000 && !(o & 3)) ? (uint32_t *) o : 0;
-    int action = 0;
+    const int * action;
     if (event->arg == 0x16 || event->arg == 0x11)
-        action = topbtn_af;
+        action = &topbtn_af;
     else if (event->arg == 0x1e)
-        action = topbtn_iso;
+        action = &topbtn_iso;
     else if (event->arg == 9 && obj && (obj[0] & 0x4000000))
-        action = topbtn_drive;
+        action = &topbtn_drive;
+    else
+        return 1;   /* not one of these buttons: other updates (the top LCD's
+                     * recording time, other buttons and dials) can land in the
+                     * window first, so they must not use the press up */
 
-    if (action) topbtn_toggle(action);
+    last_press_ms = -1000;                                             /* one press, one action */
+    topbtn_toggle(*action);
     return 1;   /* never blocks: Canon has already handled the button */
 }
 
