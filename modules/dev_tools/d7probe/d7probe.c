@@ -46,6 +46,8 @@ extern uint32_t shamem_read(uint32_t addr);
 extern void d7probe_hook_prepro_6D2(void);
 extern void d7probe_hook_sdclk_6D2(void);
 extern void d7probe_hook_sdset_6D2(void);
+extern void d7probe_hook_m2r_set_6D2(void);
+extern void d7probe_hook_m2r_done_6D2(void);
 
 /* ---- captures (written from Canon's context, read from the menu) ---------- */
 
@@ -127,6 +129,74 @@ void d7probe_sdset_capture(uint32_t *regs)
     uint32_t src = regs[1] + regs[0] * 11 * 4;
     if (ram_ok(src)) memcpy(r->w, (void *)src, sizeof(r->w)); else memset(r->w, 0, sizeof(r->w));
     if (sdset_n < SDSET_MAX) sdset_n++;
+}
+
+/* ---- Lossless probe: Canon's still-photo lossless path (the CR2 encoder) ----
+ *
+ * The capture task builds a parameter block p = {LosslessPathRsc *rsc,
+ * LosslessPathParam *prm, DEGEEN, TWAIN.., ...} (sssSetRawPathParam 0xe032973c)
+ * and posts it with SetMem1ToRaw(p, cbr) 0xe051b560; the engine runs it
+ * (CORE_SetMem1ToRaw 0xe00d697a -> LosslessEncode.c on JpCore) and reports
+ * through Mem1ToRawCompleteCBR 0xe00d6948.  Both hooks only copy; they are
+ * installed when the probe is armed and removed when its log is written.
+ *   rsc: +0 pRscAry +4 RscNum +8 SharememTbl +c SharememNum +10 LosslessEncMode
+ *        +14 RdBayCh +18 WrRawCh +1c WrThumbCh
+ *   prm: +0 pHuffmanTable +4 PackMemNum +8 pMemList +c RdBayAddress +10 WrThumbAddress */
+#define M2R_MAX 4
+struct m2r_set_rec
+{
+    uint32_t t, lr, p, cbr;
+    uint32_t pw[12];        /* the block itself */
+    uint32_t rsc[8], prm[5];
+    uint32_t huff[24];      /* 0x60 bytes at prm->pHuffmanTable */
+    uint32_t mem[16];       /* prm->pMemList */
+    uint32_t blk[4][16];    /* p[2], p[3], p[5], p[7]: DEGEEN / TWAIN / .. settings */
+};
+struct m2r_done_rec
+{
+    uint32_t t, lr, a[4];
+    uint32_t enc[16];       /* LosslessEncode.c state, 0x26584 (lock, param table, cbr, mode, channels) */
+    uint32_t tbl[19];       /* the encode record it chose (*(0x26584 + 4)) */
+    uint32_t base[40];      /* LosslessEncodeBase.c state, 0x2b084 */
+};
+static struct m2r_set_rec m2r_set[M2R_MAX];
+static struct m2r_done_rec m2r_done[M2R_MAX];
+static volatile int m2r_set_n = 0, m2r_done_n = 0;
+static int m2r_armed = 0;
+
+static void copy_words(uint32_t *dst, uint32_t src, int n)
+{
+    if (ram_ok(src)) memcpy(dst, (void *)src, n * 4); else memset(dst, 0, n * 4);
+}
+
+void d7probe_m2r_set_capture(uint32_t *regs)
+{
+    if (m2r_set_n >= M2R_MAX) return;
+    struct m2r_set_rec *r = &m2r_set[m2r_set_n];
+    r->t = get_ms_clock(); r->lr = regs[13]; r->p = regs[0]; r->cbr = regs[1];
+    copy_words(r->pw, r->p, 12);
+    copy_words(r->rsc, r->pw[0], 8);
+    copy_words(r->prm, r->pw[1], 5);
+    copy_words(r->huff, ram_ok(r->pw[1]) ? r->prm[0] : 0, 24);
+    copy_words(r->mem, ram_ok(r->pw[1]) ? r->prm[2] : 0, 16);
+    static const int which[4] = { 2, 3, 5, 7 };
+    for (int k = 0; k < 4; k++) copy_words(r->blk[k], r->pw[which[k]], 16);
+    m2r_set_n++;
+}
+
+void d7probe_m2r_done_capture(uint32_t *regs)
+{
+    if (m2r_done_n >= M2R_MAX) return;
+    struct m2r_done_rec *r = &m2r_done[m2r_done_n];
+    r->t = get_ms_clock(); r->lr = regs[13];
+    for (int k = 0; k < 4; k++) r->a[k] = regs[k];
+    copy_words(r->enc, 0x26584, 16);
+    uint32_t tbl = r->enc[1];
+    /* the encode records are in ROM (0xe0edb9f8..): read-only, safe to copy */
+    if (tbl >= 0xe0000000 && tbl < 0xe2000000) memcpy(r->tbl, (void *)tbl, sizeof(r->tbl));
+    else copy_words(r->tbl, tbl, 19);
+    copy_words(r->base, 0x2b084, 40);
+    m2r_done_n++;
 }
 
 /* SD experiment state (defined with the menu below) */
@@ -925,6 +995,95 @@ static MENU_SELECT_FUNC(align_dump_select)
     task_create("d7align", 0x1e, 0x1000, align_dump_task, 0);
 }
 
+/* Lossless probe: arm installs the two hooks; the next press (after a RAW
+ * photo) writes ML/LOGS/LJPROBE.TXT and removes them */
+static struct function_hook_patch m2r_f_patches[] = {
+    {
+        .patch_addr = 0xe051b560,   /* SetMem1ToRaw */
+        .orig_content = {0x70, 0xb5, 0x0c, 0x46, 0x05, 0x46, 0x02, 0x21},
+        .target_function_addr = (uint32_t)d7probe_hook_m2r_set_6D2,
+        .description = "d7probe: log the lossless path parameters"
+    },
+    {
+        .patch_addr = 0xe00d6948,   /* Mem1ToRawCompleteCBR */
+        .orig_content = {0x2d, 0xe9, 0xf0, 0x41, 0x15, 0x46, 0x0e, 0x46},
+        .target_function_addr = (uint32_t)d7probe_hook_m2r_done_6D2,
+        .description = "d7probe: log the lossless path result"
+    },
+};
+static struct patch m2r_patches[COUNT(m2r_f_patches)] = {};
+static uint8_t m2r_code_hooks[8 * COUNT(m2r_f_patches)] = {};
+
+static void m2r_disarm(void)
+{
+    for (int i = 0; i < COUNT(m2r_f_patches); i++)
+        if (m2r_armed & (1 << i)) unpatch_memory(m2r_f_patches[i].patch_addr);
+    m2r_armed = 0;
+}
+
+static void m2r_write(void)
+{
+    FILE * f = FIO_CreateFile("ML/LOGS/LJPROBE.TXT");
+    if (!f) return;
+    my_fprintf(f, "d7probe lossless probe - 6D2 1.1.1 - %d SetMem1ToRaw, %d complete\n\n", m2r_set_n, m2r_done_n);
+    for (int i = 0; i < m2r_set_n; i++)
+    {
+        struct m2r_set_rec *r = &m2r_set[i];
+        my_fprintf(f, "[set %d] t=%d lr=%08x p=%08x cbr=%08x\n", i, r->t, r->lr, r->p, r->cbr);
+        dump_words(f, "  p   ", r->pw, 12, r->p);
+        dump_words(f, "  rsc ", r->rsc, 8, r->pw[0]);
+        dump_words(f, "  prm ", r->prm, 5, r->pw[1]);
+        dump_words(f, "  huff", r->huff, 24, r->prm[0]);
+        dump_words(f, "  mem ", r->mem, 16, r->prm[2]);
+        static const int which[4] = { 2, 3, 5, 7 };
+        for (int k = 0; k < 4; k++)
+        {
+            char tag[8];
+            snprintf(tag, sizeof(tag), "  p[%d]", which[k]);
+            dump_words(f, tag, r->blk[k], 16, r->pw[which[k]]);
+        }
+    }
+    for (int i = 0; i < m2r_done_n; i++)
+    {
+        struct m2r_done_rec *r = &m2r_done[i];
+        my_fprintf(f, "\n[done %d] t=%d lr=%08x args %08x %08x %08x %08x\n", i, r->t, r->lr, r->a[0], r->a[1], r->a[2], r->a[3]);
+        dump_words(f, "  enc ", r->enc, 16, 0x26584);
+        dump_words(f, "  tbl ", r->tbl, 19, r->enc[1]);
+        dump_words(f, "  base", r->base, 40, 0x2b084);
+    }
+    FIO_CloseFile(f);
+}
+
+static MENU_SELECT_FUNC(m2r_select)
+{
+    if (!m2r_armed)
+    {
+        m2r_set_n = m2r_done_n = 0;
+        for (int i = 0; i < COUNT(m2r_f_patches); i++)
+        {
+            if (convert_f_patch_to_patch(&m2r_f_patches[i], &m2r_patches[i], &m2r_code_hooks[8 * i]))
+                continue;
+            if (apply_patches(&m2r_patches[i], 1) == 0)
+                m2r_armed |= (1 << i);
+        }
+        if (m2r_armed != 3) m2r_disarm();       /* both or neither */
+        return;
+    }
+    m2r_write();
+    m2r_disarm();
+    NotifyBox(3000, "LJPROBE.TXT written (%d set, %d done)", m2r_set_n, m2r_done_n);
+}
+
+static MENU_UPDATE_FUNC(m2r_update)
+{
+    if (m2r_armed)
+        MENU_SET_VALUE("armed: %d set, %d done", m2r_set_n, m2r_done_n);
+    else
+        MENU_SET_VALUE("OFF");
+    MENU_SET_HELP(m2r_armed ? "Take one RAW photo, then press again: writes ML/LOGS/LJPROBE.TXT."
+                            : "Press to arm, take one RAW photo, press again. Read-only.");
+}
+
 static struct menu_entry d7probe_menu[] =
 {
     {
@@ -939,6 +1098,13 @@ static struct menu_entry d7probe_menu[] =
                 .select = statelog_select,
                 .update = statelog_update,
                 .help2  = "Logs GUI state, every button event and every MPU message (read-only).",
+            },
+            {
+                .name   = "Lossless probe",
+                .select = m2r_select,
+                .update = m2r_update,
+                .icon_type = IT_ACTION,
+                .help2  = "Logs how Canon's CR2 lossless encoder is set up (read-only hooks).",
             },
             {
                 .name   = "Recording trace",

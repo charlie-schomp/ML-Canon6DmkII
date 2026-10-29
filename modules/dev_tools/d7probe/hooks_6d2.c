@@ -76,3 +76,50 @@ void __attribute__((noreturn,noinline,naked,aligned(4))) d7probe_hook_sdset_6D2(
         "ldr  pc, =0xe0292573\n"
     );
 }
+
+/* 0xe051b560  SetMem1ToRaw(param, cbr): Canon's still-photo lossless path (CR2)
+ * hands its parameter block to the engine
+ *   70 b5         push   {r4, r5, r6, lr}
+ *   0c 46         mov    r4, r1
+ *   05 46         mov    r5, r0
+ *   02 21         movs   r1, #2
+ */
+void __attribute__((noreturn,noinline,naked,aligned(4))) d7probe_hook_m2r_set_6D2(void)
+{
+    uint32_t *regs;
+    asm __volatile__ (
+        "push {r0-r12, lr}\n"
+        "mov %0, sp\n" : "=r"(regs)
+    );
+    d7probe_m2r_set_capture(regs);
+    asm __volatile__ (
+        "pop  {r0-r12, lr}\n"
+        "push {r4, r5, r6, lr}\n"
+        "mov  r4, r1\n"
+        "mov  r5, r0\n"
+        "movs r1, #2\n"
+        "ldr  pc, =0xe051b569\n"
+    );
+}
+
+/* 0xe00d6948  Mem1ToRawCompleteCBR(a, b, c, d): the lossless path finished
+ *   2d e9 f0 41   push.w {r4-r8, lr}
+ *   15 46         mov    r5, r2
+ *   0e 46         mov    r6, r1
+ */
+void __attribute__((noreturn,noinline,naked,aligned(4))) d7probe_hook_m2r_done_6D2(void)
+{
+    uint32_t *regs;
+    asm __volatile__ (
+        "push {r0-r12, lr}\n"
+        "mov %0, sp\n" : "=r"(regs)
+    );
+    d7probe_m2r_done_capture(regs);
+    asm __volatile__ (
+        "pop  {r0-r12, lr}\n"
+        "push {r4-r8, lr}\n"
+        "mov  r5, r2\n"
+        "mov  r6, r1\n"
+        "ldr  pc, =0xe00d6951\n"
+    );
+}

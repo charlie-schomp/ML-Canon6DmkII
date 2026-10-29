@@ -7,5 +7,7 @@
 void d7probe_prepro_capture(uint32_t *regs);
 void d7probe_sdclk_capture(uint32_t *regs);
 void d7probe_sdset_capture(uint32_t *regs);
+void d7probe_m2r_set_capture(uint32_t *regs);
+void d7probe_m2r_done_capture(uint32_t *regs);
 
 #endif
