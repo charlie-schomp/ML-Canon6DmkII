@@ -42,6 +42,14 @@ module, off by default), and dual ISO at 10/12/14-bit in crop mode (v87 field ro
   test are in [sync-test.md](sync-test.md) (no Tentacle needed).
 - **Bit depth at power-on**: the saved depth now applies itself when movie LiveView starts.
 
+**Lossless raw video (research, 2026-10-29)** - the CR2 encoder path is mapped (Mem1ToRaw ->
+LosslessEncode.c on JpCore; see the devlog notes in the commit for v95) and the d7probe "Lossless
+probe" confirmed it on hardware: it writes a standard lossless JPEG (4 components, predictor 1,
+Canon's fixed table), the table is copied into RAM before the encoder reads it, and a per-channel
+gain/offset block sits in front of it. Measured on real frames at 2048x856: 10-bit lossless
+~28% of uncompressed with a table built for video (63% with Canon's still table), 14-bit ~47%.
+Next: drive the path from ML on one LiveView frame (own geometry record + table).
+
 **Waiting for the Tentacle** (not to hand as of 2026-10-26)
 1. **Jack check:** Tentacle in the mic jack, Input External, Gain Manual low, 30 s take. Is LTC on
    one channel only, with the other (the Tentacle's mic, or silence) free of it? Do the LTC peaks

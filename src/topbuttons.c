@@ -19,6 +19,10 @@
  * only Canon's decision, and in movie mode that is the same "not available"
  * warning for all three, byte for byte.
  *
+ * The AF button during a take sends nothing after the generic event either
+ * (Canon's AF selection is off while recording; d7probe log 2026-10-29), so it
+ * works at standby only.
+ *
  * The light button sends nothing after the generic event - and neither does
  * the rear dial around SET, so the light button is not offered (v87 tried it:
  * turning that dial toggled the light button's overlay).
@@ -134,7 +138,8 @@ static struct menu_entry topbtn_menus[] = {
                 .priv = &topbtn_af,
                 .max = COUNT(action_vars) - 1,
                 .choices = TOPBTN_CHOICES,
-                .help = "What the AF button toggles in movie LiveView.",
+                .help  = "What the AF button toggles in movie LiveView.",
+                .help2 = "Not during a take: Canon then reports it exactly like the rear dial.",
             },
             {
                 .name = "ISO button",
