@@ -102,24 +102,210 @@ void __attribute__((noreturn,noinline,naked,aligned(4))) d7probe_hook_m2r_set_6D
     );
 }
 
-/* 0xe00d6948  Mem1ToRawCompleteCBR(a, b, c, d): the lossless path finished
- *   2d e9 f0 41   push.w {r4-r8, lr}
- *   15 46         mov    r5, r2
- *   0e 46         mov    r6, r1
+/* 0xe0247544 / 0xe02475cc  JpCore lossless setup (W, H, table, ..; 3 stack args)
+ *   2d e9 f0 5f   push.w {r4-sb, sl, fp, ip, lr}
+ *   07 46         mov    r7, r0
+ *   52 4c         ldr    r4, [pc, #0x148]     ; = 0xd0100000 (JpCore)
  */
-void __attribute__((noreturn,noinline,naked,aligned(4))) d7probe_hook_m2r_done_6D2(void)
+void __attribute__((noreturn,noinline,naked,aligned(4))) d7probe_hook_jpc0_6D2(void)
 {
     uint32_t *regs;
     asm __volatile__ (
         "push {r0-r12, lr}\n"
         "mov %0, sp\n" : "=r"(regs)
     );
-    d7probe_m2r_done_capture(regs);
+    d7probe_jpc_capture(regs, 0);
     asm __volatile__ (
         "pop  {r0-r12, lr}\n"
-        "push {r4-r8, lr}\n"
-        "mov  r5, r2\n"
-        "mov  r6, r1\n"
-        "ldr  pc, =0xe00d6951\n"
+        "push.w {r4-r12, lr}\n"
+        "mov  r7, r0\n"
+        "ldr  r4, =0xd0100000\n"
+        "ldr  pc, =0xe024754d\n"
+    );
+}
+
+/* the second variant (component setting 0x111141), same prologue */
+void __attribute__((noreturn,noinline,naked,aligned(4))) d7probe_hook_jpc1_6D2(void)
+{
+    uint32_t *regs;
+    asm __volatile__ (
+        "push {r0-r12, lr}\n"
+        "mov %0, sp\n" : "=r"(regs)
+    );
+    d7probe_jpc_capture(regs, 1);
+    asm __volatile__ (
+        "pop  {r0-r12, lr}\n"
+        "push.w {r4-r12, lr}\n"
+        "mov  r7, r0\n"
+        "ldr  r4, =0xd0100000\n"
+        "ldr  pc, =0xe02475d5\n"
+    );
+}
+
+/* 0xe01d7820  LosslessEncodeBase configure(desc): the 0x64-byte request built from
+ * the geometry record + LosslessPathParam
+ *   f0 b5         push   {r4, r5, r6, r7, lr}
+ *   04 46         mov    r4, r0
+ *   95 4e         ldr    r6, [pc, #0x254]     ; = 0x0002b084
+ *   00 20         movs   r0, #0
+ */
+void __attribute__((noreturn,noinline,naked,aligned(4))) d7probe_hook_desc_6D2(void)
+{
+    uint32_t *regs;
+    asm __volatile__ (
+        "push {r0-r12, lr}\n"
+        "mov %0, sp\n" : "=r"(regs)
+    );
+    d7probe_desc_capture(regs);
+    asm __volatile__ (
+        "pop  {r0-r12, lr}\n"
+        "push {r4, r5, r6, r7, lr}\n"
+        "mov  r4, r0\n"
+        "ldr  r6, =0x0002b084\n"
+        "movs r0, #0\n"
+        "ldr  pc, =0xe01d7829\n"
+    );
+}
+
+/* DMA driver veneers 0xe043b0f8..0xe043b258: ARM "ldr pc, [pc, #-4]; .word target".
+ * The probe points each word at a stub below, which logs the call and jumps on
+ * to the original RAM target (Thumb).  Nothing is displaced. */
+void __attribute__((noreturn,noinline,naked,aligned(4))) d7probe_hook_dma0_6D2(void)
+{
+    uint32_t *regs;
+    asm __volatile__ (
+        "push {r0-r12, lr}\n"
+        "mov %0, sp\n" : "=r"(regs)
+    );
+    d7probe_dma_capture(regs, 0);
+    asm __volatile__ (
+        "pop  {r0-r12, lr}\n"
+        "ldr  pc, =0x0002f587\n"
+    );
+}
+
+void __attribute__((noreturn,noinline,naked,aligned(4))) d7probe_hook_dma1_6D2(void)
+{
+    uint32_t *regs;
+    asm __volatile__ (
+        "push {r0-r12, lr}\n"
+        "mov %0, sp\n" : "=r"(regs)
+    );
+    d7probe_dma_capture(regs, 1);
+    asm __volatile__ (
+        "pop  {r0-r12, lr}\n"
+        "ldr  pc, =0x0002f2e9\n"
+    );
+}
+
+void __attribute__((noreturn,noinline,naked,aligned(4))) d7probe_hook_dma2_6D2(void)
+{
+    uint32_t *regs;
+    asm __volatile__ (
+        "push {r0-r12, lr}\n"
+        "mov %0, sp\n" : "=r"(regs)
+    );
+    d7probe_dma_capture(regs, 2);
+    asm __volatile__ (
+        "pop  {r0-r12, lr}\n"
+        "ldr  pc, =0x0002e121\n"
+    );
+}
+
+void __attribute__((noreturn,noinline,naked,aligned(4))) d7probe_hook_dma3_6D2(void)
+{
+    uint32_t *regs;
+    asm __volatile__ (
+        "push {r0-r12, lr}\n"
+        "mov %0, sp\n" : "=r"(regs)
+    );
+    d7probe_dma_capture(regs, 3);
+    asm __volatile__ (
+        "pop  {r0-r12, lr}\n"
+        "ldr  pc, =0x0002e18b\n"
+    );
+}
+
+void __attribute__((noreturn,noinline,naked,aligned(4))) d7probe_hook_dma4_6D2(void)
+{
+    uint32_t *regs;
+    asm __volatile__ (
+        "push {r0-r12, lr}\n"
+        "mov %0, sp\n" : "=r"(regs)
+    );
+    d7probe_dma_capture(regs, 4);
+    asm __volatile__ (
+        "pop  {r0-r12, lr}\n"
+        "ldr  pc, =0x0002e27f\n"
+    );
+}
+
+void __attribute__((noreturn,noinline,naked,aligned(4))) d7probe_hook_dma5_6D2(void)
+{
+    uint32_t *regs;
+    asm __volatile__ (
+        "push {r0-r12, lr}\n"
+        "mov %0, sp\n" : "=r"(regs)
+    );
+    d7probe_dma_capture(regs, 5);
+    asm __volatile__ (
+        "pop  {r0-r12, lr}\n"
+        "ldr  pc, =0x0002e2ff\n"
+    );
+}
+
+void __attribute__((noreturn,noinline,naked,aligned(4))) d7probe_hook_dma6_6D2(void)
+{
+    uint32_t *regs;
+    asm __volatile__ (
+        "push {r0-r12, lr}\n"
+        "mov %0, sp\n" : "=r"(regs)
+    );
+    d7probe_dma_capture(regs, 6);
+    asm __volatile__ (
+        "pop  {r0-r12, lr}\n"
+        "ldr  pc, =0x0002f38d\n"
+    );
+}
+
+void __attribute__((noreturn,noinline,naked,aligned(4))) d7probe_hook_dma7_6D2(void)
+{
+    uint32_t *regs;
+    asm __volatile__ (
+        "push {r0-r12, lr}\n"
+        "mov %0, sp\n" : "=r"(regs)
+    );
+    d7probe_dma_capture(regs, 7);
+    asm __volatile__ (
+        "pop  {r0-r12, lr}\n"
+        "ldr  pc, =0x0002f34b\n"
+    );
+}
+
+void __attribute__((noreturn,noinline,naked,aligned(4))) d7probe_hook_dma8_6D2(void)
+{
+    uint32_t *regs;
+    asm __volatile__ (
+        "push {r0-r12, lr}\n"
+        "mov %0, sp\n" : "=r"(regs)
+    );
+    d7probe_dma_capture(regs, 8);
+    asm __volatile__ (
+        "pop  {r0-r12, lr}\n"
+        "ldr  pc, =0x0002f5c3\n"
+    );
+}
+
+void __attribute__((noreturn,noinline,naked,aligned(4))) d7probe_hook_dma9_6D2(void)
+{
+    uint32_t *regs;
+    asm __volatile__ (
+        "push {r0-r12, lr}\n"
+        "mov %0, sp\n" : "=r"(regs)
+    );
+    d7probe_dma_capture(regs, 9);
+    asm __volatile__ (
+        "pop  {r0-r12, lr}\n"
+        "ldr  pc, =0x0002f6fd\n"
     );
 }

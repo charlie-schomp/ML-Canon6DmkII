@@ -47,7 +47,19 @@ extern void d7probe_hook_prepro_6D2(void);
 extern void d7probe_hook_sdclk_6D2(void);
 extern void d7probe_hook_sdset_6D2(void);
 extern void d7probe_hook_m2r_set_6D2(void);
-extern void d7probe_hook_m2r_done_6D2(void);
+extern void d7probe_hook_jpc0_6D2(void);
+extern void d7probe_hook_jpc1_6D2(void);
+extern void d7probe_hook_desc_6D2(void);
+extern void d7probe_hook_dma0_6D2(void);
+extern void d7probe_hook_dma1_6D2(void);
+extern void d7probe_hook_dma2_6D2(void);
+extern void d7probe_hook_dma3_6D2(void);
+extern void d7probe_hook_dma4_6D2(void);
+extern void d7probe_hook_dma5_6D2(void);
+extern void d7probe_hook_dma6_6D2(void);
+extern void d7probe_hook_dma7_6D2(void);
+extern void d7probe_hook_dma8_6D2(void);
+extern void d7probe_hook_dma9_6D2(void);
 
 /* ---- captures (written from Canon's context, read from the menu) ---------- */
 
@@ -135,10 +147,15 @@ void d7probe_sdset_capture(uint32_t *regs)
  *
  * The capture task builds a parameter block p = {LosslessPathRsc *rsc,
  * LosslessPathParam *prm, DEGEEN, TWAIN.., ...} (sssSetRawPathParam 0xe032973c)
- * and posts it with SetMem1ToRaw(p, cbr) 0xe051b560; the engine runs it
- * (CORE_SetMem1ToRaw 0xe00d697a -> LosslessEncode.c on JpCore) and reports
- * through Mem1ToRawCompleteCBR 0xe00d6948.  Both hooks only copy; they are
- * installed when the probe is armed and removed when its log is written.
+ * and posts it with SetMem1ToRaw(p, cbr) 0xe051b560.  On the engine task,
+ * CORE_SetMem1ToRaw 0xe00d697a opens LosslessEncode.c, sets the units and the
+ * Huffman table, and LosslessEncode_SetParam 0xe015945c builds a 0x64-byte
+ * request from the geometry record + prm for the base configure 0xe01d7820,
+ * which programs the DMA channels and JpCore (0xe0247544 / 0xe02475cc: width,
+ * height, table, ...).  Probe 1 (v95) logged p; probe 2 also logs the request,
+ * the JpCore arguments and every DMA driver call while the photo encodes.
+ * All hooks only copy.  They are installed when armed, removed when the log
+ * is written; the DMA loggers record only in the 4 s after SetMem1ToRaw.
  *   rsc: +0 pRscAry +4 RscNum +8 SharememTbl +c SharememNum +10 LosslessEncMode
  *        +14 RdBayCh +18 WrRawCh +1c WrThumbCh
  *   prm: +0 pHuffmanTable +4 PackMemNum +8 pMemList +c RdBayAddress +10 WrThumbAddress */
@@ -152,16 +169,18 @@ struct m2r_set_rec
     uint32_t mem[16];       /* prm->pMemList */
     uint32_t blk[4][16];    /* p[2], p[3], p[5], p[7]: DEGEEN / TWAIN / .. settings */
 };
-struct m2r_done_rec
-{
-    uint32_t t, lr, a[4];
-    uint32_t enc[16];       /* LosslessEncode.c state, 0x26584 (lock, param table, cbr, mode, channels) */
-    uint32_t tbl[19];       /* the encode record it chose (*(0x26584 + 4)) */
-    uint32_t base[40];      /* LosslessEncodeBase.c state, 0x2b084 */
-};
+struct jpc_rec { uint32_t t, lr, variant, r[4], stack[3], table[24]; };
+struct desc_rec { uint32_t t, lr, d[25]; };
+struct dma_rec { uint32_t t, lr, id, r[4], blk[12]; };
+#define JPC_MAX 4
+#define DESC_MAX 4
+#define DMA_MAX 120
 static struct m2r_set_rec m2r_set[M2R_MAX];
-static struct m2r_done_rec m2r_done[M2R_MAX];
-static volatile int m2r_set_n = 0, m2r_done_n = 0;
+static struct jpc_rec jpc[JPC_MAX];
+static struct desc_rec desc[DESC_MAX];
+static struct dma_rec dma[DMA_MAX];
+static volatile int m2r_set_n = 0, jpc_n = 0, desc_n = 0, dma_n = 0, dma_seen = 0;
+static volatile int m2r_window_until = 0;
 static int m2r_armed = 0;
 
 static void copy_words(uint32_t *dst, uint32_t src, int n)
@@ -171,6 +190,7 @@ static void copy_words(uint32_t *dst, uint32_t src, int n)
 
 void d7probe_m2r_set_capture(uint32_t *regs)
 {
+    m2r_window_until = get_ms_clock() + 4000;
     if (m2r_set_n >= M2R_MAX) return;
     struct m2r_set_rec *r = &m2r_set[m2r_set_n];
     r->t = get_ms_clock(); r->lr = regs[13]; r->p = regs[0]; r->cbr = regs[1];
@@ -184,19 +204,40 @@ void d7probe_m2r_set_capture(uint32_t *regs)
     m2r_set_n++;
 }
 
-void d7probe_m2r_done_capture(uint32_t *regs)
+void d7probe_jpc_capture(uint32_t *regs, int variant)
 {
-    if (m2r_done_n >= M2R_MAX) return;
-    struct m2r_done_rec *r = &m2r_done[m2r_done_n];
+    if (jpc_n >= JPC_MAX) return;
+    struct jpc_rec *r = &jpc[jpc_n];
+    r->t = get_ms_clock(); r->lr = regs[13]; r->variant = variant;
+    for (int k = 0; k < 4; k++) r->r[k] = regs[k];
+    /* the stub pushed r0-r12, lr: the caller's stack arguments start 14 words up */
+    for (int k = 0; k < 3; k++) r->stack[k] = regs[14 + k];
+    copy_words(r->table, regs[2], 24);
+    jpc_n++;
+}
+
+void d7probe_desc_capture(uint32_t *regs)
+{
+    if (desc_n >= DESC_MAX) return;
+    struct desc_rec *r = &desc[desc_n];
     r->t = get_ms_clock(); r->lr = regs[13];
-    for (int k = 0; k < 4; k++) r->a[k] = regs[k];
-    copy_words(r->enc, 0x26584, 16);
-    uint32_t tbl = r->enc[1];
-    /* the encode records are in ROM (0xe0edb9f8..): read-only, safe to copy */
-    if (tbl >= 0xe0000000 && tbl < 0xe2000000) memcpy(r->tbl, (void *)tbl, sizeof(r->tbl));
-    else copy_words(r->tbl, tbl, 19);
-    copy_words(r->base, 0x2b084, 40);
-    m2r_done_n++;
+    copy_words(r->d, regs[0], 25);
+    desc_n++;
+}
+
+/* called for every DMA driver call camera-wide while armed (LiveView makes
+ * plenty, maybe from interrupts too): return at once outside the window */
+void d7probe_dma_capture(uint32_t *regs, int id)
+{
+    if (get_ms_clock() > m2r_window_until) return;
+    dma_seen++;
+    int i = dma_n;
+    if (i >= DMA_MAX) return;
+    dma_n = i + 1;
+    struct dma_rec *r = &dma[i];
+    r->t = get_ms_clock(); r->lr = regs[13]; r->id = id;
+    for (int k = 0; k < 4; k++) r->r[k] = regs[k];
+    copy_words(r->blk, regs[1], 12);
 }
 
 /* SD experiment state (defined with the menu below) */
@@ -995,37 +1036,102 @@ static MENU_SELECT_FUNC(align_dump_select)
     task_create("d7align", 0x1e, 0x1000, align_dump_task, 0);
 }
 
-/* Lossless probe: arm installs the two hooks; the next press (after a RAW
- * photo) writes ML/LOGS/LJPROBE.TXT and removes them */
+/* Lossless probe: arming installs the hooks; the next press (after a RAW photo)
+ * writes ML/LOGS/LJPROBE2.TXT and removes them.  ROM pages: 0xe01 (configure,
+ * shared with the bit-depth patch), 0xe02 (JpCore, shared with the SD hooks),
+ * 0xe04 (DMA veneers), 0xe05 (SetMem1ToRaw) - four L2 tables, all there are. */
 static struct function_hook_patch m2r_f_patches[] = {
     {
         .patch_addr = 0xe051b560,   /* SetMem1ToRaw */
         .orig_content = {0x70, 0xb5, 0x0c, 0x46, 0x05, 0x46, 0x02, 0x21},
         .target_function_addr = (uint32_t)d7probe_hook_m2r_set_6D2,
-        .description = "d7probe: log the lossless path parameters"
+        .description = "d7probe: lossless path parameters"
     },
     {
-        .patch_addr = 0xe00d6948,   /* Mem1ToRawCompleteCBR */
-        .orig_content = {0x2d, 0xe9, 0xf0, 0x41, 0x15, 0x46, 0x0e, 0x46},
-        .target_function_addr = (uint32_t)d7probe_hook_m2r_done_6D2,
-        .description = "d7probe: log the lossless path result"
+        .patch_addr = 0xe0247544,   /* JpCore lossless setup */
+        .orig_content = {0x2d, 0xe9, 0xf0, 0x5f, 0x07, 0x46, 0x52, 0x4c},
+        .target_function_addr = (uint32_t)d7probe_hook_jpc0_6D2,
+        .description = "d7probe: JpCore setup"
+    },
+    {
+        .patch_addr = 0xe02475cc,   /* JpCore lossless setup, second variant */
+        .orig_content = {0x2d, 0xe9, 0xf0, 0x5f, 0x07, 0x46, 0x30, 0x4c},
+        .target_function_addr = (uint32_t)d7probe_hook_jpc1_6D2,
+        .description = "d7probe: JpCore setup (2)"
+    },
+    {
+        .patch_addr = 0xe01d7820,   /* LosslessEncodeBase configure */
+        .orig_content = {0xf0, 0xb5, 0x04, 0x46, 0x95, 0x4e, 0x00, 0x20},
+        .target_function_addr = (uint32_t)d7probe_hook_desc_6D2,
+        .description = "d7probe: lossless configure request"
     },
 };
 static struct patch m2r_patches[COUNT(m2r_f_patches)] = {};
 static uint8_t m2r_code_hooks[8 * COUNT(m2r_f_patches)] = {};
 
+/* the DMA veneers' target words (ROM 0xe043b0f8..0xe043b258, ARM "ldr pc, [pc, #-4]") */
+static const uint32_t dma_word[10] = {
+    0xe043b22c, 0xe043b234, 0xe043b23c, 0xe043b244, 0xe043b254,
+    0xe043b25c, 0xe043b0fc, 0xe043b104, 0xe043b114, 0xe043b11c,
+};
+static const uint32_t dma_target[10] = {
+    0x0002f587, 0x0002f2e9, 0x0002e121, 0x0002e18b, 0x0002e27f,
+    0x0002e2ff, 0x0002f38d, 0x0002f34b, 0x0002f5c3, 0x0002f6fd,
+};
+static void (* const dma_hook[10])(void) = {
+    d7probe_hook_dma0_6D2, d7probe_hook_dma1_6D2, d7probe_hook_dma2_6D2, d7probe_hook_dma3_6D2,
+    d7probe_hook_dma4_6D2, d7probe_hook_dma5_6D2, d7probe_hook_dma6_6D2, d7probe_hook_dma7_6D2,
+    d7probe_hook_dma8_6D2, d7probe_hook_dma9_6D2,
+};
+static struct patch dma_patches[10];
+static int dma_armed = 0;
+
 static void m2r_disarm(void)
 {
+    for (int i = 0; i < 10; i++)
+        if (dma_armed & (1 << i)) unpatch_memory(dma_word[i]);
     for (int i = 0; i < COUNT(m2r_f_patches); i++)
         if (m2r_armed & (1 << i)) unpatch_memory(m2r_f_patches[i].patch_addr);
-    m2r_armed = 0;
+    m2r_armed = dma_armed = 0;
+}
+
+static void m2r_arm(void)
+{
+    m2r_set_n = jpc_n = desc_n = dma_n = dma_seen = 0;
+    m2r_window_until = 0;
+    for (int i = 0; i < COUNT(m2r_f_patches); i++)
+    {
+        if (convert_f_patch_to_patch(&m2r_f_patches[i], &m2r_patches[i], &m2r_code_hooks[8 * i]))
+            continue;
+        if (apply_patches(&m2r_patches[i], 1) == 0)
+            m2r_armed |= (1 << i);
+    }
+    for (int i = 0; i < 10; i++)
+    {
+        if (MEM(dma_word[i]) != dma_target[i]) continue;      /* not the ROM this was read from */
+        dma_patches[i] = (struct patch) {
+            .addr = (uint8_t *)dma_word[i], .old_value = dma_target[i],
+            .new_value = (uint32_t)dma_hook[i], .size = 4,
+            .description = "d7probe: DMA driver call log", .is_instruction = 1,
+        };
+        if (apply_patches(&dma_patches[i], 1) == 0)
+            dma_armed |= (1 << i);
+    }
+    /* all or nothing: a partial set would log half a picture */
+    if (m2r_armed != (1 << COUNT(m2r_f_patches)) - 1 || dma_armed != 0x3ff)
+    {
+        int f = m2r_armed, d = dma_armed;
+        m2r_disarm();
+        NotifyBox(4000, "Lossless probe: hooks refused (%x/%x), nothing armed", f, d);
+    }
 }
 
 static void m2r_write(void)
 {
-    FILE * f = FIO_CreateFile("ML/LOGS/LJPROBE.TXT");
+    FILE * f = FIO_CreateFile("ML/LOGS/LJPROBE2.TXT");
     if (!f) return;
-    my_fprintf(f, "d7probe lossless probe - 6D2 1.1.1 - %d SetMem1ToRaw, %d complete\n\n", m2r_set_n, m2r_done_n);
+    my_fprintf(f, "d7probe lossless probe 2 - 6D2 1.1.1 - %d SetMem1ToRaw, %d configure, %d JpCore, %d DMA calls kept of %d\n\n",
+               m2r_set_n, desc_n, jpc_n, dma_n, dma_seen);
     for (int i = 0; i < m2r_set_n; i++)
     {
         struct m2r_set_rec *r = &m2r_set[i];
@@ -1033,7 +1139,6 @@ static void m2r_write(void)
         dump_words(f, "  p   ", r->pw, 12, r->p);
         dump_words(f, "  rsc ", r->rsc, 8, r->pw[0]);
         dump_words(f, "  prm ", r->prm, 5, r->pw[1]);
-        dump_words(f, "  huff", r->huff, 24, r->prm[0]);
         dump_words(f, "  mem ", r->mem, 16, r->prm[2]);
         static const int which[4] = { 2, 3, 5, 7 };
         for (int k = 0; k < 4; k++)
@@ -1043,14 +1148,37 @@ static void m2r_write(void)
             dump_words(f, tag, r->blk[k], 16, r->pw[which[k]]);
         }
     }
-    for (int i = 0; i < m2r_done_n; i++)
+    for (int i = 0; i < desc_n; i++)
     {
-        struct m2r_done_rec *r = &m2r_done[i];
-        my_fprintf(f, "\n[done %d] t=%d lr=%08x args %08x %08x %08x %08x\n", i, r->t, r->lr, r->a[0], r->a[1], r->a[2], r->a[3]);
-        dump_words(f, "  enc ", r->enc, 16, 0x26584);
-        dump_words(f, "  tbl ", r->tbl, 19, r->enc[1]);
-        dump_words(f, "  base", r->base, 40, 0x2b084);
+        my_fprintf(f, "\n[configure %d] t=%d lr=%08x\n", i, desc[i].t, desc[i].lr);
+        dump_words(f, "  req ", desc[i].d, 25, 0);
     }
+    for (int i = 0; i < jpc_n; i++)
+    {
+        struct jpc_rec *r = &jpc[i];
+        my_fprintf(f, "\n[jpcore %d] t=%d lr=%08x variant %d  r0=%08x r1=%08x r2=%08x r3=%08x  stack %08x %08x %08x\n",
+                   i, r->t, r->lr, r->variant, r->r[0], r->r[1], r->r[2], r->r[3], r->stack[0], r->stack[1], r->stack[2]);
+        dump_words(f, "  tbl ", r->table, 24, r->r[2]);
+    }
+    my_fprintf(f, "\n[dma] id = veneer (0 e043b228, 1 b230, 2 b238, 3 b240, 4 b250, 5 b258, 6 b0f8, 7 b100, 8 b110, 9 b118)\n");
+    for (int i = 0; i < dma_n; i++)
+    {
+        struct dma_rec *r = &dma[i];
+        my_fprintf(f, "%6d id%d lr=%08x  %08x %08x %08x %08x  | %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x\n",
+                   r->t, r->id, r->lr, r->r[0], r->r[1], r->r[2], r->r[3],
+                   r->blk[0], r->blk[1], r->blk[2], r->blk[3], r->blk[4], r->blk[5],
+                   r->blk[6], r->blk[7], r->blk[8], r->blk[9], r->blk[10], r->blk[11]);
+    }
+    /* the encoder and base state keep the last encode (size at base + 0x18) */
+    uint32_t enc[16], base[64], rec[19];
+    copy_words(enc, 0x26584, 16);
+    copy_words(base, 0x2b084, 64);
+    if (enc[1] >= 0xe0000000 && enc[1] < 0xe2000000) memcpy(rec, (void *)enc[1], sizeof(rec));
+    else copy_words(rec, enc[1], 19);
+    my_fprintf(f, "\n[state after the last encode]\n");
+    dump_words(f, "  enc ", enc, 16, 0x26584);
+    dump_words(f, "  rec ", rec, 19, enc[1]);
+    dump_words(f, "  base", base, 64, 0x2b084);
     FIO_CloseFile(f);
 }
 
@@ -1058,30 +1186,22 @@ static MENU_SELECT_FUNC(m2r_select)
 {
     if (!m2r_armed)
     {
-        m2r_set_n = m2r_done_n = 0;
-        for (int i = 0; i < COUNT(m2r_f_patches); i++)
-        {
-            if (convert_f_patch_to_patch(&m2r_f_patches[i], &m2r_patches[i], &m2r_code_hooks[8 * i]))
-                continue;
-            if (apply_patches(&m2r_patches[i], 1) == 0)
-                m2r_armed |= (1 << i);
-        }
-        if (m2r_armed != 3) m2r_disarm();       /* both or neither */
+        m2r_arm();
         return;
     }
     m2r_write();
     m2r_disarm();
-    NotifyBox(3000, "LJPROBE.TXT written (%d set, %d done)", m2r_set_n, m2r_done_n);
+    NotifyBox(3000, "LJPROBE2.TXT written (%d set, %d DMA)", m2r_set_n, dma_n);
 }
 
 static MENU_UPDATE_FUNC(m2r_update)
 {
     if (m2r_armed)
-        MENU_SET_VALUE("armed: %d set, %d done", m2r_set_n, m2r_done_n);
+        MENU_SET_VALUE("armed: %d set, %d conf, %d DMA", m2r_set_n, desc_n, dma_n);
     else
         MENU_SET_VALUE("OFF");
-    MENU_SET_HELP(m2r_armed ? "Take one RAW photo, then press again: writes ML/LOGS/LJPROBE.TXT."
-                            : "Press to arm, take one RAW photo, press again. Read-only.");
+    MENU_SET_HELP(m2r_armed ? "Take one RAW photo, then press again: writes ML/LOGS/LJPROBE2.TXT."
+                            : "Press to arm, take one RAW photo, press again. Read-only hooks.");
 }
 
 static struct menu_entry d7probe_menu[] =
