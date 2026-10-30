@@ -1017,8 +1017,8 @@ static MENU_SELECT_FUNC(align_dump_select)
  * card, "encode test" reads it back and runs three encodes of it (whole frame /
  * centred crop with Canon's table, the crop with ML's), and the optional
  * "photo setup" arms the two hooks above for one RAW photo.  The buffers come
- * from the shoot pool (lj_get_mem), held only for the grab or the run
- * (fio_malloc could not get the ~11 MB in movie mode).  No
+ * from the shoot pool (lj_get_mem), held only for the run; the grab writes the
+ * frame straight from Canon's LiveView buffer and needs none.  No
  * resource lock is taken: the ids are not known yet (the setup step logs
  * Canon's), so run it with LiveView off first.  Files in ML/LOGS: LJ3Fn.RAW
  * (frame n), LJ3Rm.TXT and LJ3RmEk.BIN (run m, encode k), LJ3S.TXT (setup). */
@@ -1138,9 +1138,9 @@ static const struct m2r_set_rec * lj_setup(void)
 /* the grabbed frame's geometry; the frame itself is on the card (LJ3Fn.RAW) */
 static struct raw_info lj_ri;
 /* in / out / thumbnail / table, each contiguous and uncacheable, carved out of
- * the shoot pool (mlv_lite's memory: ~138 MB in ~7 chunks in movie mode) or,
- * failing that, one SRM buffer (none is free in movie mode).  Held only for a
- * grab or a run; photos cannot be taken meanwhile. */
+ * the shoot pool or, failing that, one SRM buffer.  Held only for a run;
+ * photos cannot be taken meanwhile.  In movie mode with RAW video on, mlv_lite
+ * holds both, so a run there needs RAW video off. */
 static struct memSuite *lj_suite;
 static int lj_suite_srm;
 static char lj_mem_note[96];
@@ -1204,14 +1204,17 @@ static int lj_get_mem(const struct raw_info *ri)
     lj_thumb_size = MAX(ri->width * ri->height * 6 / 16, 256 * 1024);
     lj_mem_note[0] = 0;
     lj_suite_srm = 0;
-    lj_suite = shoot_malloc_suite(0);
+    /* an exact size, never 0 ("all of it"): with RAW video on in movie mode
+     * mlv_lite holds the whole pool and the SRM buffer, and the autodetect
+     * then asks Canon for 0 bytes - v99's grab reset the camera there */
+    lj_suite = shoot_malloc_suite(lj_in_size + lj_out_size + lj_thumb_size + 2 * 1024 * 1024);
     if (lj_suite && lj_carve("shoot")) return 1;
     lj_put_mem();
     lj_suite_srm = 1;
     lj_suite = srm_malloc_suite(1);
     if (lj_suite && lj_carve("SRM")) return 1;
     lj_put_mem();
-    if (!lj_mem_note[0]) snprintf(lj_mem_note, sizeof(lj_mem_note), "no shoot pool, no SRM buffer");
+    if (!lj_mem_note[0]) snprintf(lj_mem_note, sizeof(lj_mem_note), "none free - RAW video on?");
     return 0;
 }
 
@@ -1310,7 +1313,10 @@ static void lj_log_setup(void)
     }
 }
 
-/* LiveView: copy one raw frame (12 or 14-bit) and size the buffers for it */
+/* LiveView: write one raw frame (12 or 14-bit) to the card, straight from
+ * Canon's buffer - no memory needed, so it works with RAW video on.  Frames
+ * keep arriving during the write, so the file may join two of them; the run
+ * encodes the file, so input and output still match. */
 static void lj_grab(void)
 {
     raw_lv_request();
@@ -1330,19 +1336,12 @@ static void lj_grab(void)
         NotifyBox(4000, "Lossless: LV raw is %d-bit; set RAW video to 14 or 12-bit", bpp);
         return;
     }
-    if (!lj_get_mem(&ri))
-    {
-        raw_lv_release();
-        NotifyBox(6000, "Lossless: no room (%dK): %s", (lj_in_size + lj_out_size + lj_thumb_size) / 1024, lj_mem_note);
-        return;
-    }
-    memcpy(lj_in, ri.buffer, lj_in_size);
-    raw_lv_release();
+    int size = ri.pitch * ri.height;
     char name[32];
     snprintf(name, sizeof(name), "ML/LOGS/LJ3F%d.RAW", lj_frame_no + 1);
-    int written = lj_write_file(name, lj_in, lj_in_size);
-    lj_put_mem();
-    if (written != lj_in_size)
+    int written = lj_write_file(name, UNCACHEABLE(ri.buffer), size);
+    raw_lv_release();
+    if (written != size)
     {
         NotifyBox(3000, "Lossless: could not write %s", name + 8);
         return;
@@ -1464,7 +1463,7 @@ static void lj_run_task(void *unused)
         int had = lj_suite != 0;
         lj_put_mem();
         if (had) NotifyBox(4000, "Lossless: could not read LJ3F%d.RAW", lj_frame_no);
-        else     NotifyBox(6000, "Lossless: no room (%dK): %s", (lj_in_size + lj_out_size + lj_thumb_size) / 1024, lj_mem_note);
+        else     NotifyBox(6000, "Lossless: no memory (%dK): %s", (lj_in_size + lj_out_size + lj_thumb_size) / 1024, lj_mem_note);
         lj_busy = 0;
         return;
     }
