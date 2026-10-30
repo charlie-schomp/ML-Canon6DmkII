@@ -43,12 +43,22 @@ module, off by default), and dual ISO at 10/12/14-bit in crop mode (v87 field ro
 - **Bit depth at power-on**: the saved depth now applies itself when movie LiveView starts.
 
 **Lossless raw video (research, 2026-10-29)** - the CR2 encoder path is mapped (Mem1ToRaw ->
-LosslessEncode.c on JpCore; see the devlog notes in the commit for v95) and the d7probe "Lossless
-probe" confirmed it on hardware: it writes a standard lossless JPEG (4 components, predictor 1,
-Canon's fixed table), the table is copied into RAM before the encoder reads it, and a per-channel
-gain/offset block sits in front of it. Measured on real frames at 2048x856: 10-bit lossless
-~28% of uncompressed with a table built for video (63% with Canon's still table), 14-bit ~47%.
-Next: drive the path from ML on one LiveView frame (own geometry record + table).
+LosslessEncode.c on JpCore; devlog notes in the v95-v97 commits), and two read-only d7probe probes
+confirmed it on hardware:
+- **Output:** a standard lossless JPEG (predictor 1, Canon's fixed table). The table is copied
+  into RAM before the encoder reads it, so ML can pass its own.
+- **Input:** the read DMA takes the packed LiveView layout directly, at 10, 12 or 14-bit, and reads
+  a crop window from the full buffer (x/y offset and pitch).
+- **JPEG core:** takes 12 or 14-bit only. Below 4096 lines it codes 2 components, which is MLV's
+  lossless layout.
+- **Speed:** a 27 MP photo encodes in ~140 ms, so a 2048x856 frame should take ~9 ms.
+- **Size, measured on real frames at 2048x856 with tables built for video:** 14-bit ~47% of
+  uncompressed, 12-bit ~39% (Canon's still table: 53% and 57%). 10-bit would be ~28%, but it has to
+  go in as 12-bit with a 1/4 gain in front, the way DIGIC 5 does it.
+
+v97's "Lossless: encode test" has ML drive the encoder on one LiveView frame, with its own record,
+table and buffers, and logs the resource IDs the photo path locks. Next: take those locks in
+LiveView, then mlv_lite integration.
 
 **Waiting for the Tentacle** (not to hand as of 2026-10-26)
 1. **Jack check:** Tentacle in the mic jack, Input External, Gain Manual low, 30 s take. Is LTC on
