@@ -1014,8 +1014,8 @@ static MENU_SELECT_FUNC(align_dump_select)
  *  - The callback is cbr(ctx, a, b, c); the base state 0x2b084 keeps the
  *    compressed size at +0x18.
  * Three menu entries: "grab LV frame" writes a 12/14-bit LiveView frame to the
- * card, "encode test" reads it back and runs three encodes of it (whole frame /
- * centred crop with Canon's table, the crop with ML's), and the optional
+ * card, "encode test" reads it back and encodes a centred crop of it (Canon's
+ * table with each DEGEEN block tried, then ML's table), and the optional
  * "photo setup" arms the two hooks above for one RAW photo.  The buffers come
  * from the shoot pool (lj_get_mem), held only for the run; the grab writes the
  * frame straight from Canon's LiveView buffer and needs none.  No
@@ -1042,16 +1042,18 @@ static void (*const lj_start)(void) = (void *)0xe01594cf;
 static void (*const lj_stop)(void) = (void *)0xe01594d3;
 static void (*const lj_close)(void) = (void *)0xe0159423;
 
-/* ML's tables: categories 0..15, from real 6D2 footage at that depth (2
- * components, predictor 1), Kraft sum < 1.  Estimated 47% / 39% of the
+/* ML's tables, from real 6D2 footage at that depth (2 components, predictor
+ * 1), Kraft sum < 1, kept to Canon's own limits: categories 0..bpp only and
+ * codes of at most 10 bits (v100's 16-symbol, 14-bit-code tables were refused
+ * at once: callback 0, 1, 0x041c001c).  Estimated 47% / 39% of the
  * uncompressed size at 14 / 12-bit, against 53% / 57% with Canon's. */
 static const uint8_t lj_spec14[0x30] = {
-    0x00, 0x03, 0x00, 0x03, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00,
-    0x03, 0x04, 0x05, 0x01, 0x02, 0x06, 0x00, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+    0x00, 0x03, 0x00, 0x03, 0x00, 0x02, 0x02, 0x02, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x03, 0x04, 0x05, 0x01, 0x02, 0x06, 0x00, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x00,
 };
 static const uint8_t lj_spec12[0x30] = {
-    0x00, 0x03, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x03, 0x00, 0x00,
-    0x01, 0x02, 0x03, 0x00, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+    0x00, 0x03, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x02, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x01, 0x02, 0x03, 0x00, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x00, 0x00, 0x00,
 };
 
 static int lj_armed = 0;                /* bit 0 SetMem1ToRaw, bit 1 LockEngineResources */
@@ -1123,8 +1125,8 @@ static const char * lj_setup_problem(void)
 }
 
 /* without a usable photo, the setup of the probe-2 photo (ISO 800 RAW,
- * 2026-10-29); its DEGEEN words past +0x3c were not logged and stay zero.
- * Either way the black-level words are set from the frame (lj_encode). */
+ * 2026-10-29) for the channels and TWAIN; its DEGEEN words past +0x3c were
+ * not logged, so the run tries guesses for those (lj_degeen_guess). */
 static const struct m2r_set_rec lj_baked = {
     .rsc    = { 0, 0, 0xe0942290, 4, 0, 0x30, 0x11, 0x03 },
     .degeen = { 0xfffff7ff, 0xfffff7ff, 0xfffff7ff, 0xfffff7ff, 1, 1, 1, 1, 0x400, 0x400, 0x400, 0x400 },
@@ -1149,6 +1151,7 @@ static uint32_t *lj_huff, *lj_mem;      /* 0x60-byte RAM table; the memory list 
 static int lj_in_size, lj_out_size, lj_thumb_size;
 static int lj_frame_no = 0, lj_run_no = 0;
 static int lj_hung = 0;                 /* an encode never finished: keep the buffers */
+static int lj_refused = 0;              /* the encoder refused one: restart before the next run */
 static volatile int lj_busy = 0;
 static uint32_t lj_rec[19];
 
@@ -1255,6 +1258,17 @@ static int lj_write_file(const char *name, const void *data, int size)
     FIO_CloseFile(f);
     return done;
 }
+/* the next number after n whose file is not on the card, so the numbering
+ * (which restarts at each power-on) never overwrites an earlier session's */
+static int lj_next_no(const char *fmt, int n)
+{
+    char name[32];
+    uint32_t size;
+    do snprintf(name, sizeof(name), fmt, ++n);
+    while (n < 999 && FIO_GetFileSize(name, &size) == 0);
+    return n;
+}
+
 /* the run's input: the grabbed frame, read back into lj_in */
 static int lj_read_frame(void)
 {
@@ -1337,8 +1351,9 @@ static void lj_grab(void)
         return;
     }
     int size = ri.pitch * ri.height;
+    int no = lj_next_no("ML/LOGS/LJ3F%d.RAW", lj_frame_no);
     char name[32];
-    snprintf(name, sizeof(name), "ML/LOGS/LJ3F%d.RAW", lj_frame_no + 1);
+    snprintf(name, sizeof(name), "ML/LOGS/LJ3F%d.RAW", no);
     int written = lj_write_file(name, UNCACHEABLE(ri.buffer), size);
     raw_lv_release();
     if (written != size)
@@ -1347,7 +1362,7 @@ static void lj_grab(void)
         return;
     }
     lj_ri = ri;
-    lj_frame_no++;
+    lj_frame_no = no;
     NotifyBox(3000, "Frame %d: %dx%d %d-bit, %s", lj_frame_no, ri.width, ri.height, bpp, name + 8);
 }
 
@@ -1373,7 +1388,26 @@ static void lj_make_rec(const struct lj_rect *r, int pitch_px, int code)
 }
 
 /* one encode, in CORE_SetMem1ToRaw's order with ML's record swapped in */
-static int lj_encode(int k, const struct lj_rect *r, const uint8_t *spec, const char *spec_name)
+/* DEGEEN as its block loader (0xe01b285a) reads it, per channel c: word c,
+ * byte 4+c | half 12+c << 16 | word 8+c (gain, 0x400 = 1.0), then half 16+c
+ * (15 bits) | half 20+c << 16.  That last pair was never logged and looks like
+ * a clip range: v100 left it zero and every pixel came out 0.  The guesses: no
+ * offset, unity gain, the range wide open read as (lo, hi) or as (hi, lo). */
+static void lj_degeen_guess(uint32_t *d, int lo, int hi)
+{
+    memset(d, 0, 32 * 4);
+    for (int c = 0; c < 4; c++)
+    {
+        d[4 + c] = 1; d[8 + c] = 0x400;
+        d[16 + c] = lo; d[20 + c] = hi;
+    }
+}
+
+static int lj_size;     /* the last encode's compressed size */
+
+/* 1 done, 0 timed out (the encoder may still run), -1 refused (callback b/c) */
+static int lj_encode(int k, const struct lj_rect *r, const uint8_t *spec, const char *spec_name,
+                     const uint32_t *deg, const char *deg_name)
 {
     int bpp = lj_ri.bits_per_pixel;
     int pitch_px = lj_ri.pitch * 8 / bpp;
@@ -1387,14 +1421,14 @@ static int lj_encode(int k, const struct lj_rect *r, const uint8_t *spec, const 
     lj_mem[0] = (uint32_t)UNCACHEABLE(lj_out);
     lj_mem[1] = lj_out_size;
 
-    /* the photo's DEGEEN / TWAIN with the frame's black: Canon sets the
-     * offset to -(black + 1) and TWAIN's black words to black + 1 */
+    /* TWAIN (the thumbnail's) from the photo, with the frame's black: Canon
+     * sets its black words to black + 1 */
     const struct m2r_set_rec *s = lj_setup();
     int black = lj_ri.black_level > 0 ? lj_ri.black_level : 2048 >> (14 - bpp);
     static uint32_t degeen[32], twain[16];
-    memcpy(degeen, s->degeen, sizeof(degeen));
+    memcpy(degeen, deg, sizeof(degeen));
     memcpy(twain, s->twain, sizeof(twain));
-    for (int c = 0; c < 4; c++) { degeen[c] = -(black + 1); twain[8 + c] = black + 1; }
+    for (int c = 0; c < 4; c++) twain[8 + c] = black + 1;
     twain[13] = black + 1;
 
     struct lj_rsc rsc = { 0, 0, s->rsc[2], s->rsc[3], 0, s->rsc[5], s->rsc[6], s->rsc[7] };
@@ -1403,8 +1437,8 @@ static int lj_encode(int k, const struct lj_rect *r, const uint8_t *spec, const 
         (uint32_t)UNCACHEABLE(lj_in), (uint32_t)UNCACHEABLE(lj_thumb),
     };
 
-    lj_printf("\n[encode %d] %s table, rect x=%d y=%d %dx%d, pitch %d px, %d-bit, LiveView %s\n",
-              k, spec_name, r->x, r->y, r->w, r->h, pitch_px, bpp, lv ? "on" : "off");
+    lj_printf("\n[encode %d] %s table, DEGEEN %s, rect x=%d y=%d %dx%d, pitch %d px, %d-bit, LiveView %s\n",
+              k, spec_name, deg_name, r->x, r->y, r->w, r->h, pitch_px, bpp, lv ? "on" : "off");
     lj_words("  rec   ", lj_rec, 19);
     lj_words("  degeen", degeen, 24);
     lj_words("  twain ", twain, 12);
@@ -1412,6 +1446,7 @@ static int lj_encode(int k, const struct lj_rect *r, const uint8_t *spec, const 
     lj_flush_txt();
 
     lj_cb_done = 0;
+    lj_cb[0] = lj_cb[1] = lj_cb[2] = lj_cb[3] = 0;
     lj_open(&rsc);
     uint32_t canon_rec = MEM(LJ_STATE + 4);
     MEM(LJ_STATE + 4) = (uint32_t)lj_rec;
@@ -1440,9 +1475,13 @@ static int lj_encode(int k, const struct lj_rect *r, const uint8_t *spec, const 
     int tscan = lj_thumb_size;
     while (tscan > 0 && lj_thumb[tscan - 1] == 0x55) tscan--;
 
-    lj_printf("  %s after %d us; callback %08x %08x %08x %08x\n", done ? "DONE" : "TIMED OUT", us, lj_cb[0], lj_cb[1], lj_cb[2], lj_cb[3]);
-    lj_printf("  size (base+18) %d = %d%% of %d; written up to %d; thumbnail written up to %d\n",
+    int refused = done && (lj_cb[2] || lj_cb[3]);
+    lj_printf("  %s after %d us; callback %08x %08x %08x %08x\n", refused ? "REFUSED" : done ? "DONE" : "TIMED OUT",
+              us, lj_cb[0], lj_cb[1], lj_cb[2], lj_cb[3]);
+    /* no "%%": Canon's snprintf takes an argument for it */
+    lj_printf("  size (base+18) %d = %d per cent of %d; written up to %d; thumbnail written up to %d\n",
               size, (int)((int64_t)size * 100 / ((int64_t)r->w * r->h * bpp / 8)), r->w * r->h * bpp / 8, scan, tscan);
+    lj_size = done && !refused ? size : 0;
     lj_words("  base  ", base, 64);
     lj_words("  head  ", (uint32_t *)lj_out, 16);
     if (scan >= 64) lj_words("  tail  ", (uint32_t *)(lj_out + ((scan - 64) & ~3)), 16);
@@ -1453,7 +1492,7 @@ static int lj_encode(int k, const struct lj_rect *r, const uint8_t *spec, const 
     int keep = (size > 0 && size <= lj_out_size) ? MAX(size, scan) : scan;
     lj_write_file(name, lj_out, MIN(MAX(keep, 4096), lj_out_size));
     lj_flush_txt();
-    return done;
+    return refused ? -1 : done;
 }
 
 static void lj_run_task(void *unused)
@@ -1467,7 +1506,7 @@ static void lj_run_task(void *unused)
         lj_busy = 0;
         return;
     }
-    lj_run_no++;
+    lj_run_no = lj_next_no("ML/LOGS/LJ3R%d.TXT", lj_run_no);
     lj_txt_n = 0;
     int bpp = lj_ri.bits_per_pixel;
     lj_printf("d7probe lossless encode test (probe 3) - 6D2 1.1.1 - run %d on frame %d, LiveView %s, movie mode %d, zoom %d\n",
@@ -1480,7 +1519,6 @@ static void lj_run_task(void *unused)
               (uint32_t)lj_in, lj_in_size, (uint32_t)lj_out, lj_out_size, (uint32_t)lj_thumb, lj_thumb_size, (uint32_t)lj_huff, (uint32_t)lj_mem);
     lj_log_setup();
 
-    struct lj_rect full = { 0, 0, lj_ri.width & ~15, lj_ri.height & ~1 };
     struct lj_rect crop = { 0, 0, 1920, 800 };
     if (lj_ri.width < crop.w + 64 || lj_ri.height < crop.h + 32)
     {
@@ -1490,17 +1528,46 @@ static void lj_run_task(void *unused)
     crop.x = ((lj_ri.width - crop.w) / 2) & ~63;
     crop.y = ((lj_ri.height - crop.h) / 2) & ~15;
 
-    int ok = lj_encode(1, &full, (const uint8_t *)LJ_CANON_SPEC, "Canon's");
-    if (ok) ok = lj_encode(2, &crop, (const uint8_t *)LJ_CANON_SPEC, "Canon's");
-    if (ok) ok = lj_encode(3, &crop, bpp == 14 ? lj_spec14 : lj_spec12, "ML's");
-    if (!ok)
+    /* the two DEGEEN guesses, then the photo's block (if one was captured)
+     * with Canon's offset -(black + 1); a block that zeroes the frame
+     * compresses to 5 bits a pixel with Canon's table, so ML's table takes
+     * the one with the largest output */
+    const uint8_t *canon = (const uint8_t *)LJ_CANON_SPEC;
+    static uint32_t deg[3][32];
+    static const char *deg_name[3] = { "lo 0 hi ffff", "lo 7fff hi 0", "the photo's" };
+    lj_degeen_guess(deg[0], 0, 0xffff);
+    lj_degeen_guess(deg[1], 0x7fff, 0);
+    int n_deg = 2;
+    if (!lj_setup_problem())
+    {
+        int black = lj_ri.black_level > 0 ? lj_ri.black_level : 2048 >> (14 - bpp);
+        memcpy(deg[2], m2r_set.degeen, sizeof(deg[2]));
+        for (int c = 0; c < 4; c++) deg[2][c] = -(black + 1);
+        n_deg = 3;
+    }
+    int ok = 1, best = 0, best_size = -1;
+    for (int i = 0; i < n_deg && ok > 0; i++)
+    {
+        ok = lj_encode(1 + i, &crop, canon, "Canon's", deg[i], deg_name[i]);
+        if (ok > 0 && lj_size > best_size) { best = i; best_size = lj_size; }
+    }
+    if (ok > 0)
+        ok = lj_encode(1 + n_deg, &crop, bpp == 14 ? lj_spec14 : lj_spec12, "ML's", deg[best], deg_name[best]);
+    if (ok == 0)
     {
         lj_hung = 1;
         lj_printf("\nan encode never finished: buffers kept, restart the camera before the next run\n");
     }
+    else if (ok < 0)
+    {
+        lj_refused = 1;
+        lj_printf("\nthe encoder refused an encode: restart the camera before the next run\n");
+    }
     lj_flush_txt();
     lj_put_mem();
-    NotifyBox(5000, ok ? "Run %d done: ML/LOGS/LJ3R%d.*" : "Run %d: encode TIMED OUT - restart the camera", lj_run_no, lj_run_no);
+    if (ok > 0)       NotifyBox(5000, "Run %d done: ML/LOGS/LJ3R%d.*", lj_run_no, lj_run_no);
+    else if (ok == 0) NotifyBox(5000, "Run %d: encode TIMED OUT - restart the camera", lj_run_no);
+    else              NotifyBox(5000, "Run %d: encode REFUSED - restart the camera", lj_run_no);
     lj_busy = 0;
 }
 
@@ -1573,7 +1640,7 @@ static MENU_UPDATE_FUNC(lj_grab_update)
 static MENU_SELECT_FUNC(lj_run_select)
 {
     if (lj_busy) return;
-    if (lj_hung) { NotifyBox(3000, "Restart the camera first"); return; }
+    if (lj_hung || lj_refused) { NotifyBox(3000, "Restart the camera first"); return; }
     if (!lj_frame_no) { NotifyBox(3000, "Grab a LiveView frame first"); return; }
     if (lj_armed) lj_disarm();
     lj_busy = 1;
@@ -1584,6 +1651,8 @@ static MENU_UPDATE_FUNC(lj_run_update)
 {
     if (lj_hung)
         MENU_SET_VALUE("timed out: restart");
+    else if (lj_refused)
+        MENU_SET_VALUE("refused: restart");
     else if (lj_busy)
         MENU_SET_VALUE("working...");
     else
@@ -1619,7 +1688,7 @@ static struct menu_entry d7probe_menu[] =
                 .select = lj_run_select,
                 .update = lj_run_update,
                 .icon_type = IT_ACTION,
-                .help2  = "Each run: whole frame + crop with Canon's table, crop with ML's.",
+                .help2  = "Each run: a 1920x800 crop, Canon's table per DEGEEN guess, then ML's.",
             },
             {
                 .name   = "Lossless: photo setup",
