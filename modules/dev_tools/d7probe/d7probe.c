@@ -1411,32 +1411,49 @@ static void lj_degeen_identity(uint32_t *d)
  * stopped 3 ms after the size.  Returns 1 done, 0 timed out, -1 refused
  * (callback b/c).  quiet: one log line, no buffer fill, no file. */
 
-/* LiveView probes.  v103: LiveView's colour broke (chroma 20 -> 128, the
- * green) after the first round of every probe - even open / configure /
- * close with no start.  open() applies rsc's share-memory table, (register,
- * value) pairs routing internal memory to the encoder (0xd0003200 / 3204 /
- * 3238 / 323c on the photo path), and nothing routes it back.
- *  A: put LiveView's values back after each close;
- *  B: hand open() a table of LiveView's current values (nothing re-routed);
- *  C: A, 48 rounds at 24 fps, LiveView checked during the burst. */
+/* LiveView probes.  v103 / v104: LiveView's colour broke (chroma 20 -> 128,
+ * the green) after the first round of every probe - even open / configure /
+ * close with no start - and stayed broken until LiveView restarted.  The
+ * share-memory registers read back 0 (write-only), so v104's restore wrote
+ * zeros.  The unit setters write each value twice: to the register and to a
+ * RAM copy at MEM(0x1faa4) + the register's offset from 0xd0000000
+ * (0x021d0800 on the camera) - by the look of it LiveView's register image,
+ * re-applied every frame, which would keep the encoder's values in force.
+ * Each round snapshots that copy (512 KB) before open and puts back every
+ * word the encode changed:
+ *  A: the RAM copy only;
+ *  B: the RAM copy and the same offsets of the live registers;
+ *  C: B, 48 rounds at 24 fps, LiveView checked during the burst. */
+#define LJ_SHADOW_SIZE  0x80000
 static int lj_probe = 0;
-static const char *lj_probe_name[3] = { "A: restore share mem", "B: keep LV's share mem", "C: A at 24 fps" };
-static uint32_t lj_sm[8][2];
-static int lj_sm_n;
+static const char *lj_probe_name[3] = { "A: restore RAM copy", "B: restore copy + regs", "C: B at 24 fps" };
+static uint32_t *lj_shadow_save;
+static uint32_t lj_shadow;
 
-static void lj_sm_read(const struct m2r_set_rec *s)
+static void lj_shadow_snap(void)
 {
-    lj_sm_n = MIN((int)s->rsc[3], COUNT(lj_sm));
-    for (int i = 0; i < lj_sm_n; i++)
-    {
-        lj_sm[i][0] = MEM(s->rsc[2] + 8 * i);
-        lj_sm[i][1] = MEM(lj_sm[i][0]);
-    }
+    lj_shadow = MEM(0x1faa4);
+    if (lj_shadow_save && lj_shadow >= 0x100000 && lj_shadow < 0x40000000)
+        memcpy(lj_shadow_save, (void *)lj_shadow, LJ_SHADOW_SIZE);
 }
 
-static void lj_sm_restore(void)
+/* put back what changed since the snapshot; the first round logs it */
+static void lj_shadow_restore(int k)
 {
-    for (int i = 0; i < lj_sm_n; i++) MEM(lj_sm[i][0]) = lj_sm[i][1];
+    if (!lj_shadow_save || lj_shadow < 0x100000 || lj_shadow >= 0x40000000) return;
+    uint32_t *now = (uint32_t *)lj_shadow;
+    int n = 0;
+    for (int i = 0; i < LJ_SHADOW_SIZE / 4; i++)
+    {
+        if (now[i] == lj_shadow_save[i]) continue;
+        if (k == 1 && n < 48)
+            lj_printf("    RAM copy +%05x (%08x): was %08x now %08x\n", i * 4, 0xd0000000 + i * 4, lj_shadow_save[i], now[i]);
+        n++;
+        now[i] = lj_shadow_save[i];
+        if (lj_probe) MEM(0xd0000000 + i * 4) = lj_shadow_save[i];
+    }
+    if (n) sync_caches();   /* the copy is cacheable; LiveView may read it from RAM */
+    lj_printf("    round %d: %d words of the RAM copy put back%s\n", k, n, lj_probe ? ", and the registers" : "");
 }
 
 static int lj_encode(int k, const struct lj_rect *r, const uint8_t *spec, const char *spec_name, int quiet)
@@ -1467,9 +1484,6 @@ static int lj_encode(int k, const struct lj_rect *r, const uint8_t *spec, const 
     twain[13] = black + 1;
 
     struct lj_rsc rsc = { 0, 0, s->rsc[2], s->rsc[3], 0, s->rsc[5], s->rsc[6], s->rsc[7] };
-    lj_sm_read(s);
-    if (lj_probe == 1)
-        rsc.sharemem_tbl = (uint32_t)lj_sm;
     struct lj_prm prm = {
         (uint32_t)UNCACHEABLE(lj_huff), 1, (uint32_t)lj_mem,
         (uint32_t)UNCACHEABLE(lj_in), (uint32_t)UNCACHEABLE(lj_thumb),
@@ -1482,15 +1496,13 @@ static int lj_encode(int k, const struct lj_rect *r, const uint8_t *spec, const 
         lj_words("  rec   ", lj_rec, 19);
         lj_words("  degeen", degeen, 24);
         lj_words("  twain ", twain, 12);
-        for (int i = 0; i < lj_sm_n; i++)
-            lj_printf("  share mem %08x: LiveView's %08x, the table's %08x\n", lj_sm[i][0], lj_sm[i][1],
-                      MEM(s->rsc[2] + 8 * i + 4));
         lj_printf("  starting...\n");
         lj_flush_txt();
     }
 
     lj_cb_done = 0;
     lj_cb[0] = lj_cb[1] = lj_cb[2] = lj_cb[3] = 0;
+    lj_shadow_snap();
     lj_open(&rsc);
     uint32_t canon_rec = MEM(LJ_STATE + 4);
     MEM(LJ_STATE + 4) = (uint32_t)lj_rec;
@@ -1518,8 +1530,7 @@ static int lj_encode(int k, const struct lj_rect *r, const uint8_t *spec, const 
     lj_unset_cbr();
     lj_close();
     MEM(LJ_STATE + 4) = canon_rec;
-    if (lj_probe != 1)
-        lj_sm_restore();
+    lj_shadow_restore(k);
 
     uint32_t base[64];
     copy_words(base, LJ_BASE, 64);
@@ -1667,6 +1678,8 @@ static void lj_run_task(void *unused)
     const uint8_t *spec = bpp == 14 ? lj_spec14 : lj_spec12;
     int rounds = lj_probe == 2 ? 48 : 5;
     lj_printf("\n[LV probe %s]\n", lj_probe_name[lj_probe]);
+    lj_shadow_save = fio_malloc(LJ_SHADOW_SIZE);
+    lj_printf("[RAM copy] at %08x (0x1faa4), snapshot buffer %08x\n", MEM(0x1faa4), (uint32_t)lj_shadow_save);
     lj_regs_init();
     lj_regs_save();
     lj_lv_chroma0 = -1;
@@ -1692,6 +1705,8 @@ static void lj_run_task(void *unused)
     msleep(1000);
     lj_regs_diff("1 s later", 0);
     lj_lv_health("1 s later");
+    if (lj_shadow_save) fio_free(lj_shadow_save);
+    lj_shadow_save = 0;
     if (ok == 0)
     {
         lj_hung = 1;
@@ -1833,9 +1848,9 @@ static struct menu_entry d7probe_menu[] =
                 .name   = "Lossless: LV probe",
                 .priv   = &lj_probe,
                 .max    = 2,
-                .choices = CHOICES("A: restore share mem", "B: keep LV's share mem", "C: A at 24 fps"),
-                .help   = "How the encode test treats LiveView's share-memory routing.",
-                .help2  = "A: put it back after each encode. B: never change it. C: A, 48 at 24 fps.",
+                .choices = CHOICES("A: restore RAM copy", "B: restore copy + regs", "C: B at 24 fps"),
+                .help   = "What the encode test puts back of LiveView's register image after each encode.",
+                .help2  = "A: the RAM copy. B: the copy and the registers. C: B, 48 at 24 fps.",
             },
             {
                 .name   = "Lossless: photo setup",
