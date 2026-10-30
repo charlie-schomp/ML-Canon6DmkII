@@ -1014,8 +1014,8 @@ static MENU_SELECT_FUNC(align_dump_select)
  *  - The callback is cbr(ctx, a, b, c); the base state 0x2b084 keeps the
  *    compressed size at +0x18.
  * Three menu entries: "grab LV frame" writes a 12/14-bit LiveView frame to the
- * card, "encode test" reads it back and encodes a centred crop of it (Canon's
- * table with each DEGEEN block tried, then ML's table), and the optional
+ * card, "encode test" reads it back and encodes a centred crop of it with ML's
+ * table, 22 times in a row (the first and last written), and the optional
  * "photo setup" arms the two hooks above for one RAW photo.  The buffers come
  * from the shoot pool (lj_get_mem), held only for the run; the grab writes the
  * frame straight from Canon's LiveView buffer and needs none.  No
@@ -1125,8 +1125,8 @@ static const char * lj_setup_problem(void)
 }
 
 /* without a usable photo, the setup of the probe-2 photo (ISO 800 RAW,
- * 2026-10-29) for the channels and TWAIN; its DEGEEN words past +0x3c were
- * not logged, so the run tries guesses for those (lj_degeen_guess). */
+ * 2026-10-29) for the channels and TWAIN; DEGEEN is ML's own either way
+ * (lj_degeen_identity). */
 static const struct m2r_set_rec lj_baked = {
     .rsc    = { 0, 0, 0xe0942290, 4, 0, 0x30, 0x11, 0x03 },
     .degeen = { 0xfffff7ff, 0xfffff7ff, 0xfffff7ff, 0xfffff7ff, 1, 1, 1, 1, 0x400, 0x400, 0x400, 0x400 },
@@ -1387,34 +1387,40 @@ static void lj_make_rec(const struct lj_rect *r, int pitch_px, int code)
     lj_rec[18] = 4;
 }
 
-/* one encode, in CORE_SetMem1ToRaw's order with ML's record swapped in */
-/* DEGEEN as its block loader (0xe01b285a) reads it, per channel c: word c,
- * byte 4+c | half 12+c << 16 | word 8+c (gain, 0x400 = 1.0), then half 16+c
- * (15 bits) | half 20+c << 16.  That last pair was never logged and looks like
- * a clip range: v100 left it zero and every pixel came out 0.  The guesses: no
- * offset, unity gain, the range wide open read as (lo, hi) or as (hi, lo). */
-static void lj_degeen_guess(uint32_t *d, int lo, int hi)
+/* DEGEEN, the block in front of the encoder, as its loader (0xe01b285a) reads
+ * it, per channel c: word c (offset), byte 4+c | half 12+c << 16 | word 8+c
+ * (gain, 0x400 = 1.0), then half 16+c (15 bits) | half 20+c << 16.  On the
+ * camera (v101) the last pair acts as (add-back, upper clip): a zero clip
+ * zeroes the frame, and the photo's block (offset -(black + 1), add-back
+ * 0x801, clip 0x3fff) moved every pixel by one.  No offset, no add-back, the
+ * clip wide open and unity gain decode bit-exact. */
+static void lj_degeen_identity(uint32_t *d)
 {
     memset(d, 0, 32 * 4);
     for (int c = 0; c < 4; c++)
     {
         d[4 + c] = 1; d[8 + c] = 0x400;
-        d[16 + c] = lo; d[20 + c] = hi;
+        d[20 + c] = 0xffff;
     }
 }
 
-static int lj_size;     /* the last encode's compressed size */
-
-/* 1 done, 0 timed out (the encoder may still run), -1 refused (callback b/c) */
-static int lj_encode(int k, const struct lj_rect *r, const uint8_t *spec, const char *spec_name,
-                     const uint32_t *deg, const char *deg_name)
+/* one encode, in CORE_SetMem1ToRaw's order with ML's record swapped in.
+ * Done is the callback or, without it, the compressed size landing in base
+ * +0x18 (set to -1 before the start): in LiveView the picture completes but
+ * the thumbnail stalls and the callback never comes (v101), so the encoder is
+ * stopped 50 ms after the size.  Returns 1 done, 0 timed out, -1 refused
+ * (callback b/c).  quiet: one log line, no buffer fill, no file. */
+static int lj_encode(int k, const struct lj_rect *r, const uint8_t *spec, const char *spec_name, int quiet)
 {
     int bpp = lj_ri.bits_per_pixel;
     int pitch_px = lj_ri.pitch * 8 / bpp;
     lj_make_rec(r, pitch_px, bpp == 14 ? 2 : 1);
 
-    memset(lj_out, 0x55, lj_out_size);
-    memset(lj_thumb, 0x55, lj_thumb_size);
+    if (!quiet)
+    {
+        memset(lj_out, 0x55, lj_out_size);
+        memset(lj_thumb, 0x55, lj_thumb_size);
+    }
     static uint8_t spec2[0x60];
     memcpy(spec2, spec, 0x30);
     memcpy(spec2 + 0x30, spec, 0x30);
@@ -1426,7 +1432,7 @@ static int lj_encode(int k, const struct lj_rect *r, const uint8_t *spec, const 
     const struct m2r_set_rec *s = lj_setup();
     int black = lj_ri.black_level > 0 ? lj_ri.black_level : 2048 >> (14 - bpp);
     static uint32_t degeen[32], twain[16];
-    memcpy(degeen, deg, sizeof(degeen));
+    lj_degeen_identity(degeen);
     memcpy(twain, s->twain, sizeof(twain));
     for (int c = 0; c < 4; c++) twain[8 + c] = black + 1;
     twain[13] = black + 1;
@@ -1437,13 +1443,16 @@ static int lj_encode(int k, const struct lj_rect *r, const uint8_t *spec, const 
         (uint32_t)UNCACHEABLE(lj_in), (uint32_t)UNCACHEABLE(lj_thumb),
     };
 
-    lj_printf("\n[encode %d] %s table, DEGEEN %s, rect x=%d y=%d %dx%d, pitch %d px, %d-bit, LiveView %s\n",
-              k, spec_name, deg_name, r->x, r->y, r->w, r->h, pitch_px, bpp, lv ? "on" : "off");
-    lj_words("  rec   ", lj_rec, 19);
-    lj_words("  degeen", degeen, 24);
-    lj_words("  twain ", twain, 12);
-    lj_printf("  starting...\n");
-    lj_flush_txt();
+    if (!quiet)
+    {
+        lj_printf("\n[encode %d] %s table, rect x=%d y=%d %dx%d, pitch %d px, %d-bit, LiveView %s\n",
+                  k, spec_name, r->x, r->y, r->w, r->h, pitch_px, bpp, lv ? "on" : "off");
+        lj_words("  rec   ", lj_rec, 19);
+        lj_words("  degeen", degeen, 24);
+        lj_words("  twain ", twain, 12);
+        lj_printf("  starting...\n");
+        lj_flush_txt();
+    }
 
     lj_cb_done = 0;
     lj_cb[0] = lj_cb[1] = lj_cb[2] = lj_cb[3] = 0;
@@ -1455,13 +1464,21 @@ static int lj_encode(int k, const struct lj_rect *r, const uint8_t *spec, const 
     lj_twain(twain, s->pw[5]);
     lj_set_huff(lj_huff, spec2);
     lj_set_param(&prm);
-    uint32_t us0 = (uint32_t)get_us_clock();
+    MEM(LJ_BASE + 0x18) = 0xffffffff;
+    uint32_t us0 = (uint32_t)get_us_clock(), us_size = 0;
     int t0 = get_ms_clock();
     lj_start();
     while (!lj_cb_done && get_ms_clock() - t0 < 2000)
+    {
+        if (!us_size && MEM(LJ_BASE + 0x18) != 0xffffffff)
+            us_size = MAX((uint32_t)get_us_clock() - us0, 1);
+        if (us_size && get_ms_clock() - t0 > (int)(us_size / 1000) + 50)
+            break;
         msleep(1);
-    int done = lj_cb_done;
-    uint32_t us = done ? lj_cb_us - us0 : 0;
+    }
+    int cb = lj_cb_done;
+    int done = cb || us_size;
+    uint32_t us = cb ? lj_cb_us - us0 : us_size;
     lj_stop();
     lj_unset_cbr();
     lj_close();
@@ -1470,18 +1487,23 @@ static int lj_encode(int k, const struct lj_rect *r, const uint8_t *spec, const 
     uint32_t base[64];
     copy_words(base, LJ_BASE, 64);
     int size = (int)base[6];
+    int refused = cb && (lj_cb[2] || lj_cb[3]);
+    const char *how = refused ? "REFUSED" : cb ? "DONE" : us_size ? "DONE (size, no callback)" : "TIMED OUT";
+    if (quiet)
+    {
+        lj_printf("  %2d: %s after %d us, size %d\n", k, how, us, size);
+        return refused ? -1 : done;
+    }
+
     int scan = lj_out_size;
     while (scan > 0 && lj_out[scan - 1] == 0x55) scan--;
     int tscan = lj_thumb_size;
     while (tscan > 0 && lj_thumb[tscan - 1] == 0x55) tscan--;
 
-    int refused = done && (lj_cb[2] || lj_cb[3]);
-    lj_printf("  %s after %d us; callback %08x %08x %08x %08x\n", refused ? "REFUSED" : done ? "DONE" : "TIMED OUT",
-              us, lj_cb[0], lj_cb[1], lj_cb[2], lj_cb[3]);
+    lj_printf("  %s after %d us; callback %08x %08x %08x %08x\n", how, us, lj_cb[0], lj_cb[1], lj_cb[2], lj_cb[3]);
     /* no "%%": Canon's snprintf takes an argument for it */
     lj_printf("  size (base+18) %d = %d per cent of %d; written up to %d; thumbnail written up to %d\n",
               size, (int)((int64_t)size * 100 / ((int64_t)r->w * r->h * bpp / 8)), r->w * r->h * bpp / 8, scan, tscan);
-    lj_size = done && !refused ? size : 0;
     lj_words("  base  ", base, 64);
     lj_words("  head  ", (uint32_t *)lj_out, 16);
     if (scan >= 64) lj_words("  tail  ", (uint32_t *)(lj_out + ((scan - 64) & ~3)), 16);
@@ -1528,31 +1550,16 @@ static void lj_run_task(void *unused)
     crop.x = ((lj_ri.width - crop.w) / 2) & ~63;
     crop.y = ((lj_ri.height - crop.h) / 2) & ~15;
 
-    /* the two DEGEEN guesses, then the photo's block (if one was captured)
-     * with Canon's offset -(black + 1); a block that zeroes the frame
-     * compresses to 5 bits a pixel with Canon's table, so ML's table takes
-     * the one with the largest output */
-    const uint8_t *canon = (const uint8_t *)LJ_CANON_SPEC;
-    static uint32_t deg[3][32];
-    static const char *deg_name[3] = { "lo 0 hi ffff", "lo 7fff hi 0", "the photo's" };
-    lj_degeen_guess(deg[0], 0, 0xffff);
-    lj_degeen_guess(deg[1], 0x7fff, 0);
-    int n_deg = 2;
-    if (!lj_setup_problem())
-    {
-        int black = lj_ri.black_level > 0 ? lj_ri.black_level : 2048 >> (14 - bpp);
-        memcpy(deg[2], m2r_set.degeen, sizeof(deg[2]));
-        for (int c = 0; c < 4; c++) deg[2][c] = -(black + 1);
-        n_deg = 3;
-    }
-    int ok = 1, best = 0, best_size = -1;
-    for (int i = 0; i < n_deg && ok > 0; i++)
-    {
-        ok = lj_encode(1 + i, &crop, canon, "Canon's", deg[i], deg_name[i]);
-        if (ok > 0 && lj_size > best_size) { best = i; best_size = lj_size; }
-    }
+    /* the crop with ML's table, written; 20 more back to back (a second of
+     * video) to see the encoder stop and restart cleanly, then one more
+     * written - both files should decode to the same crop */
+    const uint8_t *spec = bpp == 14 ? lj_spec14 : lj_spec12;
+    int ok = lj_encode(1, &crop, spec, "ML's", 0);
+    if (ok > 0) lj_printf("\n[burst] 20 more of the same crop, not written:\n");
+    for (int i = 0; i < 20 && ok > 0; i++)
+        ok = lj_encode(2 + i, &crop, spec, "ML's", 1);
     if (ok > 0)
-        ok = lj_encode(1 + n_deg, &crop, bpp == 14 ? lj_spec14 : lj_spec12, "ML's", deg[best], deg_name[best]);
+        ok = lj_encode(22, &crop, spec, "ML's", 0);
     if (ok == 0)
     {
         lj_hung = 1;
@@ -1688,7 +1695,7 @@ static struct menu_entry d7probe_menu[] =
                 .select = lj_run_select,
                 .update = lj_run_update,
                 .icon_type = IT_ACTION,
-                .help2  = "Each run: a 1920x800 crop, Canon's table per DEGEEN guess, then ML's.",
+                .help2  = "Each run: a 1920x800 crop with ML's table, 22 times in a row.",
             },
             {
                 .name   = "Lossless: photo setup",
