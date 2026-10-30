@@ -38,6 +38,7 @@
 #include <fps.h>
 #include <zebra.h>
 #include <shoot.h>
+#include <exmem.h>
 #include "d7probe.h"
 
 extern WEAK_FUNC(ret_1) int convert_f_patch_to_patch(struct function_hook_patch *f_patch_in,
@@ -1012,13 +1013,15 @@ static MENU_SELECT_FUNC(align_dump_select)
  *    values[16], 16 zero bytes) copied from a spec (Canon's: ROM 0xe091b39c).
  *  - The callback is cbr(ctx, a, b, c); the base state 0x2b084 keeps the
  *    compressed size at +0x18.
- * Three menu entries: "photo setup" arms the two hooks above for one RAW photo,
- * "grab LV frame" copies a 12/14-bit LiveView frame, "encode test" runs three
- * encodes of that frame (whole frame / centred crop with Canon's table, the
- * crop with ML's) and writes them out.  No resource lock is taken: the ids are
- * not known yet (the setup step logs Canon's), so run it with LiveView off
- * first.  Files in ML/LOGS: LJ3Fn.RAW (frame n), LJ3Rm.TXT and LJ3RmEk.BIN
- * (run m, encode k). */
+ * Three menu entries: "grab LV frame" writes a 12/14-bit LiveView frame to the
+ * card, "encode test" reads it back and runs three encodes of it (whole frame /
+ * centred crop with Canon's table, the crop with ML's), and the optional
+ * "photo setup" arms the two hooks above for one RAW photo.  The buffers come
+ * from one SRM buffer, held only for the grab or the run (fio_malloc could not
+ * get the ~11 MB in movie mode, and photos are blocked while it is held).  No
+ * resource lock is taken: the ids are not known yet (the setup step logs
+ * Canon's), so run it with LiveView off first.  Files in ML/LOGS: LJ3Fn.RAW
+ * (frame n), LJ3Rm.TXT and LJ3RmEk.BIN (run m, encode k), LJ3S.TXT (setup). */
 struct lj_rsc { uint32_t rsc_ary, rsc_num, sharemem_tbl, sharemem_num, enc_mode, rd_ch, wr_raw_ch, wr_thumb_ch; };
 struct lj_prm { uint32_t huff, mem_num, mem_list, rd_addr, thumb_addr; };
 struct lj_rect { int x, y, w, h; };
@@ -1076,21 +1079,32 @@ static void lj_disarm(void)
     lj_armed = 0;
 }
 
+static int lj_arm_rc[COUNT(lj_f_patches)];
+static volatile int lj_watching = 0;
+static void lj_watch_task(void *unused);
+
+/* the SetMem1ToRaw hook is the one that matters; the lock hook only adds the
+ * resource ids, so a refusal of it is shown but does not stop the setup */
 static void lj_arm(void)
 {
     m2r_set_n = 0; lock_n = 0; lock_until = 0;
     for (int i = 0; i < COUNT(lj_f_patches); i++)
     {
-        if (convert_f_patch_to_patch(&lj_f_patches[i], &lj_patches[i], &lj_code_hooks[8 * i]))
-            continue;
-        if (apply_patches(&lj_patches[i], 1) == 0)
-            lj_armed |= (1 << i);
+        int rc = convert_f_patch_to_patch(&lj_f_patches[i], &lj_patches[i], &lj_code_hooks[8 * i]);
+        if (!rc) rc = apply_patches(&lj_patches[i], 1);
+        lj_arm_rc[i] = rc;
+        if (!rc) lj_armed |= (1 << i);
     }
-    if (lj_armed != (1 << COUNT(lj_f_patches)) - 1)
+    if (!(lj_armed & 1))
     {
-        int got = lj_armed;
         lj_disarm();
-        NotifyBox(4000, "Lossless setup: hooks refused (%x), nothing armed", got);
+        NotifyBox(5000, "Lossless setup: photo hook refused (%d), nothing armed", lj_arm_rc[0]);
+        return;
+    }
+    if (!lj_watching)
+    {
+        lj_watching = 1;
+        task_create("d7lj_watch", 0x1e, 0x2000, lj_watch_task, 0);
     }
 }
 
@@ -1098,7 +1112,7 @@ static void lj_arm(void)
  * names, and unity DEGEEN gains (a non-full-stop ISO scales the data) */
 static const char * lj_setup_problem(void)
 {
-    if (!m2r_set_n) return "take a RAW photo first";
+    if (!m2r_set_n) return "no photo captured";
     uint32_t *rsc = m2r_set.rsc;
     if (rsc[4] != 0) return "the photo was M-RAW / S-RAW: use RAW";
     if (rsc[5] != 0x30 || rsc[6] != 0x11 || rsc[7] != 0x03 || (rsc[2] >> 24) != 0xe0 || rsc[3] != 4)
@@ -1108,9 +1122,23 @@ static const char * lj_setup_problem(void)
     return 0;
 }
 
-/* the grabbed frame and the buffers, all from fio_malloc (DMA, uncacheable) */
+/* without a usable photo, the setup of the probe-2 photo (ISO 800 RAW,
+ * 2026-10-29); its DEGEEN words past +0x3c were not logged and stay zero.
+ * Either way the black-level words are set from the frame (lj_encode). */
+static const struct m2r_set_rec lj_baked = {
+    .rsc    = { 0, 0, 0xe0942290, 4, 0, 0x30, 0x11, 0x03 },
+    .degeen = { 0xfffff7ff, 0xfffff7ff, 0xfffff7ff, 0xfffff7ff, 1, 1, 1, 1, 0x400, 0x400, 0x400, 0x400 },
+    .twain  = { 0x4b7, 0x380, 0x380, 0x57f, 0, 0, 0, 0, 0x801, 0x801, 0x801, 0x801, 1, 0x801, 0x38de },
+};
+static const struct m2r_set_rec * lj_setup(void)
+{
+    return lj_setup_problem() ? &lj_baked : &m2r_set;
+}
+
+/* the grabbed frame's geometry; the frame itself is on the card (LJ3Fn.RAW) */
 static struct raw_info lj_ri;
-static void *lj_in_raw, *lj_out_raw, *lj_thumb_raw, *lj_small_raw;
+/* in / out / thumbnail / table, carved out of one SRM buffer (uncacheable) */
+static struct memSuite *lj_suite;
 static uint8_t *lj_in, *lj_out, *lj_thumb;
 static uint32_t *lj_huff, *lj_mem;      /* 0x60-byte RAM table; the memory list */
 static int lj_in_size, lj_out_size, lj_thumb_size;
@@ -1119,23 +1147,34 @@ static int lj_hung = 0;                 /* an encode never finished: keep the bu
 static volatile int lj_busy = 0;
 static uint32_t lj_rec[19];
 
-static void * lj_alloc(int size, void **raw)
+static void lj_put_mem(void)
 {
-    *raw = fio_malloc(size + 256);
-    if (!*raw) return 0;
-    return (void *)(((uint32_t)*raw + 255) & ~255);
-}
-
-static void lj_free_all(void)
-{
-    if (lj_hung) return;
-    if (lj_in_raw) fio_free(lj_in_raw);
-    if (lj_out_raw) fio_free(lj_out_raw);
-    if (lj_thumb_raw) fio_free(lj_thumb_raw);
-    if (lj_small_raw) fio_free(lj_small_raw);
-    lj_in_raw = lj_out_raw = lj_thumb_raw = lj_small_raw = 0;
+    if (lj_hung || !lj_suite) return;
+    srm_free_suite(lj_suite);
+    lj_suite = 0;
     lj_in = lj_out = lj_thumb = 0;
     lj_huff = lj_mem = 0;
+}
+
+/* 0 if no SRM buffer is free or the frame's buffers do not fit in one */
+static int lj_get_mem(const struct raw_info *ri)
+{
+    lj_suite = srm_malloc_suite(1);
+    if (!lj_suite) return 0;
+    struct memChunk *c = GetFirstChunkFromSuite(lj_suite);
+    uint32_t a = (uint32_t)UNCACHEABLE(GetMemoryAddressOfMemoryChunk(c));
+    uint32_t end = a + GetSizeOfMemoryChunk(c);
+    lj_in_size = ri->pitch * ri->height;
+    lj_out_size = (lj_in_size + 1024 * 1024 + 0xffff) & ~0xffff;
+    lj_thumb_size = MAX(ri->width * ri->height * 6 / 16, 256 * 1024);
+    a = (a + 255) & ~255;
+    lj_in = (void *)a;      a += (lj_in_size + 255) & ~255;
+    lj_out = (void *)a;     a += lj_out_size;
+    lj_thumb = (void *)a;   a += (lj_thumb_size + 255) & ~255;
+    lj_huff = (void *)a;    a += 0x100;
+    lj_mem = lj_huff + 0x60 / 4;
+    if (a > end) { lj_put_mem(); return 0; }
+    return 1;
 }
 
 /* a text log built in memory and rewritten as it grows, so a hang still
@@ -1161,17 +1200,36 @@ static void lj_words(const char *tag, const uint32_t *w, int n)
         lj_printf("\n");
     }
 }
-static void lj_write_file(const char *name, const void *data, int size)
+static int lj_write_file(const char *name, const void *data, int size)
 {
     FILE *f = FIO_CreateFile(name);
-    if (!f) return;
-    for (int done = 0; done < size; )
+    if (!f) return 0;
+    int done = 0;
+    while (done < size)
     {
         int n = MIN(size - done, 1024 * 1024);
         if (FIO_WriteFile(f, (const uint8_t *)data + done, n) != n) break;
         done += n;
     }
     FIO_CloseFile(f);
+    return done;
+}
+/* the run's input: the grabbed frame, read back into lj_in */
+static int lj_read_frame(void)
+{
+    char name[32];
+    snprintf(name, sizeof(name), "ML/LOGS/LJ3F%d.RAW", lj_frame_no);
+    FILE *f = FIO_OpenFile(name, O_RDONLY | O_SYNC);
+    if (!f) return 0;
+    int done = 0;
+    while (done < lj_in_size)
+    {
+        int n = MIN(lj_in_size - done, 1024 * 1024);
+        if (FIO_ReadFile(f, lj_in + done, n) != n) break;
+        done += n;
+    }
+    FIO_CloseFile(f);
+    return done == lj_in_size;
 }
 static void lj_flush_txt(void)
 {
@@ -1183,7 +1241,11 @@ static void lj_flush_txt(void)
 static void lj_log_setup(void)
 {
     struct m2r_set_rec *r = &m2r_set;
-    lj_printf("[photo setup] %d SetMem1ToRaw seen, t=%d lr=%08x p=%08x cbr=%08x\n", m2r_set_n, r->t, r->lr, r->p, r->cbr);
+    const char *problem = lj_setup_problem();
+    lj_printf("[photo setup] %s; hooks rc %d %d\n", problem ? problem : "captured, used",
+              lj_arm_rc[0], lj_arm_rc[1]);
+    if (problem) lj_printf("  the encodes use the probe-2 photo's setup (ISO 800 RAW)\n");
+    lj_printf("  %d SetMem1ToRaw seen, t=%d lr=%08x p=%08x cbr=%08x\n", m2r_set_n, r->t, r->lr, r->p, r->cbr);
     lj_words("  p     ", r->pw, 12);
     lj_words("  rsc   ", r->rsc, 8);
     lj_words("  prm   ", r->prm, 5);
@@ -1230,29 +1292,25 @@ static void lj_grab(void)
         NotifyBox(4000, "Lossless: LV raw is %d-bit; set RAW video to 14 or 12-bit", bpp);
         return;
     }
-    lj_free_all();
-    lj_in_size = ri.pitch * ri.height;
-    lj_out_size = (lj_in_size + 1024 * 1024 + 0xffff) & ~0xffff;
-    lj_thumb_size = MAX(ri.width * ri.height * 6 / 16, 256 * 1024);
-    lj_in = lj_alloc(lj_in_size, &lj_in_raw);
-    lj_out = lj_alloc(lj_out_size, &lj_out_raw);
-    lj_thumb = lj_alloc(lj_thumb_size, &lj_thumb_raw);
-    lj_huff = lj_alloc(0x100, &lj_small_raw);
-    if (!lj_in || !lj_out || !lj_thumb || !lj_huff)
+    if (!lj_get_mem(&ri))
     {
         raw_lv_release();
-        lj_free_all();
-        NotifyBox(3000, "Lossless: not enough memory (%d KB)", (lj_in_size + lj_out_size) / 1024);
+        NotifyBox(4000, "Lossless: no SRM buffer free (%d KB needed)", ri.pitch * ri.height * 2 / 1024);
         return;
     }
-    lj_mem = lj_huff + 0x60 / 4;
     memcpy(lj_in, ri.buffer, lj_in_size);
     raw_lv_release();
+    char name[32];
+    snprintf(name, sizeof(name), "ML/LOGS/LJ3F%d.RAW", lj_frame_no + 1);
+    int written = lj_write_file(name, lj_in, lj_in_size);
+    lj_put_mem();
+    if (written != lj_in_size)
+    {
+        NotifyBox(3000, "Lossless: could not write %s", name + 8);
+        return;
+    }
     lj_ri = ri;
     lj_frame_no++;
-    char name[32];
-    snprintf(name, sizeof(name), "ML/LOGS/LJ3F%d.RAW", lj_frame_no);
-    lj_write_file(name, lj_in, lj_in_size);
     NotifyBox(3000, "Frame %d: %dx%d %d-bit, %s", lj_frame_no, ri.width, ri.height, bpp, name + 8);
 }
 
@@ -1292,7 +1350,17 @@ static int lj_encode(int k, const struct lj_rect *r, const uint8_t *spec, const 
     lj_mem[0] = (uint32_t)UNCACHEABLE(lj_out);
     lj_mem[1] = lj_out_size;
 
-    struct lj_rsc rsc = { 0, 0, m2r_set.rsc[2], m2r_set.rsc[3], 0, m2r_set.rsc[5], m2r_set.rsc[6], m2r_set.rsc[7] };
+    /* the photo's DEGEEN / TWAIN with the frame's black: Canon sets the
+     * offset to -(black + 1) and TWAIN's black words to black + 1 */
+    const struct m2r_set_rec *s = lj_setup();
+    int black = lj_ri.black_level > 0 ? lj_ri.black_level : 2048 >> (14 - bpp);
+    static uint32_t degeen[32], twain[16];
+    memcpy(degeen, s->degeen, sizeof(degeen));
+    memcpy(twain, s->twain, sizeof(twain));
+    for (int c = 0; c < 4; c++) { degeen[c] = -(black + 1); twain[8 + c] = black + 1; }
+    twain[13] = black + 1;
+
+    struct lj_rsc rsc = { 0, 0, s->rsc[2], s->rsc[3], 0, s->rsc[5], s->rsc[6], s->rsc[7] };
     struct lj_prm prm = {
         (uint32_t)UNCACHEABLE(lj_huff), 1, (uint32_t)lj_mem,
         (uint32_t)UNCACHEABLE(lj_in), (uint32_t)UNCACHEABLE(lj_thumb),
@@ -1301,6 +1369,8 @@ static int lj_encode(int k, const struct lj_rect *r, const uint8_t *spec, const 
     lj_printf("\n[encode %d] %s table, rect x=%d y=%d %dx%d, pitch %d px, %d-bit, LiveView %s\n",
               k, spec_name, r->x, r->y, r->w, r->h, pitch_px, bpp, lv ? "on" : "off");
     lj_words("  rec   ", lj_rec, 19);
+    lj_words("  degeen", degeen, 24);
+    lj_words("  twain ", twain, 12);
     lj_printf("  starting...\n");
     lj_flush_txt();
 
@@ -1309,8 +1379,8 @@ static int lj_encode(int k, const struct lj_rect *r, const uint8_t *spec, const 
     uint32_t canon_rec = MEM(LJ_STATE + 4);
     MEM(LJ_STATE + 4) = (uint32_t)lj_rec;
     lj_set_cbr(lj_cbr, 0x6c6a3300 + k);
-    lj_degeen(m2r_set.degeen);
-    lj_twain(m2r_set.twain, m2r_set.pw[5]);
+    lj_degeen(degeen);
+    lj_twain(twain, s->pw[5]);
     lj_set_huff(lj_huff, spec2);
     lj_set_param(&prm);
     uint32_t us0 = (uint32_t)get_us_clock();
@@ -1351,6 +1421,15 @@ static int lj_encode(int k, const struct lj_rect *r, const uint8_t *spec, const 
 
 static void lj_run_task(void *unused)
 {
+    if (!lj_get_mem(&lj_ri) || !lj_read_frame())
+    {
+        int had = lj_suite != 0;
+        lj_put_mem();
+        if (had) NotifyBox(4000, "Lossless: could not read LJ3F%d.RAW", lj_frame_no);
+        else     NotifyBox(4000, "Lossless: no SRM buffer free (%d KB needed)", lj_ri.pitch * lj_ri.height * 2 / 1024);
+        lj_busy = 0;
+        return;
+    }
     lj_run_no++;
     lj_txt_n = 0;
     int bpp = lj_ri.bits_per_pixel;
@@ -1382,6 +1461,7 @@ static void lj_run_task(void *unused)
         lj_printf("\nan encode never finished: buffers kept, restart the camera before the next run\n");
     }
     lj_flush_txt();
+    lj_put_mem();
     NotifyBox(5000, ok ? "Run %d done: ML/LOGS/LJ3R%d.*" : "Run %d: encode TIMED OUT - restart the camera", lj_run_no, lj_run_no);
     lj_busy = 0;
 }
@@ -1392,9 +1472,30 @@ static void lj_grab_task(void *unused)
     lj_busy = 0;
 }
 
+/* armed: once the photo is in, wait out the lock window, remove both hooks
+ * and write the setup to ML/LOGS/LJ3S.TXT; ends if the hooks are removed */
+static void lj_watch_task(void *unused)
+{
+    while (lj_armed && !m2r_set_n) msleep(200);
+    if (lj_armed)
+    {
+        msleep(2500);
+        while (lj_busy) msleep(100);
+        lj_busy = 1;
+        lj_disarm();
+        lj_txt_n = 0;
+        lj_log_setup();
+        lj_write_file("ML/LOGS/LJ3S.TXT", lj_txt, lj_txt_n);
+        lj_busy = 0;
+        NotifyBox(4000, "Photo setup %s, %d locks: LJ3S.TXT", lj_setup_problem() ? "unusable" : "captured", lock_n);
+    }
+    lj_watching = 0;
+}
+
 static MENU_SELECT_FUNC(lj_setup_select)
 {
     if (lj_armed) { lj_disarm(); return; }
+    if (lj_busy) return;
     lj_arm();
 }
 
@@ -1402,12 +1503,15 @@ static MENU_UPDATE_FUNC(lj_setup_update)
 {
     const char *problem = lj_setup_problem();
     if (lj_armed)
-        MENU_SET_VALUE(m2r_set_n ? "captured, %d locks" : "armed, take a RAW photo", lock_n);
+        MENU_SET_VALUE(m2r_set_n ? "captured, saving" : "armed, take a RAW photo");
     else
-        MENU_SET_VALUE(m2r_set_n ? (problem ? "unusable" : "captured") : "OFF");
+        MENU_SET_VALUE(m2r_set_n ? (problem ? "unusable" : "captured, %d locks") : "OFF", lock_n);
     MENU_SET_HELP(lj_armed ? "Take one RAW photo (full-stop ISO); press again to remove the hooks."
-                           : "Press to arm two read-only hooks, then take one RAW photo.");
-    if (m2r_set_n && problem) MENU_SET_WARNING(MENU_WARN_ADVICE, "%s", problem);
+                           : "Optional. Arms two read-only hooks for one RAW photo (LJ3S.TXT).");
+    if (lj_armed && lj_arm_rc[1])
+        MENU_SET_WARNING(MENU_WARN_ADVICE, "Lock hook refused (%d); the photo hook is armed.", lj_arm_rc[1]);
+    else if (m2r_set_n && problem)
+        MENU_SET_WARNING(MENU_WARN_ADVICE, "%s", problem);
 }
 
 static MENU_SELECT_FUNC(lj_grab_select)
@@ -1415,27 +1519,24 @@ static MENU_SELECT_FUNC(lj_grab_select)
     if (lj_busy) return;
     if (lj_hung) { NotifyBox(3000, "Restart the camera first"); return; }
     if (!lv) { NotifyBox(3000, "Go to LiveView first"); return; }
-    if (lj_armed && m2r_set_n) lj_disarm();
     lj_busy = 1;
     task_create("d7lj_grab", 0x1e, 0x2000, lj_grab_task, 0);
 }
 
 static MENU_UPDATE_FUNC(lj_grab_update)
 {
-    if (lj_in)
+    if (lj_frame_no)
         MENU_SET_VALUE("frame %d: %dx%d %d-bit", lj_frame_no, lj_ri.width, lj_ri.height, lj_ri.bits_per_pixel);
     else
         MENU_SET_VALUE("none");
-    MENU_SET_HELP("In LiveView at 14 or 12-bit: copies one raw frame (ML/LOGS/LJ3Fn.RAW).");
+    MENU_SET_HELP("In LiveView at 14 or 12-bit: writes one raw frame (ML/LOGS/LJ3Fn.RAW).");
 }
 
 static MENU_SELECT_FUNC(lj_run_select)
 {
     if (lj_busy) return;
     if (lj_hung) { NotifyBox(3000, "Restart the camera first"); return; }
-    const char *problem = lj_setup_problem();
-    if (problem) { NotifyBox(3000, "Lossless setup: %s", problem); return; }
-    if (!lj_in) { NotifyBox(3000, "Grab a LiveView frame first"); return; }
+    if (!lj_frame_no) { NotifyBox(3000, "Grab a LiveView frame first"); return; }
     if (lj_armed) lj_disarm();
     lj_busy = 1;
     task_create("d7lj_run", 0x1e, 0x4000, lj_run_task, 0);
@@ -1469,13 +1570,6 @@ static struct menu_entry d7probe_menu[] =
                 .help2  = "Logs GUI state, every button event and every MPU message (read-only).",
             },
             {
-                .name   = "Lossless: photo setup",
-                .select = lj_setup_select,
-                .update = lj_setup_update,
-                .icon_type = IT_ACTION,
-                .help2  = "Copies how Canon sets up its CR2 encoder, for the encode test.",
-            },
-            {
                 .name   = "Lossless: grab LV frame",
                 .select = lj_grab_select,
                 .update = lj_grab_update,
@@ -1488,6 +1582,13 @@ static struct menu_entry d7probe_menu[] =
                 .update = lj_run_update,
                 .icon_type = IT_ACTION,
                 .help2  = "Each run: whole frame + crop with Canon's table, crop with ML's.",
+            },
+            {
+                .name   = "Lossless: photo setup",
+                .select = lj_setup_select,
+                .update = lj_setup_update,
+                .icon_type = IT_ACTION,
+                .help2  = "Canon's encoder setup and resource locks from one RAW photo.",
             },
             {
                 .name   = "Recording trace",
