@@ -1017,8 +1017,8 @@ static MENU_SELECT_FUNC(align_dump_select)
  * card, "encode test" reads it back and runs three encodes of it (whole frame /
  * centred crop with Canon's table, the crop with ML's), and the optional
  * "photo setup" arms the two hooks above for one RAW photo.  The buffers come
- * from one SRM buffer, held only for the grab or the run (fio_malloc could not
- * get the ~11 MB in movie mode, and photos are blocked while it is held).  No
+ * from the shoot pool (lj_get_mem), held only for the grab or the run
+ * (fio_malloc could not get the ~11 MB in movie mode).  No
  * resource lock is taken: the ids are not known yet (the setup step logs
  * Canon's), so run it with LiveView off first.  Files in ML/LOGS: LJ3Fn.RAW
  * (frame n), LJ3Rm.TXT and LJ3RmEk.BIN (run m, encode k), LJ3S.TXT (setup). */
@@ -1137,8 +1137,13 @@ static const struct m2r_set_rec * lj_setup(void)
 
 /* the grabbed frame's geometry; the frame itself is on the card (LJ3Fn.RAW) */
 static struct raw_info lj_ri;
-/* in / out / thumbnail / table, carved out of one SRM buffer (uncacheable) */
+/* in / out / thumbnail / table, each contiguous and uncacheable, carved out of
+ * the shoot pool (mlv_lite's memory: ~138 MB in ~7 chunks in movie mode) or,
+ * failing that, one SRM buffer (none is free in movie mode).  Held only for a
+ * grab or a run; photos cannot be taken meanwhile. */
 static struct memSuite *lj_suite;
+static int lj_suite_srm;
+static char lj_mem_note[96];
 static uint8_t *lj_in, *lj_out, *lj_thumb;
 static uint32_t *lj_huff, *lj_mem;      /* 0x60-byte RAM table; the memory list */
 static int lj_in_size, lj_out_size, lj_thumb_size;
@@ -1150,31 +1155,64 @@ static uint32_t lj_rec[19];
 static void lj_put_mem(void)
 {
     if (lj_hung || !lj_suite) return;
-    srm_free_suite(lj_suite);
+    if (lj_suite_srm) srm_free_suite(lj_suite); else shoot_free_suite(lj_suite);
     lj_suite = 0;
     lj_in = lj_out = lj_thumb = 0;
     lj_huff = lj_mem = 0;
 }
 
-/* 0 if no SRM buffer is free or the frame's buffers do not fit in one */
+/* each buffer from the first chunk with room for it; notes the suite */
+static int lj_carve(const char *pool)
+{
+    uint8_t **dst[4] = { &lj_in, &lj_out, &lj_thumb, (uint8_t **)&lj_huff };
+    int size[4] = { lj_in_size, lj_out_size, lj_thumb_size, 0x100 };
+    uint32_t used[16] = {0};
+    int n = 0, kb = 0, big = 0;
+    for (struct memChunk *c = GetFirstChunkFromSuite(lj_suite); c; c = GetNextMemoryChunk(lj_suite, c))
+    {
+        n++; kb += GetSizeOfMemoryChunk(c) / 1024;
+        big = MAX(big, GetSizeOfMemoryChunk(c) / 1024);
+    }
+    int len = strlen(lj_mem_note);
+    snprintf(lj_mem_note + len, sizeof(lj_mem_note) - len, "%s%s %dK/%d, max %dK", len ? "; " : "", pool, kb, n, big);
+    for (int k = 0; k < 4; k++)
+    {
+        *dst[k] = 0;
+        int i = 0;
+        for (struct memChunk *c = GetFirstChunkFromSuite(lj_suite); c && i < COUNT(used); c = GetNextMemoryChunk(lj_suite, c), i++)
+        {
+            uint32_t base = (uint32_t)UNCACHEABLE(GetMemoryAddressOfMemoryChunk(c));
+            uint32_t a = (base + used[i] + 255) & ~255;
+            if (a + size[k] <= base + GetSizeOfMemoryChunk(c))
+            {
+                *dst[k] = (void *)a;
+                used[i] = a + size[k] - base;
+                break;
+            }
+        }
+        if (!*dst[k]) return 0;
+    }
+    lj_mem = lj_huff + 0x60 / 4;
+    return 1;
+}
+
+/* 0 if neither pool has room; lj_mem_note says what was there */
 static int lj_get_mem(const struct raw_info *ri)
 {
-    lj_suite = srm_malloc_suite(1);
-    if (!lj_suite) return 0;
-    struct memChunk *c = GetFirstChunkFromSuite(lj_suite);
-    uint32_t a = (uint32_t)UNCACHEABLE(GetMemoryAddressOfMemoryChunk(c));
-    uint32_t end = a + GetSizeOfMemoryChunk(c);
     lj_in_size = ri->pitch * ri->height;
     lj_out_size = (lj_in_size + 1024 * 1024 + 0xffff) & ~0xffff;
     lj_thumb_size = MAX(ri->width * ri->height * 6 / 16, 256 * 1024);
-    a = (a + 255) & ~255;
-    lj_in = (void *)a;      a += (lj_in_size + 255) & ~255;
-    lj_out = (void *)a;     a += lj_out_size;
-    lj_thumb = (void *)a;   a += (lj_thumb_size + 255) & ~255;
-    lj_huff = (void *)a;    a += 0x100;
-    lj_mem = lj_huff + 0x60 / 4;
-    if (a > end) { lj_put_mem(); return 0; }
-    return 1;
+    lj_mem_note[0] = 0;
+    lj_suite_srm = 0;
+    lj_suite = shoot_malloc_suite(0);
+    if (lj_suite && lj_carve("shoot")) return 1;
+    lj_put_mem();
+    lj_suite_srm = 1;
+    lj_suite = srm_malloc_suite(1);
+    if (lj_suite && lj_carve("SRM")) return 1;
+    lj_put_mem();
+    if (!lj_mem_note[0]) snprintf(lj_mem_note, sizeof(lj_mem_note), "no shoot pool, no SRM buffer");
+    return 0;
 }
 
 /* a text log built in memory and rewritten as it grows, so a hang still
@@ -1295,7 +1333,7 @@ static void lj_grab(void)
     if (!lj_get_mem(&ri))
     {
         raw_lv_release();
-        NotifyBox(4000, "Lossless: no SRM buffer free (%d KB needed)", ri.pitch * ri.height * 2 / 1024);
+        NotifyBox(6000, "Lossless: no room (%dK): %s", (lj_in_size + lj_out_size + lj_thumb_size) / 1024, lj_mem_note);
         return;
     }
     memcpy(lj_in, ri.buffer, lj_in_size);
@@ -1426,7 +1464,7 @@ static void lj_run_task(void *unused)
         int had = lj_suite != 0;
         lj_put_mem();
         if (had) NotifyBox(4000, "Lossless: could not read LJ3F%d.RAW", lj_frame_no);
-        else     NotifyBox(4000, "Lossless: no SRM buffer free (%d KB needed)", lj_ri.pitch * lj_ri.height * 2 / 1024);
+        else     NotifyBox(6000, "Lossless: no room (%dK): %s", (lj_in_size + lj_out_size + lj_thumb_size) / 1024, lj_mem_note);
         lj_busy = 0;
         return;
     }
@@ -1438,6 +1476,7 @@ static void lj_run_task(void *unused)
     lj_printf("[frame] %dx%d pitch %d B, %d-bit, black %d white %d, active y1 %d x1 %d y2 %d x2 %d, buffer was %08x\n",
               lj_ri.width, lj_ri.height, lj_ri.pitch, bpp, lj_ri.black_level, lj_ri.white_level,
               lj_ri.active_area.y1, lj_ri.active_area.x1, lj_ri.active_area.y2, lj_ri.active_area.x2, (uint32_t)lj_ri.buffer);
+    lj_printf("[memory] %s\n", lj_mem_note);
     lj_printf("[buffers] in %08x %d, out %08x %d, thumb %08x %d, table %08x, list %08x\n",
               (uint32_t)lj_in, lj_in_size, (uint32_t)lj_out, lj_out_size, (uint32_t)lj_thumb, lj_thumb_size, (uint32_t)lj_huff, (uint32_t)lj_mem);
     lj_log_setup();
