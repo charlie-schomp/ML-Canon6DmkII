@@ -2,8 +2,9 @@
  * d7probe - "6D2 developer tools": the port's research tools in one module.
  *
  * Mostly read-only (logs, dumps, the state / button / MPU logger, the
- * recording-trace switch).  Two menu experiments DO write registers - the
- * binned-readout frame timer and the SD clock - and say so in the menu.
+ * recording-trace switch).  Three menu experiments DO drive hardware - the
+ * binned-readout frame timer, the SD clock and the lossless encode test - and
+ * say so in the menu.
  * It started with two questions:
  *
  *  1. RAW bit depth.  Canon's LiveView pre-processing driver
@@ -47,19 +48,7 @@ extern void d7probe_hook_prepro_6D2(void);
 extern void d7probe_hook_sdclk_6D2(void);
 extern void d7probe_hook_sdset_6D2(void);
 extern void d7probe_hook_m2r_set_6D2(void);
-extern void d7probe_hook_jpc0_6D2(void);
-extern void d7probe_hook_jpc1_6D2(void);
-extern void d7probe_hook_desc_6D2(void);
-extern void d7probe_hook_dma0_6D2(void);
-extern void d7probe_hook_dma1_6D2(void);
-extern void d7probe_hook_dma2_6D2(void);
-extern void d7probe_hook_dma3_6D2(void);
-extern void d7probe_hook_dma4_6D2(void);
-extern void d7probe_hook_dma5_6D2(void);
-extern void d7probe_hook_dma6_6D2(void);
-extern void d7probe_hook_dma7_6D2(void);
-extern void d7probe_hook_dma8_6D2(void);
-extern void d7probe_hook_dma9_6D2(void);
+extern void d7probe_hook_lock_6D2(void);
 
 /* ---- captures (written from Canon's context, read from the menu) ---------- */
 
@@ -143,45 +132,41 @@ void d7probe_sdset_capture(uint32_t *regs)
     if (sdset_n < SDSET_MAX) sdset_n++;
 }
 
-/* ---- Lossless probe: Canon's still-photo lossless path (the CR2 encoder) ----
+/* ---- Lossless: Canon's still-photo lossless path (the CR2 encoder) ---------
  *
  * The capture task builds a parameter block p = {LosslessPathRsc *rsc,
- * LosslessPathParam *prm, DEGEEN, TWAIN.., ...} (sssSetRawPathParam 0xe032973c)
- * and posts it with SetMem1ToRaw(p, cbr) 0xe051b560.  On the engine task,
- * CORE_SetMem1ToRaw 0xe00d697a opens LosslessEncode.c, sets the units and the
- * Huffman table, and LosslessEncode_SetParam 0xe015945c builds a 0x64-byte
- * request from the geometry record + prm for the base configure 0xe01d7820,
- * which programs the DMA channels and JpCore (0xe0247544 / 0xe02475cc: width,
- * height, table, ...).  Probe 1 (v95) logged p; probe 2 also logs the request,
- * the JpCore arguments and every DMA driver call while the photo encodes.
- * All hooks only copy.  They are installed when armed, removed when the log
- * is written; the DMA loggers record only in the 4 s after SetMem1ToRaw.
+ * LosslessPathParam *prm, DEGEEN *, TWAIN *, .., TWAIN value, .., .., cbr ctx}
+ * (sssSetRawPathParam 0xe032973c) and posts it with SetMem1ToRaw(p, cbr)
+ * 0xe051b560.  On the engine task CORE_SetMem1ToRaw 0xe00d697a drives
+ * LosslessEncode.c: open(rsc) 0xe015936a (picks the geometry record by mode
+ * into state 0x26584 + 4, locks rsc's resource list if it has one, powers and
+ * connects the units), set_cbr 0xe0159348, DEGEEN(p[2]) 0xe01594d6,
+ * TWAIN(p[3], p[5]) 0xe01594de, the Huffman spec into prm's RAM table
+ * 0xe02474ec, SetParam(prm) 0xe015945c (a 0x64-byte request for configure
+ * 0xe01d7820: read DMA, thumbnail, write DMA, JpCore); then start 0xe01594ce,
+ * and stop 0xe01594d2 / unset_cbr 0xe0159358 / close 0xe0159422.
+ * Probes 1-2 (v95, v96) logged that during one photo (6D2/docs/roadmap.md).
+ * Probe 3 keeps one hook here: it copies a real photo's DEGEEN and TWAIN blocks
+ * for the encode test to replay, and logs the resource lists locked meanwhile.
  *   rsc: +0 pRscAry +4 RscNum +8 SharememTbl +c SharememNum +10 LosslessEncMode
  *        +14 RdBayCh +18 WrRawCh +1c WrThumbCh
  *   prm: +0 pHuffmanTable +4 PackMemNum +8 pMemList +c RdBayAddress +10 WrThumbAddress */
-#define M2R_MAX 4
 struct m2r_set_rec
 {
     uint32_t t, lr, p, cbr;
     uint32_t pw[12];        /* the block itself */
     uint32_t rsc[8], prm[5];
-    uint32_t huff[24];      /* 0x60 bytes at prm->pHuffmanTable */
-    uint32_t mem[16];       /* prm->pMemList */
-    uint32_t blk[4][16];    /* p[2], p[3], p[5], p[7]: DEGEEN / TWAIN / .. settings */
+    uint32_t degeen[32];    /* p[2]: 0x60 bytes are read (0xe01b285a) */
+    uint32_t twain[16];     /* p[3]: 0x30 bytes are read (0xe0264ff8) */
 };
-struct jpc_rec { uint32_t t, lr, variant, r[4], stack[3], table[24]; };
-struct desc_rec { uint32_t t, lr, d[25]; };
-struct dma_rec { uint32_t t, lr, id, r[4], blk[12]; };
-#define JPC_MAX 4
-#define DESC_MAX 4
-#define DMA_MAX 120
-static struct m2r_set_rec m2r_set[M2R_MAX];
-static struct jpc_rec jpc[JPC_MAX];
-static struct desc_rec desc[DESC_MAX];
-static struct dma_rec dma[DMA_MAX];
-static volatile int m2r_set_n = 0, jpc_n = 0, desc_n = 0, dma_n = 0, dma_seen = 0;
-static volatile int m2r_window_until = 0;
-static int m2r_armed = 0;
+static struct m2r_set_rec m2r_set;
+static volatile int m2r_set_n = 0;
+static volatile int lock_until = 0;     /* stop logging locks 2 s after SetMem1ToRaw */
+
+#define LOCK_MAX 64
+struct lock_rec { uint32_t t, lr, entry, n, id[20]; };
+static struct lock_rec locks[LOCK_MAX];
+static volatile int lock_n = 0;         /* calls seen; the last LOCK_MAX are kept */
 
 static void copy_words(uint32_t *dst, uint32_t src, int n)
 {
@@ -190,54 +175,29 @@ static void copy_words(uint32_t *dst, uint32_t src, int n)
 
 void d7probe_m2r_set_capture(uint32_t *regs)
 {
-    m2r_window_until = get_ms_clock() + 4000;
-    if (m2r_set_n >= M2R_MAX) return;
-    struct m2r_set_rec *r = &m2r_set[m2r_set_n];
+    lock_until = get_ms_clock() + 2000;
+    if (m2r_set_n++) return;    /* keep the first photo after arming */
+    struct m2r_set_rec *r = &m2r_set;
     r->t = get_ms_clock(); r->lr = regs[13]; r->p = regs[0]; r->cbr = regs[1];
     copy_words(r->pw, r->p, 12);
     copy_words(r->rsc, r->pw[0], 8);
     copy_words(r->prm, r->pw[1], 5);
-    copy_words(r->huff, ram_ok(r->pw[1]) ? r->prm[0] : 0, 24);
-    copy_words(r->mem, ram_ok(r->pw[1]) ? r->prm[2] : 0, 16);
-    static const int which[4] = { 2, 3, 5, 7 };
-    for (int k = 0; k < 4; k++) copy_words(r->blk[k], r->pw[which[k]], 16);
-    m2r_set_n++;
+    copy_words(r->degeen, r->pw[2], COUNT(r->degeen));
+    copy_words(r->twain, r->pw[3], COUNT(r->twain));
 }
 
-void d7probe_jpc_capture(uint32_t *regs, int variant)
+/* LockEngineResources(entry): entry +0x14 = its copy of the id list, +0x18 =
+ * the count (CreateResLockEntry 0xe04aa70c); an id is type << 16 | index */
+void d7probe_lock_capture(uint32_t *regs)
 {
-    if (jpc_n >= JPC_MAX) return;
-    struct jpc_rec *r = &jpc[jpc_n];
-    r->t = get_ms_clock(); r->lr = regs[13]; r->variant = variant;
-    for (int k = 0; k < 4; k++) r->r[k] = regs[k];
-    /* the stub pushed r0-r12, lr: the caller's stack arguments start 14 words up */
-    for (int k = 0; k < 3; k++) r->stack[k] = regs[14 + k];
-    copy_words(r->table, regs[2], 24);
-    jpc_n++;
-}
-
-void d7probe_desc_capture(uint32_t *regs)
-{
-    if (desc_n >= DESC_MAX) return;
-    struct desc_rec *r = &desc[desc_n];
-    r->t = get_ms_clock(); r->lr = regs[13];
-    copy_words(r->d, regs[0], 25);
-    desc_n++;
-}
-
-/* called for every DMA driver call camera-wide while armed (LiveView makes
- * plenty, maybe from interrupts too): return at once outside the window */
-void d7probe_dma_capture(uint32_t *regs, int id)
-{
-    if (get_ms_clock() > m2r_window_until) return;
-    dma_seen++;
-    int i = dma_n;
-    if (i >= DMA_MAX) return;
-    dma_n = i + 1;
-    struct dma_rec *r = &dma[i];
-    r->t = get_ms_clock(); r->lr = regs[13]; r->id = id;
-    for (int k = 0; k < 4; k++) r->r[k] = regs[k];
-    copy_words(r->blk, regs[1], 12);
+    if (lock_until && get_ms_clock() > lock_until) return;
+    struct lock_rec *r = &locks[lock_n++ % LOCK_MAX];
+    r->t = get_ms_clock(); r->lr = regs[13]; r->entry = regs[0]; r->n = 0;
+    memset(r->id, 0, sizeof(r->id));
+    if (!ram_ok(regs[0])) return;
+    uint32_t list = ((uint32_t *)regs[0])[5];
+    r->n = ((uint32_t *)regs[0])[6];
+    copy_words(r->id, list, MIN((int)r->n, COUNT(r->id)));
 }
 
 /* SD experiment state (defined with the menu below) */
@@ -1036,172 +996,461 @@ static MENU_SELECT_FUNC(align_dump_select)
     task_create("d7align", 0x1e, 0x1000, align_dump_task, 0);
 }
 
-/* Lossless probe: arming installs the hooks; the next press (after a RAW photo)
- * writes ML/LOGS/LJPROBE2.TXT and removes them.  ROM pages: 0xe01 (configure,
- * shared with the bit-depth patch), 0xe02 (JpCore, shared with the SD hooks),
- * 0xe04 (DMA veneers), 0xe05 (SetMem1ToRaw) - four L2 tables, all there are. */
-static struct function_hook_patch m2r_f_patches[] = {
+/* ---- Lossless encode test (probe 3): ML drives Canon's encoder ---------------
+ *
+ * Canon's lossless encoder on a LiveView raw frame, with ML's geometry record,
+ * Huffman table and buffers, replaying the DEGEEN / TWAIN blocks of a real
+ * photo.  From the ROM and the probe-2 log:
+ *  - The record (19 words) is the encode's geometry: +04 width, +10 height,
+ *    +18 pitch (px), +1c / +20 the rectangle's x / y in the buffer, +24 depth
+ *    code (0 = 10, 1 = 12, 2 = 14-bit), +2c / +30 JpCore width / height,
+ *    +38..+44 the thumbnail's area.  The read DMA takes the packed LiveView
+ *    layout as it is (xb = width * bpp / 8, off1b = (pitch - width) * bpp / 8).
+ *  - JpCore takes 12 or 14-bit only (0xe01d724c asserts on code 0).  Under 4096
+ *    lines it codes 2 components, width/2 x height, which is MLV's layout.
+ *  - The table lives in RAM: prm->pHuffmanTable gets 2 x (counts[16],
+ *    values[16], 16 zero bytes) copied from a spec (Canon's: ROM 0xe091b39c).
+ *  - The callback is cbr(ctx, a, b, c); the base state 0x2b084 keeps the
+ *    compressed size at +0x18.
+ * Three menu entries: "photo setup" arms the two hooks above for one RAW photo,
+ * "grab LV frame" copies a 12/14-bit LiveView frame, "encode test" runs three
+ * encodes of that frame (whole frame / centred crop with Canon's table, the
+ * crop with ML's) and writes them out.  No resource lock is taken: the ids are
+ * not known yet (the setup step logs Canon's), so run it with LiveView off
+ * first.  Files in ML/LOGS: LJ3Fn.RAW (frame n), LJ3Rm.TXT and LJ3RmEk.BIN
+ * (run m, encode k). */
+struct lj_rsc { uint32_t rsc_ary, rsc_num, sharemem_tbl, sharemem_num, enc_mode, rd_ch, wr_raw_ch, wr_thumb_ch; };
+struct lj_prm { uint32_t huff, mem_num, mem_list, rd_addr, thumb_addr; };
+struct lj_rect { int x, y, w, h; };
+
+#define LJ_STATE        0x26584     /* LosslessEncode.c: +0 lock entry, +4 record, +8 cbr, +c ctx */
+#define LJ_BASE         0x2b084     /* LosslessEncodeBase.c: +18 compressed size */
+#define LJ_DEV_LOCKS    0x1d50c     /* the photo path's lock entries at +8, +10..+20 */
+#define LJ_CANON_SPEC   0xe091b39c  /* 2 x 0x30: the CR2 table, tuned for 14-bit stills */
+
+static void (*const lj_open)(struct lj_rsc *) = (void *)0xe015936b;
+static void (*const lj_set_cbr)(void (*)(uint32_t, uint32_t, uint32_t, uint32_t), uint32_t) = (void *)0xe0159349;
+static void (*const lj_unset_cbr)(void) = (void *)0xe0159359;
+static void (*const lj_degeen)(void *) = (void *)0xe01594d7;
+static void (*const lj_twain)(void *, uint32_t) = (void *)0xe01594df;
+static void (*const lj_set_huff)(void *, const void *) = (void *)0xe02474ed;
+static void (*const lj_set_param)(struct lj_prm *) = (void *)0xe015945d;
+static void (*const lj_start)(void) = (void *)0xe01594cf;
+static void (*const lj_stop)(void) = (void *)0xe01594d3;
+static void (*const lj_close)(void) = (void *)0xe0159423;
+
+/* ML's tables: categories 0..15, from real 6D2 footage at that depth (2
+ * components, predictor 1), Kraft sum < 1.  Estimated 47% / 39% of the
+ * uncompressed size at 14 / 12-bit, against 53% / 57% with Canon's. */
+static const uint8_t lj_spec14[0x30] = {
+    0x00, 0x03, 0x00, 0x03, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00,
+    0x03, 0x04, 0x05, 0x01, 0x02, 0x06, 0x00, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+};
+static const uint8_t lj_spec12[0x30] = {
+    0x00, 0x03, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x03, 0x00, 0x00,
+    0x01, 0x02, 0x03, 0x00, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+};
+
+static int lj_armed = 0;                /* bit 0 SetMem1ToRaw, bit 1 LockEngineResources */
+static struct function_hook_patch lj_f_patches[] = {
     {
         .patch_addr = 0xe051b560,   /* SetMem1ToRaw */
         .orig_content = {0x70, 0xb5, 0x0c, 0x46, 0x05, 0x46, 0x02, 0x21},
         .target_function_addr = (uint32_t)d7probe_hook_m2r_set_6D2,
-        .description = "d7probe: lossless path parameters"
+        .description = "d7probe: lossless photo setup"
     },
     {
-        .patch_addr = 0xe0247544,   /* JpCore lossless setup */
-        .orig_content = {0x2d, 0xe9, 0xf0, 0x5f, 0x07, 0x46, 0x52, 0x4c},
-        .target_function_addr = (uint32_t)d7probe_hook_jpc0_6D2,
-        .description = "d7probe: JpCore setup"
-    },
-    {
-        .patch_addr = 0xe02475cc,   /* JpCore lossless setup, second variant */
-        .orig_content = {0x2d, 0xe9, 0xf0, 0x5f, 0x07, 0x46, 0x30, 0x4c},
-        .target_function_addr = (uint32_t)d7probe_hook_jpc1_6D2,
-        .description = "d7probe: JpCore setup (2)"
-    },
-    {
-        .patch_addr = 0xe01d7820,   /* LosslessEncodeBase configure */
-        .orig_content = {0xf0, 0xb5, 0x04, 0x46, 0x95, 0x4e, 0x00, 0x20},
-        .target_function_addr = (uint32_t)d7probe_hook_desc_6D2,
-        .description = "d7probe: lossless configure request"
+        .patch_addr = 0xe04aa8f4,   /* LockEngineResources */
+        .orig_content = {0xf8, 0xb5, 0x04, 0x46, 0x5e, 0x4e, 0x00, 0x68},
+        .target_function_addr = (uint32_t)d7probe_hook_lock_6D2,
+        .description = "d7probe: resource locks"
     },
 };
-static struct patch m2r_patches[COUNT(m2r_f_patches)] = {};
-static uint8_t m2r_code_hooks[8 * COUNT(m2r_f_patches)] = {};
+static struct patch lj_patches[COUNT(lj_f_patches)] = {};
+static uint8_t lj_code_hooks[8 * COUNT(lj_f_patches)] = {};
 
-/* the DMA veneers' target words (ROM 0xe043b0f8..0xe043b258, ARM "ldr pc, [pc, #-4]") */
-static const uint32_t dma_word[10] = {
-    0xe043b22c, 0xe043b234, 0xe043b23c, 0xe043b244, 0xe043b254,
-    0xe043b25c, 0xe043b0fc, 0xe043b104, 0xe043b114, 0xe043b11c,
-};
-static const uint32_t dma_target[10] = {
-    0x0002f587, 0x0002f2e9, 0x0002e121, 0x0002e18b, 0x0002e27f,
-    0x0002e2ff, 0x0002f38d, 0x0002f34b, 0x0002f5c3, 0x0002f6fd,
-};
-static void (* const dma_hook[10])(void) = {
-    d7probe_hook_dma0_6D2, d7probe_hook_dma1_6D2, d7probe_hook_dma2_6D2, d7probe_hook_dma3_6D2,
-    d7probe_hook_dma4_6D2, d7probe_hook_dma5_6D2, d7probe_hook_dma6_6D2, d7probe_hook_dma7_6D2,
-    d7probe_hook_dma8_6D2, d7probe_hook_dma9_6D2,
-};
-static struct patch dma_patches[10];
-static int dma_armed = 0;
-
-static void m2r_disarm(void)
+static void lj_disarm(void)
 {
-    for (int i = 0; i < 10; i++)
-        if (dma_armed & (1 << i)) unpatch_memory(dma_word[i]);
-    for (int i = 0; i < COUNT(m2r_f_patches); i++)
-        if (m2r_armed & (1 << i)) unpatch_memory(m2r_f_patches[i].patch_addr);
-    m2r_armed = dma_armed = 0;
+    for (int i = 0; i < COUNT(lj_f_patches); i++)
+        if (lj_armed & (1 << i)) unpatch_memory(lj_f_patches[i].patch_addr);
+    lj_armed = 0;
 }
 
-static void m2r_arm(void)
+static void lj_arm(void)
 {
-    m2r_set_n = jpc_n = desc_n = dma_n = dma_seen = 0;
-    m2r_window_until = 0;
-    for (int i = 0; i < COUNT(m2r_f_patches); i++)
+    m2r_set_n = 0; lock_n = 0; lock_until = 0;
+    for (int i = 0; i < COUNT(lj_f_patches); i++)
     {
-        if (convert_f_patch_to_patch(&m2r_f_patches[i], &m2r_patches[i], &m2r_code_hooks[8 * i]))
+        if (convert_f_patch_to_patch(&lj_f_patches[i], &lj_patches[i], &lj_code_hooks[8 * i]))
             continue;
-        if (apply_patches(&m2r_patches[i], 1) == 0)
-            m2r_armed |= (1 << i);
+        if (apply_patches(&lj_patches[i], 1) == 0)
+            lj_armed |= (1 << i);
     }
-    for (int i = 0; i < 10; i++)
+    if (lj_armed != (1 << COUNT(lj_f_patches)) - 1)
     {
-        if (MEM(dma_word[i]) != dma_target[i]) continue;      /* not the ROM this was read from */
-        dma_patches[i] = (struct patch) {
-            .addr = (uint8_t *)dma_word[i], .old_value = dma_target[i],
-            .new_value = (uint32_t)dma_hook[i], .size = 4,
-            .description = "d7probe: DMA driver call log", .is_instruction = 1,
-        };
-        if (apply_patches(&dma_patches[i], 1) == 0)
-            dma_armed |= (1 << i);
-    }
-    /* all or nothing: a partial set would log half a picture */
-    if (m2r_armed != (1 << COUNT(m2r_f_patches)) - 1 || dma_armed != 0x3ff)
-    {
-        int f = m2r_armed, d = dma_armed;
-        m2r_disarm();
-        NotifyBox(4000, "Lossless probe: hooks refused (%x/%x), nothing armed", f, d);
+        int got = lj_armed;
+        lj_disarm();
+        NotifyBox(4000, "Lossless setup: hooks refused (%x), nothing armed", got);
     }
 }
 
-static void m2r_write(void)
+/* the photo's setup is usable: a full RAW (mode 0) on the channels the ROM
+ * names, and unity DEGEEN gains (a non-full-stop ISO scales the data) */
+static const char * lj_setup_problem(void)
 {
-    FILE * f = FIO_CreateFile("ML/LOGS/LJPROBE2.TXT");
+    if (!m2r_set_n) return "take a RAW photo first";
+    uint32_t *rsc = m2r_set.rsc;
+    if (rsc[4] != 0) return "the photo was M-RAW / S-RAW: use RAW";
+    if (rsc[5] != 0x30 || rsc[6] != 0x11 || rsc[7] != 0x03 || (rsc[2] >> 24) != 0xe0 || rsc[3] != 4)
+        return "unexpected channels in the photo's setup";
+    for (int c = 0; c < 4; c++)
+        if (m2r_set.degeen[8 + c] != 0x400) return "photo ISO not a full stop (100/200/400..)";
+    return 0;
+}
+
+/* the grabbed frame and the buffers, all from fio_malloc (DMA, uncacheable) */
+static struct raw_info lj_ri;
+static void *lj_in_raw, *lj_out_raw, *lj_thumb_raw, *lj_small_raw;
+static uint8_t *lj_in, *lj_out, *lj_thumb;
+static uint32_t *lj_huff, *lj_mem;      /* 0x60-byte RAM table; the memory list */
+static int lj_in_size, lj_out_size, lj_thumb_size;
+static int lj_frame_no = 0, lj_run_no = 0;
+static int lj_hung = 0;                 /* an encode never finished: keep the buffers */
+static volatile int lj_busy = 0;
+static uint32_t lj_rec[19];
+
+static void * lj_alloc(int size, void **raw)
+{
+    *raw = fio_malloc(size + 256);
+    if (!*raw) return 0;
+    return (void *)(((uint32_t)*raw + 255) & ~255);
+}
+
+static void lj_free_all(void)
+{
+    if (lj_hung) return;
+    if (lj_in_raw) fio_free(lj_in_raw);
+    if (lj_out_raw) fio_free(lj_out_raw);
+    if (lj_thumb_raw) fio_free(lj_thumb_raw);
+    if (lj_small_raw) fio_free(lj_small_raw);
+    lj_in_raw = lj_out_raw = lj_thumb_raw = lj_small_raw = 0;
+    lj_in = lj_out = lj_thumb = 0;
+    lj_huff = lj_mem = 0;
+}
+
+/* a text log built in memory and rewritten as it grows, so a hang still
+ * leaves everything up to the encode that hung */
+static char lj_txt[24 * 1024];
+static int lj_txt_n = 0;
+/* a macro over snprintf: vsnprintf is not exported to modules */
+#define lj_printf(...) do { \
+    int room_ = (int)sizeof(lj_txt) - lj_txt_n; \
+    if (room_ > 1) \
+    { \
+        int n_ = snprintf(lj_txt + lj_txt_n, room_, __VA_ARGS__); \
+        lj_txt_n += MIN(MAX(n_, 0), room_ - 1); \
+    } \
+} while (0)
+
+static void lj_words(const char *tag, const uint32_t *w, int n)
+{
+    for (int i = 0; i < n; i += 8)
+    {
+        lj_printf("%s", tag);
+        for (int k = i; k < i + 8 && k < n; k++) lj_printf(" %08x", w[k]);
+        lj_printf("\n");
+    }
+}
+static void lj_write_file(const char *name, const void *data, int size)
+{
+    FILE *f = FIO_CreateFile(name);
     if (!f) return;
-    my_fprintf(f, "d7probe lossless probe 2 - 6D2 1.1.1 - %d SetMem1ToRaw, %d configure, %d JpCore, %d DMA calls kept of %d\n\n",
-               m2r_set_n, desc_n, jpc_n, dma_n, dma_seen);
-    for (int i = 0; i < m2r_set_n; i++)
+    for (int done = 0; done < size; )
     {
-        struct m2r_set_rec *r = &m2r_set[i];
-        my_fprintf(f, "[set %d] t=%d lr=%08x p=%08x cbr=%08x\n", i, r->t, r->lr, r->p, r->cbr);
-        dump_words(f, "  p   ", r->pw, 12, r->p);
-        dump_words(f, "  rsc ", r->rsc, 8, r->pw[0]);
-        dump_words(f, "  prm ", r->prm, 5, r->pw[1]);
-        dump_words(f, "  mem ", r->mem, 16, r->prm[2]);
-        static const int which[4] = { 2, 3, 5, 7 };
-        for (int k = 0; k < 4; k++)
-        {
-            char tag[8];
-            snprintf(tag, sizeof(tag), "  p[%d]", which[k]);
-            dump_words(f, tag, r->blk[k], 16, r->pw[which[k]]);
-        }
+        int n = MIN(size - done, 1024 * 1024);
+        if (FIO_WriteFile(f, (const uint8_t *)data + done, n) != n) break;
+        done += n;
     }
-    for (int i = 0; i < desc_n; i++)
-    {
-        my_fprintf(f, "\n[configure %d] t=%d lr=%08x\n", i, desc[i].t, desc[i].lr);
-        dump_words(f, "  req ", desc[i].d, 25, 0);
-    }
-    for (int i = 0; i < jpc_n; i++)
-    {
-        struct jpc_rec *r = &jpc[i];
-        my_fprintf(f, "\n[jpcore %d] t=%d lr=%08x variant %d  r0=%08x r1=%08x r2=%08x r3=%08x  stack %08x %08x %08x\n",
-                   i, r->t, r->lr, r->variant, r->r[0], r->r[1], r->r[2], r->r[3], r->stack[0], r->stack[1], r->stack[2]);
-        dump_words(f, "  tbl ", r->table, 24, r->r[2]);
-    }
-    my_fprintf(f, "\n[dma] id = veneer (0 e043b228, 1 b230, 2 b238, 3 b240, 4 b250, 5 b258, 6 b0f8, 7 b100, 8 b110, 9 b118)\n");
-    for (int i = 0; i < dma_n; i++)
-    {
-        struct dma_rec *r = &dma[i];
-        my_fprintf(f, "%6d id%d lr=%08x  %08x %08x %08x %08x  | %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x\n",
-                   r->t, r->id, r->lr, r->r[0], r->r[1], r->r[2], r->r[3],
-                   r->blk[0], r->blk[1], r->blk[2], r->blk[3], r->blk[4], r->blk[5],
-                   r->blk[6], r->blk[7], r->blk[8], r->blk[9], r->blk[10], r->blk[11]);
-    }
-    /* the encoder and base state keep the last encode (size at base + 0x18) */
-    uint32_t enc[16], base[64], rec[19];
-    copy_words(enc, 0x26584, 16);
-    copy_words(base, 0x2b084, 64);
-    if (enc[1] >= 0xe0000000 && enc[1] < 0xe2000000) memcpy(rec, (void *)enc[1], sizeof(rec));
-    else copy_words(rec, enc[1], 19);
-    my_fprintf(f, "\n[state after the last encode]\n");
-    dump_words(f, "  enc ", enc, 16, 0x26584);
-    dump_words(f, "  rec ", rec, 19, enc[1]);
-    dump_words(f, "  base", base, 64, 0x2b084);
     FIO_CloseFile(f);
 }
-
-static MENU_SELECT_FUNC(m2r_select)
+static void lj_flush_txt(void)
 {
-    if (!m2r_armed)
-    {
-        m2r_arm();
-        return;
-    }
-    m2r_write();
-    m2r_disarm();
-    NotifyBox(3000, "LJPROBE2.TXT written (%d set, %d DMA)", m2r_set_n, dma_n);
+    char name[32];
+    snprintf(name, sizeof(name), "ML/LOGS/LJ3R%d.TXT", lj_run_no);
+    lj_write_file(name, lj_txt, lj_txt_n);
 }
 
-static MENU_UPDATE_FUNC(m2r_update)
+static void lj_log_setup(void)
 {
-    if (m2r_armed)
-        MENU_SET_VALUE("armed: %d set, %d conf, %d DMA", m2r_set_n, desc_n, dma_n);
+    struct m2r_set_rec *r = &m2r_set;
+    lj_printf("[photo setup] %d SetMem1ToRaw seen, t=%d lr=%08x p=%08x cbr=%08x\n", m2r_set_n, r->t, r->lr, r->p, r->cbr);
+    lj_words("  p     ", r->pw, 12);
+    lj_words("  rsc   ", r->rsc, 8);
+    lj_words("  prm   ", r->prm, 5);
+    lj_words("  degeen", r->degeen, 24);
+    lj_words("  twain ", r->twain, 12);
+    lj_printf("[photo path lock entries at %08x]\n", LJ_DEV_LOCKS);
+    static const int off[6] = { 0x08, 0x10, 0x14, 0x18, 0x1c, 0x20 };
+    for (int i = 0; i < 6; i++)
+    {
+        uint32_t e = MEM(LJ_DEV_LOCKS + off[i]), ids[24] = {0}, n = 0;
+        if (ram_ok(e)) { n = MEM(e + 0x18); copy_words(ids, MEM(e + 0x14), MIN((int)n, 24)); }
+        lj_printf("  +%02x entry %08x n=%d:", off[i], e, n);
+        for (int k = 0; k < MIN((int)n, 24); k++) lj_printf(" %x", ids[k]);
+        lj_printf("\n");
+    }
+    int seen = lock_n, first = MAX(0, seen - LOCK_MAX);
+    lj_printf("[LockEngineResources while armed] %d calls, last %d:\n", seen, seen - first);
+    for (int i = first; i < seen; i++)
+    {
+        struct lock_rec *l = &locks[i % LOCK_MAX];
+        lj_printf("  t=%d lr=%08x entry %08x n=%d:", l->t, l->lr, l->entry, l->n);
+        for (int k = 0; k < MIN((int)l->n, COUNT(l->id)); k++) lj_printf(" %x", l->id[k]);
+        lj_printf("\n");
+    }
+}
+
+/* LiveView: copy one raw frame (12 or 14-bit) and size the buffers for it */
+static void lj_grab(void)
+{
+    raw_lv_request();
+    msleep(300);
+    int ok = raw_update_params_any_bpp();
+    struct raw_info ri = raw_info;
+    int bpp = ri.bits_per_pixel;
+    if (!ok || !ri.buffer || ri.pitch <= 0 || ri.height <= 0)
+    {
+        raw_lv_release();
+        NotifyBox(3000, "Lossless: no LiveView raw frame");
+        return;
+    }
+    if (bpp != 12 && bpp != 14)
+    {
+        raw_lv_release();
+        NotifyBox(4000, "Lossless: LV raw is %d-bit; set RAW video to 14 or 12-bit", bpp);
+        return;
+    }
+    lj_free_all();
+    lj_in_size = ri.pitch * ri.height;
+    lj_out_size = (lj_in_size + 1024 * 1024 + 0xffff) & ~0xffff;
+    lj_thumb_size = MAX(ri.width * ri.height * 6 / 16, 256 * 1024);
+    lj_in = lj_alloc(lj_in_size, &lj_in_raw);
+    lj_out = lj_alloc(lj_out_size, &lj_out_raw);
+    lj_thumb = lj_alloc(lj_thumb_size, &lj_thumb_raw);
+    lj_huff = lj_alloc(0x100, &lj_small_raw);
+    if (!lj_in || !lj_out || !lj_thumb || !lj_huff)
+    {
+        raw_lv_release();
+        lj_free_all();
+        NotifyBox(3000, "Lossless: not enough memory (%d KB)", (lj_in_size + lj_out_size) / 1024);
+        return;
+    }
+    lj_mem = lj_huff + 0x60 / 4;
+    memcpy(lj_in, ri.buffer, lj_in_size);
+    raw_lv_release();
+    lj_ri = ri;
+    lj_frame_no++;
+    char name[32];
+    snprintf(name, sizeof(name), "ML/LOGS/LJ3F%d.RAW", lj_frame_no);
+    lj_write_file(name, lj_in, lj_in_size);
+    NotifyBox(3000, "Frame %d: %dx%d %d-bit, %s", lj_frame_no, ri.width, ri.height, bpp, name + 8);
+}
+
+static volatile int lj_cb_done = 0;
+static volatile uint32_t lj_cb[4];
+static volatile uint32_t lj_cb_us = 0;
+static void lj_cbr(uint32_t ctx, uint32_t a, uint32_t b, uint32_t c)
+{
+    lj_cb[0] = ctx; lj_cb[1] = a; lj_cb[2] = b; lj_cb[3] = c;
+    lj_cb_us = (uint32_t)get_us_clock();
+    lj_cb_done = 1;
+}
+
+static void lj_make_rec(const struct lj_rect *r, int pitch_px, int code)
+{
+    memset(lj_rec, 0, sizeof(lj_rec));
+    lj_rec[1] = r->w;  lj_rec[4] = r->h;  lj_rec[6] = pitch_px;
+    lj_rec[7] = r->x;  lj_rec[8] = r->y;  lj_rec[9] = code;
+    lj_rec[11] = r->w; lj_rec[12] = r->h; lj_rec[13] = 1;
+    lj_rec[16] = r->w - r->w % 160;     /* thumbnail area: Canon's is 6240 x 4160 */
+    lj_rec[17] = r->h - r->h % 160;
+    lj_rec[18] = 4;
+}
+
+/* one encode, in CORE_SetMem1ToRaw's order with ML's record swapped in */
+static int lj_encode(int k, const struct lj_rect *r, const uint8_t *spec, const char *spec_name)
+{
+    int bpp = lj_ri.bits_per_pixel;
+    int pitch_px = lj_ri.pitch * 8 / bpp;
+    lj_make_rec(r, pitch_px, bpp == 14 ? 2 : 1);
+
+    memset(lj_out, 0x55, lj_out_size);
+    memset(lj_thumb, 0x55, lj_thumb_size);
+    static uint8_t spec2[0x60];
+    memcpy(spec2, spec, 0x30);
+    memcpy(spec2 + 0x30, spec, 0x30);
+    lj_mem[0] = (uint32_t)UNCACHEABLE(lj_out);
+    lj_mem[1] = lj_out_size;
+
+    struct lj_rsc rsc = { 0, 0, m2r_set.rsc[2], m2r_set.rsc[3], 0, m2r_set.rsc[5], m2r_set.rsc[6], m2r_set.rsc[7] };
+    struct lj_prm prm = {
+        (uint32_t)UNCACHEABLE(lj_huff), 1, (uint32_t)lj_mem,
+        (uint32_t)UNCACHEABLE(lj_in), (uint32_t)UNCACHEABLE(lj_thumb),
+    };
+
+    lj_printf("\n[encode %d] %s table, rect x=%d y=%d %dx%d, pitch %d px, %d-bit, LiveView %s\n",
+              k, spec_name, r->x, r->y, r->w, r->h, pitch_px, bpp, lv ? "on" : "off");
+    lj_words("  rec   ", lj_rec, 19);
+    lj_printf("  starting...\n");
+    lj_flush_txt();
+
+    lj_cb_done = 0;
+    lj_open(&rsc);
+    uint32_t canon_rec = MEM(LJ_STATE + 4);
+    MEM(LJ_STATE + 4) = (uint32_t)lj_rec;
+    lj_set_cbr(lj_cbr, 0x6c6a3300 + k);
+    lj_degeen(m2r_set.degeen);
+    lj_twain(m2r_set.twain, m2r_set.pw[5]);
+    lj_set_huff(lj_huff, spec2);
+    lj_set_param(&prm);
+    uint32_t us0 = (uint32_t)get_us_clock();
+    int t0 = get_ms_clock();
+    lj_start();
+    while (!lj_cb_done && get_ms_clock() - t0 < 2000)
+        msleep(1);
+    int done = lj_cb_done;
+    uint32_t us = done ? lj_cb_us - us0 : 0;
+    lj_stop();
+    lj_unset_cbr();
+    lj_close();
+    MEM(LJ_STATE + 4) = canon_rec;
+
+    uint32_t base[64];
+    copy_words(base, LJ_BASE, 64);
+    int size = (int)base[6];
+    int scan = lj_out_size;
+    while (scan > 0 && lj_out[scan - 1] == 0x55) scan--;
+    int tscan = lj_thumb_size;
+    while (tscan > 0 && lj_thumb[tscan - 1] == 0x55) tscan--;
+
+    lj_printf("  %s after %d us; callback %08x %08x %08x %08x\n", done ? "DONE" : "TIMED OUT", us, lj_cb[0], lj_cb[1], lj_cb[2], lj_cb[3]);
+    lj_printf("  size (base+18) %d = %d%% of %d; written up to %d; thumbnail written up to %d\n",
+              size, (int)((int64_t)size * 100 / ((int64_t)r->w * r->h * bpp / 8)), r->w * r->h * bpp / 8, scan, tscan);
+    lj_words("  base  ", base, 64);
+    lj_words("  head  ", (uint32_t *)lj_out, 16);
+    if (scan >= 64) lj_words("  tail  ", (uint32_t *)(lj_out + ((scan - 64) & ~3)), 16);
+    lj_words("  thumb ", (uint32_t *)lj_thumb, 8);
+
+    char name[32];
+    snprintf(name, sizeof(name), "ML/LOGS/LJ3R%dE%d.BIN", lj_run_no, k);
+    int keep = (size > 0 && size <= lj_out_size) ? MAX(size, scan) : scan;
+    lj_write_file(name, lj_out, MIN(MAX(keep, 4096), lj_out_size));
+    lj_flush_txt();
+    return done;
+}
+
+static void lj_run_task(void *unused)
+{
+    lj_run_no++;
+    lj_txt_n = 0;
+    int bpp = lj_ri.bits_per_pixel;
+    lj_printf("d7probe lossless encode test (probe 3) - 6D2 1.1.1 - run %d on frame %d, LiveView %s, movie mode %d, zoom %d\n",
+              lj_run_no, lj_frame_no, lv ? "on" : "off", is_movie_mode(), lv_dispsize);
+    lj_printf("[frame] %dx%d pitch %d B, %d-bit, black %d white %d, active y1 %d x1 %d y2 %d x2 %d, buffer was %08x\n",
+              lj_ri.width, lj_ri.height, lj_ri.pitch, bpp, lj_ri.black_level, lj_ri.white_level,
+              lj_ri.active_area.y1, lj_ri.active_area.x1, lj_ri.active_area.y2, lj_ri.active_area.x2, (uint32_t)lj_ri.buffer);
+    lj_printf("[buffers] in %08x %d, out %08x %d, thumb %08x %d, table %08x, list %08x\n",
+              (uint32_t)lj_in, lj_in_size, (uint32_t)lj_out, lj_out_size, (uint32_t)lj_thumb, lj_thumb_size, (uint32_t)lj_huff, (uint32_t)lj_mem);
+    lj_log_setup();
+
+    struct lj_rect full = { 0, 0, lj_ri.width & ~15, lj_ri.height & ~1 };
+    struct lj_rect crop = { 0, 0, 1920, 800 };
+    if (lj_ri.width < crop.w + 64 || lj_ri.height < crop.h + 32)
+    {
+        crop.w = (lj_ri.width / 2) & ~63;
+        crop.h = (lj_ri.height / 2) & ~15;
+    }
+    crop.x = ((lj_ri.width - crop.w) / 2) & ~63;
+    crop.y = ((lj_ri.height - crop.h) / 2) & ~15;
+
+    int ok = lj_encode(1, &full, (const uint8_t *)LJ_CANON_SPEC, "Canon's");
+    if (ok) ok = lj_encode(2, &crop, (const uint8_t *)LJ_CANON_SPEC, "Canon's");
+    if (ok) ok = lj_encode(3, &crop, bpp == 14 ? lj_spec14 : lj_spec12, "ML's");
+    if (!ok)
+    {
+        lj_hung = 1;
+        lj_printf("\nan encode never finished: buffers kept, restart the camera before the next run\n");
+    }
+    lj_flush_txt();
+    NotifyBox(5000, ok ? "Run %d done: ML/LOGS/LJ3R%d.*" : "Run %d: encode TIMED OUT - restart the camera", lj_run_no, lj_run_no);
+    lj_busy = 0;
+}
+
+static void lj_grab_task(void *unused)
+{
+    lj_grab();
+    lj_busy = 0;
+}
+
+static MENU_SELECT_FUNC(lj_setup_select)
+{
+    if (lj_armed) { lj_disarm(); return; }
+    lj_arm();
+}
+
+static MENU_UPDATE_FUNC(lj_setup_update)
+{
+    const char *problem = lj_setup_problem();
+    if (lj_armed)
+        MENU_SET_VALUE(m2r_set_n ? "captured, %d locks" : "armed, take a RAW photo", lock_n);
     else
-        MENU_SET_VALUE("OFF");
-    MENU_SET_HELP(m2r_armed ? "Take one RAW photo, then press again: writes ML/LOGS/LJPROBE2.TXT."
-                            : "Press to arm, take one RAW photo, press again. Read-only hooks.");
+        MENU_SET_VALUE(m2r_set_n ? (problem ? "unusable" : "captured") : "OFF");
+    MENU_SET_HELP(lj_armed ? "Take one RAW photo (full-stop ISO); press again to remove the hooks."
+                           : "Press to arm two read-only hooks, then take one RAW photo.");
+    if (m2r_set_n && problem) MENU_SET_WARNING(MENU_WARN_ADVICE, "%s", problem);
+}
+
+static MENU_SELECT_FUNC(lj_grab_select)
+{
+    if (lj_busy) return;
+    if (lj_hung) { NotifyBox(3000, "Restart the camera first"); return; }
+    if (!lv) { NotifyBox(3000, "Go to LiveView first"); return; }
+    if (lj_armed && m2r_set_n) lj_disarm();
+    lj_busy = 1;
+    task_create("d7lj_grab", 0x1e, 0x2000, lj_grab_task, 0);
+}
+
+static MENU_UPDATE_FUNC(lj_grab_update)
+{
+    if (lj_in)
+        MENU_SET_VALUE("frame %d: %dx%d %d-bit", lj_frame_no, lj_ri.width, lj_ri.height, lj_ri.bits_per_pixel);
+    else
+        MENU_SET_VALUE("none");
+    MENU_SET_HELP("In LiveView at 14 or 12-bit: copies one raw frame (ML/LOGS/LJ3Fn.RAW).");
+}
+
+static MENU_SELECT_FUNC(lj_run_select)
+{
+    if (lj_busy) return;
+    if (lj_hung) { NotifyBox(3000, "Restart the camera first"); return; }
+    const char *problem = lj_setup_problem();
+    if (problem) { NotifyBox(3000, "Lossless setup: %s", problem); return; }
+    if (!lj_in) { NotifyBox(3000, "Grab a LiveView frame first"); return; }
+    if (lj_armed) lj_disarm();
+    lj_busy = 1;
+    task_create("d7lj_run", 0x1e, 0x4000, lj_run_task, 0);
+}
+
+static MENU_UPDATE_FUNC(lj_run_update)
+{
+    if (lj_hung)
+        MENU_SET_VALUE("timed out: restart");
+    else if (lj_busy)
+        MENU_SET_VALUE("working...");
+    else
+        MENU_SET_VALUE("%d runs", lj_run_no);
+    MENU_SET_HELP("EXPERIMENT: Canon's encoder on the frame, 3 encodes (ML/LOGS/LJ3Rn.*).");
+    MENU_SET_WARNING(MENU_WARN_INFO, "First with LiveView OFF (photo mode), then with it on.");
 }
 
 static struct menu_entry d7probe_menu[] =
@@ -1211,7 +1460,7 @@ static struct menu_entry d7probe_menu[] =
         .select = menu_open_submenu,
         .submenu_width = 720,
         .help   = "Research tools used to build the 6D2 port. Not needed for shooting.",
-        .help2  = "The FPS and SD clock experiments write camera registers.",
+        .help2  = "The FPS, SD clock and lossless encode experiments drive hardware.",
         .children = (struct menu_entry[]) {
             {
                 .name   = "State logger",
@@ -1220,11 +1469,25 @@ static struct menu_entry d7probe_menu[] =
                 .help2  = "Logs GUI state, every button event and every MPU message (read-only).",
             },
             {
-                .name   = "Lossless probe",
-                .select = m2r_select,
-                .update = m2r_update,
+                .name   = "Lossless: photo setup",
+                .select = lj_setup_select,
+                .update = lj_setup_update,
                 .icon_type = IT_ACTION,
-                .help2  = "Logs how Canon's CR2 lossless encoder is set up (read-only hooks).",
+                .help2  = "Copies how Canon sets up its CR2 encoder, for the encode test.",
+            },
+            {
+                .name   = "Lossless: grab LV frame",
+                .select = lj_grab_select,
+                .update = lj_grab_update,
+                .icon_type = IT_ACTION,
+                .help2  = "The encode test's input. Grabbing again replaces it.",
+            },
+            {
+                .name   = "Lossless: encode test",
+                .select = lj_run_select,
+                .update = lj_run_update,
+                .icon_type = IT_ACTION,
+                .help2  = "Each run: whole frame + crop with Canon's table, crop with ML's.",
             },
             {
                 .name   = "Recording trace",
