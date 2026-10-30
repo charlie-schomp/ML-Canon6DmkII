@@ -1015,7 +1015,7 @@ static MENU_SELECT_FUNC(align_dump_select)
  *    compressed size at +0x18.
  * Three menu entries: "grab LV frame" writes a 12/14-bit LiveView frame to the
  * card, "encode test" reads it back and encodes a centred crop of it with ML's
- * table, five rounds of the selected LiveView probe (lj_probe), and the optional
+ * table, per the selected LiveView probe (lj_probe), and the optional
  * "photo setup" arms the two hooks above for one RAW photo.  The buffers come
  * from the shoot pool (lj_get_mem), held only for the run; the grab writes the
  * frame straight from Canon's LiveView buffer and needs none.  No
@@ -1408,9 +1408,36 @@ static void lj_degeen_identity(uint32_t *d)
  * Done is the callback or, without it, the compressed size landing in base
  * +0x18 (set to -1 before the start): in LiveView the picture completes but
  * the thumbnail stalls and the callback never comes (v101), so the encoder is
- * stopped 50 ms after the size.  Returns 1 done, 0 timed out, -1 refused
+ * stopped 3 ms after the size.  Returns 1 done, 0 timed out, -1 refused
  * (callback b/c).  quiet: one log line, no buffer fill, no file. */
-static int lj_no_start = 0;
+
+/* LiveView probes.  v103: LiveView's colour broke (chroma 20 -> 128, the
+ * green) after the first round of every probe - even open / configure /
+ * close with no start.  open() applies rsc's share-memory table, (register,
+ * value) pairs routing internal memory to the encoder (0xd0003200 / 3204 /
+ * 3238 / 323c on the photo path), and nothing routes it back.
+ *  A: put LiveView's values back after each close;
+ *  B: hand open() a table of LiveView's current values (nothing re-routed);
+ *  C: A, 48 rounds at 24 fps, LiveView checked during the burst. */
+static int lj_probe = 0;
+static const char *lj_probe_name[3] = { "A: restore share mem", "B: keep LV's share mem", "C: A at 24 fps" };
+static uint32_t lj_sm[8][2];
+static int lj_sm_n;
+
+static void lj_sm_read(const struct m2r_set_rec *s)
+{
+    lj_sm_n = MIN((int)s->rsc[3], COUNT(lj_sm));
+    for (int i = 0; i < lj_sm_n; i++)
+    {
+        lj_sm[i][0] = MEM(s->rsc[2] + 8 * i);
+        lj_sm[i][1] = MEM(lj_sm[i][0]);
+    }
+}
+
+static void lj_sm_restore(void)
+{
+    for (int i = 0; i < lj_sm_n; i++) MEM(lj_sm[i][0]) = lj_sm[i][1];
+}
 
 static int lj_encode(int k, const struct lj_rect *r, const uint8_t *spec, const char *spec_name, int quiet)
 {
@@ -1440,6 +1467,9 @@ static int lj_encode(int k, const struct lj_rect *r, const uint8_t *spec, const 
     twain[13] = black + 1;
 
     struct lj_rsc rsc = { 0, 0, s->rsc[2], s->rsc[3], 0, s->rsc[5], s->rsc[6], s->rsc[7] };
+    lj_sm_read(s);
+    if (lj_probe == 1)
+        rsc.sharemem_tbl = (uint32_t)lj_sm;
     struct lj_prm prm = {
         (uint32_t)UNCACHEABLE(lj_huff), 1, (uint32_t)lj_mem,
         (uint32_t)UNCACHEABLE(lj_in), (uint32_t)UNCACHEABLE(lj_thumb),
@@ -1452,6 +1482,9 @@ static int lj_encode(int k, const struct lj_rect *r, const uint8_t *spec, const 
         lj_words("  rec   ", lj_rec, 19);
         lj_words("  degeen", degeen, 24);
         lj_words("  twain ", twain, 12);
+        for (int i = 0; i < lj_sm_n; i++)
+            lj_printf("  share mem %08x: LiveView's %08x, the table's %08x\n", lj_sm[i][0], lj_sm[i][1],
+                      MEM(s->rsc[2] + 8 * i + 4));
         lj_printf("  starting...\n");
         lj_flush_txt();
     }
@@ -1466,15 +1499,6 @@ static int lj_encode(int k, const struct lj_rect *r, const uint8_t *spec, const 
     lj_twain(twain, s->pw[5]);
     lj_set_huff(lj_huff, spec2);
     lj_set_param(&prm);
-    if (lj_no_start)
-    {
-        /* LV probe B: the set-up alone, then Canon's teardown */
-        lj_unset_cbr();
-        lj_close();
-        MEM(LJ_STATE + 4) = canon_rec;
-        lj_printf("  %2d: set up and closed, not started\n", k);
-        return 1;
-    }
     MEM(LJ_BASE + 0x18) = 0xffffffff;
     uint32_t us0 = (uint32_t)get_us_clock(), us_size = 0;
     int t0 = get_ms_clock();
@@ -1483,7 +1507,7 @@ static int lj_encode(int k, const struct lj_rect *r, const uint8_t *spec, const 
     {
         if (!us_size && MEM(LJ_BASE + 0x18) != 0xffffffff)
             us_size = MAX((uint32_t)get_us_clock() - us0, 1);
-        if (us_size && get_ms_clock() - t0 > (int)(us_size / 1000) + 50)
+        if (us_size && get_ms_clock() - t0 > (int)(us_size / 1000) + 3)
             break;
         msleep(1);
     }
@@ -1494,6 +1518,8 @@ static int lj_encode(int k, const struct lj_rect *r, const uint8_t *spec, const 
     lj_unset_cbr();
     lj_close();
     MEM(LJ_STATE + 4) = canon_rec;
+    if (lj_probe != 1)
+        lj_sm_restore();
 
     uint32_t base[64];
     copy_words(base, LJ_BASE, 64);
@@ -1528,35 +1554,26 @@ static int lj_encode(int k, const struct lj_rect *r, const uint8_t *spec, const 
     return refused ? -1 : done;
 }
 
-/* LiveView probes (v102 turned LiveView green after a burst in movie mode):
- *  A: encode, LiveView checked after each one;
- *  B: open / configure / close only, never started;
- *  C: encode, then put back the DEGEEN and TWAIN registers it changed.
- * DEGEEN (unit 4) writes 12 words at 0xd0037b40, TWAIN +0x28..+0x30 and
- * +0x40..+0x54 of 0xd0012000; both setters also write the same offsets from
- * the base held at 0x1faa4 (0x1faa4 + 0x37b40, + 0x12000). */
-static int lj_probe = 0;
-static const char *lj_probe_name[3] = { "A: encode, check", "B: set up only", "C: encode, restore" };
-
-#define LJ_NREG 42
+/* registers watched around each round: the share-memory routing, DEGEEN
+ * (unit 4, 12 words at 0xd0037b40) and TWAIN (+0x28..+0x30, +0x40..+0x54 of
+ * 0xd0012000); both setters also write the same offsets from the base held
+ * at 0x1faa4 (a RAM copy, 0x021d0800 on the camera, so not watched) */
+#define LJ_NREG 50
 static uint32_t lj_reg_addr[LJ_NREG], lj_reg_saved[LJ_NREG];
 static int lj_nreg;
 
 static void lj_regs_init(void)
 {
     static const uint16_t twain_off[] = { 0x28, 0x2c, 0x30, 0x40, 0x44, 0x48, 0x4c, 0x50, 0x54 };
-    uint32_t b2 = MEM(0x1faa4);
-    uint32_t bases[2] = { 0xd0000000, b2 };
-    int nb = ((b2 & 0xf0000000) == 0xd0000000 && b2 != 0xd0000000) ? 2 : 1;
+    const struct m2r_set_rec *s = lj_setup();
     lj_nreg = 0;
-    for (int b = 0; b < nb; b++)
-    {
-        for (int i = 0; i < 12; i++)
-            lj_reg_addr[lj_nreg++] = bases[b] + 0x37b40 + 4 * i;
-        for (int i = 0; i < COUNT(twain_off); i++)
-            lj_reg_addr[lj_nreg++] = bases[b] + 0x12000 + twain_off[i];
-    }
-    lj_printf("[registers] base at 0x1faa4 = %08x, %d words watched\n", b2, lj_nreg);
+    for (int i = 0; i < MIN((int)s->rsc[3], 8); i++)
+        lj_reg_addr[lj_nreg++] = MEM(s->rsc[2] + 8 * i);
+    for (int i = 0; i < 12; i++)
+        lj_reg_addr[lj_nreg++] = 0xd0037b40 + 4 * i;
+    for (int i = 0; i < COUNT(twain_off); i++)
+        lj_reg_addr[lj_nreg++] = 0xd0012000 + twain_off[i];
+    lj_printf("[registers] %d words watched\n", lj_nreg);
 }
 
 static void lj_regs_save(void)
@@ -1580,7 +1597,11 @@ static int lj_regs_diff(const char *when, int restore)
 }
 
 /* the LiveView picture: mean luma and chroma over a sparse grid, and the
- * share of all-zero UYVY pairs - all zeros is what shows as green */
+ * share of all-zero UYVY pairs.  The green of v102/v103 was chroma jumping
+ * from ~20 to ~128 with luma intact, so a jump of 40 over the reading before
+ * the first round is flagged.  Returns the chroma, -1 without a picture. */
+static int lj_lv_chroma0 = -1;
+
 static int lj_lv_health(const char *when)
 {
     struct vram_info *v = get_yuv422_vram();
@@ -1600,10 +1621,11 @@ static int lj_lv_health(const char *when)
             csum += (du < 0 ? -du : du) + (dv < 0 ? -dv : dv);
             if (!p[0] && !p[1] && !p[2] && !p[3]) zero++;
         }
-    int green = zero * 2 > n;
+    int chroma = n ? csum / n : 0;
+    int green = zero * 2 > n || (lj_lv_chroma0 >= 0 && chroma > lj_lv_chroma0 + 40);
     lj_printf("  [LV %s] %dx%d: mean Y %d, chroma %d, zero %d of %d%s\n", when, v->width, v->height,
-              n ? ysum / n : 0, n ? csum / n : 0, zero, n, green ? "  <- GREEN" : "");
-    return green;
+              n ? ysum / n : 0, chroma, zero, n, green ? "  <- GREEN" : "");
+    return chroma;
 }
 
 static void lj_run_task(void *unused)
@@ -1639,26 +1661,34 @@ static void lj_run_task(void *unused)
     crop.x = ((lj_ri.width - crop.w) / 2) & ~63;
     crop.y = ((lj_ri.height - crop.h) / 2) & ~15;
 
-    /* five rounds of the selected LiveView probe on the crop with ML's table
-     * (rounds 1 and 5 written when encoding), LiveView checked before, after
-     * each round and a second after the last */
+    /* the selected LiveView probe on the crop with ML's table: A / B five
+     * rounds, LiveView checked after each; C 48 rounds paced at 24 fps,
+     * LiveView checked every 8th.  The first and last rounds are written. */
     const uint8_t *spec = bpp == 14 ? lj_spec14 : lj_spec12;
+    int rounds = lj_probe == 2 ? 48 : 5;
     lj_printf("\n[LV probe %s]\n", lj_probe_name[lj_probe]);
     lj_regs_init();
     lj_regs_save();
-    lj_lv_health("before");
-    lj_no_start = lj_probe == 1;
-    int ok = 1;
-    for (int i = 1; i <= 5 && ok > 0; i++)
+    lj_lv_chroma0 = -1;
+    lj_lv_chroma0 = lj_lv_health("before");
+    int ok = 1, t_next = get_ms_clock();
+    for (int i = 1; i <= rounds && ok > 0; i++)
     {
-        ok = lj_encode(i, &crop, spec, "ML's", i != 1 && i != 5);
-        lj_regs_diff("changed", lj_probe == 2);
-        msleep(100);
+        ok = lj_encode(i, &crop, spec, "ML's", i != 1 && i != rounds);
+        if (lj_probe == 2)
+        {
+            t_next += 42;
+            int wait = t_next - get_ms_clock();
+            if (wait > 0) msleep(wait);
+            if (i % 8) continue;
+        }
+        else
+            msleep(100);
+        lj_regs_diff("changed", 0);
         char when[16];
         snprintf(when, sizeof(when), "after %d", i);
         lj_lv_health(when);
     }
-    lj_no_start = 0;
     msleep(1000);
     lj_regs_diff("1 s later", 0);
     lj_lv_health("1 s later");
@@ -1797,15 +1827,15 @@ static struct menu_entry d7probe_menu[] =
                 .select = lj_run_select,
                 .update = lj_run_update,
                 .icon_type = IT_ACTION,
-                .help2  = "Each run: a 1920x800 crop, 5 rounds of the LV probe below.",
+                .help2  = "Each run: a 1920x800 crop with ML's table, per the LV probe below.",
             },
             {
                 .name   = "Lossless: LV probe",
                 .priv   = &lj_probe,
                 .max    = 2,
-                .choices = CHOICES("A: encode, check", "B: set up only", "C: encode, restore"),
-                .help   = "What each encode-test round does; LiveView is checked after each.",
-                .help2  = "A: encode. B: open/configure/close only. C: encode, put registers back.",
+                .choices = CHOICES("A: restore share mem", "B: keep LV's share mem", "C: A at 24 fps"),
+                .help   = "How the encode test treats LiveView's share-memory routing.",
+                .help2  = "A: put it back after each encode. B: never change it. C: A, 48 at 24 fps.",
             },
             {
                 .name   = "Lossless: photo setup",
