@@ -246,6 +246,18 @@ static CONFIG_INT("raw.clip.reel", clip_reel, 1);
 static CONFIG_INT("raw.clip.scene", clip_scene, 1);
 static CONFIG_INT("raw.clip.shot", clip_shot, 0);          /* 0 = none, 1..26 = A..Z */
 static CONFIG_INT("raw.clip.take", clip_take, 1);
+
+/* 6D2: warn in the recording status above this board temperature (deg C, 0 = off) */
+static CONFIG_INT("raw.temp.warn", temp_warn_index, 3);
+static const int temp_warn_c[] = { 0, 45, 50, 55, 60 };
+extern int efic_temp;                                       /* 6D2: board temperature, raw - 128 = deg C */
+static int temp_6d2 = 0;
+static int board_celsius(void) { return temp_6d2 && efic_temp > 0 ? efic_temp - 128 : -1000; }
+static int board_too_hot(void)
+{
+    int limit = temp_warn_c[COERCE(temp_warn_index, 0, COUNT(temp_warn_c) - 1)];
+    return limit && board_celsius() >= limit;
+}
 #define OUTPUT_14BIT_NATIVE 0
 #define OUTPUT_12BIT_UNCOMPRESSED 1
 #define OUTPUT_10BIT_UNCOMPRESSED 2
@@ -1579,6 +1591,17 @@ static MENU_SELECT_FUNC(clip_shot_select)
     clip_take = 1;
 }
 
+static MENU_UPDATE_FUNC(temp_warn_update)
+{
+    if (!temp_6d2)
+    {
+        MENU_SET_WARNING(MENU_WARN_NOT_WORKING, "No temperature reading on this camera.");
+        return;
+    }
+    int c = board_celsius();
+    if (c > -1000) MENU_SET_RINFO("now %d C", c);
+}
+
 static MENU_UPDATE_FUNC(output_format_update)
 {
     refresh_raw_settings(0);
@@ -2290,7 +2313,13 @@ static int update_status(char * buffer, int buffer_size)
         }
         else if (predicted_frames_left > 10000)
         {
-            /* assume continuous recording: say how long the card lasts */
+            /* assume continuous recording: say how long the card lasts,
+             * unless the camera is too hot - that matters more */
+            if (board_too_hot())
+            {
+                len += snprintf(buffer + len, buffer_size - len, " HOT %dC", board_celsius());
+                return COLOR_RED;
+            }
             int left = card_minutes_left(t);
             if (left >= 0)
             {
@@ -2303,6 +2332,10 @@ static int update_status(char * buffer, int buffer_size)
             if (time_left < 100)
             {
                 len += snprintf(buffer + len, buffer_size - len, " ~ %02d", time_left);
+            }
+            if (board_too_hot())
+            {
+                len += snprintf(buffer + len, buffer_size - len, " HOT");
             }
 
             /* warning - recording not continuous */
@@ -4084,6 +4117,7 @@ void raw_video_rec_task(uint32_t card_index)
         rec_log("========== TAKE START, card=%d, srm_enabled=%d",
                 card_index, (int)use_srm_memory);
         rec_log_mem("take start");
+        if (temp_6d2) rec_log("take start: board %d C", board_celsius());
         take_free_bytes = (int64_t)get_free_space_32k(get_shooting_card()) * 32 * 1024;
         memset(&wprobe, 0, sizeof(wprobe));
         lossless_stats(1, 0, 0, 0, 0);
@@ -4911,6 +4945,7 @@ cleanup:
         {
             clip_take = MIN(clip_take + 1, 999);
         }
+        if (temp_6d2) rec_log("take end: board %d C", board_celsius());
         rec_log("========== TAKE END (state back to IDLE)");
         rec_trace = 0;      /* the next take reads the switch again */
 
@@ -5100,6 +5135,15 @@ static struct menu_entry raw_video_menu[] =
                     },
                     MENU_EOL
                 },
+            },
+            {
+                .name = "Temperature warning",
+                .priv = &temp_warn_index,
+                .max = COUNT(temp_warn_c) - 1,
+                .choices = CHOICES("OFF", "45 C", "50 C", "55 C", "60 C"),
+                .update = temp_warn_update,
+                .help  = "Shows HOT and the temperature in the recording status above this.",
+                .help2 = "Board temperature (the MPU's), not the sensor's. Visual only.",
             },
             {
                 .name = "Preview",
@@ -5659,6 +5703,7 @@ static unsigned int raw_rec_init()
     }
 
     int cam_6d2 = is_camera("6D2", "*");
+    temp_6d2 = cam_6d2;
     if (h264_proxy_menu < 0)  h264_proxy_menu  = cam_6d2 ? 1 : 0;
     if (sync_beep < 0)        sync_beep        = cam_6d2 ? 0 : 1;
     if (aspect_fit_width < 0) aspect_fit_width = cam_6d2 ? 1 : 0;
@@ -5784,5 +5829,6 @@ MODULE_CONFIGS_START()
     MODULE_CONFIG(clip_scene)
     MODULE_CONFIG(clip_shot)
     MODULE_CONFIG(clip_take)
+    MODULE_CONFIG(temp_warn_index)
     MODULE_CONFIG(h264_proxy_menu)
 MODULE_CONFIGS_END()
