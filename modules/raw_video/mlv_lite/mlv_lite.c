@@ -3971,12 +3971,10 @@ void raw_video_rec_task(uint32_t card_index)
         log_frame_timer("take start");
         if (lossless_6d2 && OUTPUT_COMPRESSION)
         {
-            /* experiments from the developer tools (0 without d7probe) */
-            int route_early = get_config_var("d7probe.ljroute");
-            int delay_us = get_config_var("d7probe.ljdelay") * 500;
-            lossless_options(route_early, delay_us);
-            rec_log("lossless options: routing back %s, start delay %d us",
-                    route_early ? "before the start" : "after close", delay_us);
+            /* the developer tools can fall back to the old order (0 without d7probe) */
+            int route_late = get_config_var("d7probe.ljroute");
+            lossless_options(route_late);
+            rec_log("lossless: LiveView routing back %s", route_late ? "after close only" : "after open");
         }
 
         /* Scratch audio: Canon's own WAV recorder, started alongside the raw clip.

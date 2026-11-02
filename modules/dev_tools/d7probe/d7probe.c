@@ -512,8 +512,7 @@ static MENU_SELECT_FUNC(status_dump_select)
  * runs while this module is loaded and the switch is on */
 static CONFIG_INT("d7probe.rectrace", rec_trace, 0);
 /* read by mlv_lite at each lossless take (silent/lossless.c lossless_options) */
-static CONFIG_INT("d7probe.ljroute", lj_route_early, 0);
-static CONFIG_INT("d7probe.ljdelay", lj_start_delay, 0);    /* 0.5 ms steps */
+static CONFIG_INT("d7probe.ljroute", lj_route_late, 0);
 
 static MENU_UPDATE_FUNC(d7probe_update)
 {
@@ -1510,11 +1509,14 @@ static void lj_degeen_identity(uint32_t *d)
  * before open:
  *  A: the share-memory routing;
  *  B: A and the encoder's enables;
- *  C: A, 48 rounds at 24 fps, LiveView checked during the burst.
+ *  C: A, 48 rounds at 24 fps, LiveView checked during the burst;
+ *  D: A, and the routing also put back right after open (registers only,
+ *     before the configuration) - what mlv_lite does since v113: written
+ *     files check whether the encode stays bit-exact without open's routing.
  * Round 1 still logs everything else that changed, untouched. */
 #define LJ_SHADOW_SIZE  0x80000
 static int lj_probe = 0;
-static const char *lj_probe_name[3] = { "A: share-mem routing", "B: routing + enables", "C: A at 24 fps" };
+static const char *lj_probe_name[4] = { "A: share-mem routing", "B: routing + enables", "C: A at 24 fps", "D: routing back after open" };
 static const uint16_t lj_put_back[8] = { 0x3200, 0x3204, 0x3238, 0x323c, 0x33a8, 0x500c, 0x5224, 0x5960 };
 static uint32_t *lj_shadow_save;
 static uint32_t lj_shadow;
@@ -1620,6 +1622,9 @@ static int lj_encode(int k, const struct lj_rect *r, const uint8_t *spec, const 
     lj_cb[0] = lj_cb[1] = lj_cb[2] = lj_cb[3] = 0;
     lj_shadow_snap(k);
     lj_open(&rsc);
+    if (lj_probe == 3 && lj_shadow_save && lj_shadow >= 0x100000 && lj_shadow < 0x40000000)
+        for (int j = 0; j < 4; j++)
+            MEM(0xd0000000 + lj_put_back[j]) = lj_shadow_save[lj_put_back[j] / 4];
     uint32_t canon_rec = MEM(LJ_STATE + 4);
     MEM(LJ_STATE + 4) = (uint32_t)lj_rec;
     lj_set_cbr(lj_cbr, 0x6c6a3300 + k);
@@ -1968,10 +1973,10 @@ static struct menu_entry d7probe_menu[] =
             {
                 .name   = "Lossless: LV probe",
                 .priv   = &lj_probe,
-                .max    = 2,
-                .choices = CHOICES("A: share-mem routing", "B: routing + enables", "C: A at 24 fps"),
+                .max    = 3,
+                .choices = CHOICES("A: share-mem routing", "B: routing + enables", "C: A at 24 fps", "D: routing after open"),
                 .help   = "What the encode test puts back of LiveView's registers after each encode.",
-                .help2  = "A: share-memory routing. B: A + encoder enables. C: A, 48 at 24 fps.",
+                .help2  = "A: routing. B: A + enables. C: A, 48 at 24 fps. D: A + routing after open.",
             },
             {
                 .name   = "Lossless: photo setup",
@@ -1982,19 +1987,11 @@ static struct menu_entry d7probe_menu[] =
             },
             {
                 .name   = "Lossless: LV routing",
-                .priv   = &lj_route_early,
+                .priv   = &lj_route_late,
                 .max    = 1,
-                .choices = CHOICES("after close", "before start"),
+                .choices = CHOICES("after open", "after close only"),
                 .help   = "When each lossless encode gives LiveView its memory routing back.",
-                .help2  = "EXPERIMENT. Before start: if the encoder needs it, the take stops (restart).",
-            },
-            {
-                .name   = "Lossless: start delay",
-                .priv   = &lj_start_delay,
-                .max    = 10,
-                .choices = CHOICES("0", "0.5 ms", "1 ms", "1.5 ms", "2 ms", "2.5 ms", "3 ms", "3.5 ms", "4 ms", "4.5 ms", "5 ms"),
-                .help   = "Starts each lossless encode this long after its frame arrives.",
-                .help2  = "EXPERIMENT. At 59.94p, 5 ms + the 10 ms encode still fits the frame.",
+                .help2  = "After open keeps Canon's preview right. After close only: v107-v112 (green).",
             },
             {
                 .name   = "Recording trace",
@@ -2128,8 +2125,7 @@ static unsigned int d7probe_deinit()
 
 MODULE_CONFIGS_START()
     MODULE_CONFIG(rec_trace)
-    MODULE_CONFIG(lj_route_early)
-    MODULE_CONFIG(lj_start_delay)
+    MODULE_CONFIG(lj_route_late)
     MODULE_CONFIG(sd_exp_mode)
     MODULE_CONFIG(sd_exp_idx)
 MODULE_CONFIGS_END()
