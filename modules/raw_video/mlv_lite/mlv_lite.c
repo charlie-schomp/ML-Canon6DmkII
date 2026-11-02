@@ -467,6 +467,16 @@ static void rec_log(const char * fmt, ...)
  * given back. Census both pools at each end of a take so the two runs can be
  * diffed directly. format_memory_size() returns a shared static buffer, so
  * these are printed as plain integers rather than through it. */
+/* 6D2 1.1.1: Canon's frame timers from its ImgSeqCoop store (0x1c928: B at
+ * +0x1c, A at +0x2c - read directly; the getters assert during a mode
+ * change) and the rate mlv_lite will write in the header */
+static void log_frame_timer(const char * when)
+{
+    if (!lossless_6d2) return;
+    rec_log("%s: timer A %d B %d, header fps x1000 %d", when,
+            (int)MEM(0x1c928 + 0x2c), (int)MEM(0x1c928 + 0x1c), fps_get_current_x1000());
+}
+
 static void rec_log_mem(const char * when)
 {
     if (!rec_trace) return;
@@ -3951,6 +3961,7 @@ void raw_video_rec_task(uint32_t card_index)
                 card_index, (int)use_srm_memory);
         rec_log_mem("take start");
         lossless_stats(1, 0, 0, 0, 0);
+        log_frame_timer("take start");
 
         /* Scratch audio: Canon's own WAV recorder, started alongside the raw clip.
          * Costs ~0.19 MB/s and records no video, unlike the H.264 proxy - which
@@ -4675,11 +4686,14 @@ cleanup:
         if (lossless_6d2 && OUTPUT_COMPRESSION)
         {
             /* can the encoder keep up: compare with the frame period */
-            int calls, avg, max, no_cb, fps = fps_get_current_x1000();
+            int calls, avg, max, no_cb, setup, enc, tail, fps = fps_get_current_x1000();
+            lossless_stats_split(&setup, &enc, &tail);
             lossless_stats(1, &calls, &avg, &max, &no_cb);
             rec_log("lossless: %d encodes, avg %d us, max %d us, %d without callback; frame period %d us",
                     calls, avg, max, no_cb, fps ? (int)(1000000000LL / fps) : 0);
+            rec_log("lossless: avg %d us setup + %d us start to size + %d us to return", setup, enc, tail);
         }
+        log_frame_timer("take end");
         rec_log_mem("teardown: before free_buffers");
         take_semaphore(settings_sem, 0);
         free_buffers();

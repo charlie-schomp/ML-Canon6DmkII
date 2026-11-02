@@ -21,6 +21,11 @@ int lossless_compress_raw_rectangle(
  * per call (us), encodes that ended without Canon's callback */
 void lossless_stats(int reset, int * calls, int * avg_us, int * max_us, int * no_callback);
 
+/* 6D2: where the mean call went (us): open and configure up to the start,
+ * start to the compressed size appearing (the encoder itself), and from
+ * there to the return (callback / stop / close / routing put back) */
+void lossless_stats_split(int * setup_us, int * encode_us, int * tail_us);
+
 int lossless_decompress_raw(
     struct memSuite * src, void * dst,
     int width, int height,

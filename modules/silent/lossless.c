@@ -138,7 +138,15 @@ static uint8_t *lj6_buf = 0;            /* uncacheable: thumbnail, table, memory
 static volatile int lj6_cb_done;
 static volatile uint32_t lj6_cb_err;
 static int lj6_calls, lj6_no_cb, lj6_max_us;
-static long long lj6_sum_us;
+static long long lj6_sum_us, lj6_sum_setup, lj6_sum_encode, lj6_sum_tail;
+
+void lossless_stats_split(int * setup_us, int * encode_us, int * tail_us)
+{
+    int n = MAX(lj6_calls, 1);
+    *setup_us  = (int)(lj6_sum_setup / n);
+    *encode_us = (int)(lj6_sum_encode / n);
+    *tail_us   = (int)(lj6_sum_tail / n);
+}
 
 void lossless_stats(int reset, int * calls, int * avg_us, int * max_us, int * no_callback)
 {
@@ -149,7 +157,7 @@ void lossless_stats(int reset, int * calls, int * avg_us, int * max_us, int * no
     if (reset)
     {
         lj6_calls = lj6_no_cb = lj6_max_us = 0;
-        lj6_sum_us = 0;
+        lj6_sum_us = lj6_sum_setup = lj6_sum_encode = lj6_sum_tail = 0;
     }
 }
 
@@ -235,6 +243,7 @@ static int lj6_compress(struct memSuite * dst_suite, void * src, int src_x, int 
     for (int j = 0; j < 4; j++)
         routing[j] = image_ok ? MEM(image + lj6_routing[j]) : 0;
 
+    uint32_t us0 = get_us_clock();
     lj6_cb_done = 0;
     lj6_cb_err = 0;
     lj6_open(&rsc);
@@ -246,13 +255,16 @@ static int lj6_compress(struct memSuite * dst_suite, void * src, int src_x, int 
     lj6_set_huff(huff, spec2);
     lj6_set_param(&prm);
     MEM(LJ6_BASE + 0x18) = 0xffffffff;
-    uint32_t us0 = get_us_clock();
+    uint32_t us_start = get_us_clock(), us_size = 0;
     int t0 = get_ms_clock(), t_size = 0;
     lj6_start();
     while (!lj6_cb_done && get_ms_clock() - t0 < 1000)
     {
         if (!t_size && MEM(LJ6_BASE + 0x18) != 0xffffffff)
+        {
             t_size = MAX(get_ms_clock(), 1);
+            us_size = get_us_clock();
+        }
         if (t_size && get_ms_clock() - t_size > 3)
             break;
         msleep(1);
@@ -274,7 +286,12 @@ static int lj6_compress(struct memSuite * dst_suite, void * src, int src_x, int 
     }
 
     int size = (int)MEM(LJ6_BASE + 0x18);
-    int us = (int)(get_us_clock() - us0);
+    uint32_t us_end = get_us_clock();
+    int us = (int)(us_end - us0);
+    if (!us_size) us_size = us_end;
+    lj6_sum_setup  += (int)(us_start - us0);
+    lj6_sum_encode += (int)(us_size - us_start);
+    lj6_sum_tail   += (int)(us_end - us_size);
     lj6_calls++;
     lj6_sum_us += us;
     lj6_max_us = MAX(lj6_max_us, us);
