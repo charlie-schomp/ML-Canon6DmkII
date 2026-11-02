@@ -1287,6 +1287,37 @@ static int lj_read_frame(void)
     return done == lj_in_size;
 }
 
+/* after a restart: the newest frame whose LJ3Fn.INF (its raw_info, written
+ * by the grab) is on the card, so a run needs no new grab - and no RAW video
+ * toggling - after each crash */
+static int lj_load_last_frame(void)
+{
+    char name[32];
+    uint32_t size;
+    int last = 0;
+    for (int n = 1; n < 999; n++)
+    {
+        snprintf(name, sizeof(name), "ML/LOGS/LJ3F%d.RAW", n);
+        if (FIO_GetFileSize(name, &size) != 0) break;
+        snprintf(name, sizeof(name), "ML/LOGS/LJ3F%d.INF", n);
+        if (FIO_GetFileSize(name, &size) == 0 && size == sizeof(struct raw_info)) last = n;
+    }
+    if (!last) return 0;
+    struct raw_info *ri = fio_malloc(sizeof(struct raw_info));
+    if (!ri) return 0;
+    snprintf(name, sizeof(name), "ML/LOGS/LJ3F%d.INF", last);
+    FILE *f = FIO_OpenFile(name, O_RDONLY | O_SYNC);
+    int ok = f && FIO_ReadFile(f, ri, sizeof(*ri)) == (int)sizeof(*ri);
+    if (f) FIO_CloseFile(f);
+    ok = ok && (ri->bits_per_pixel == 12 || ri->bits_per_pixel == 14) && ri->pitch > 0 && ri->height > 0;
+    if (ok)
+    {
+        lj_ri = *ri;
+        lj_frame_no = last;
+    }
+    fio_free(ri);
+    return ok;
+}
 static void lj_flush_txt(void)
 {
     char name[32];
@@ -1362,8 +1393,11 @@ static void lj_grab(void)
         NotifyBox(3000, "Lossless: could not write %s", name + 8);
         return;
     }
+    snprintf(name, sizeof(name), "ML/LOGS/LJ3F%d.INF", no);
+    lj_write_file(name, &ri, sizeof(ri));
     lj_ri = ri;
     lj_frame_no = no;
+    snprintf(name, sizeof(name), "ML/LOGS/LJ3F%d.RAW", no);
     NotifyBox(3000, "Frame %d: %dx%d %d-bit, %s", lj_frame_no, ri.width, ri.height, bpp, name + 8);
 }
 
@@ -1674,6 +1708,12 @@ static int lj_lv_health(const char *when)
 
 static void lj_run_task(void *unused)
 {
+    if (!lj_frame_no && !lj_load_last_frame())
+    {
+        NotifyBox(4000, "Grab a LiveView frame first (none on the card)");
+        lj_busy = 0;
+        return;
+    }
     if (!lj_get_mem(&lj_ri) || !lj_read_frame())
     {
         int had = lj_suite != 0;
@@ -1828,7 +1868,6 @@ static MENU_SELECT_FUNC(lj_run_select)
 {
     if (lj_busy) return;
     if (lj_hung || lj_refused) { NotifyBox(3000, "Restart the camera first"); return; }
-    if (!lj_frame_no) { NotifyBox(3000, "Grab a LiveView frame first"); return; }
     if (lj_armed) lj_disarm();
     lj_busy = 1;
     task_create("d7lj_run", 0x1e, 0x4000, lj_run_task, 0);
@@ -1844,8 +1883,8 @@ static MENU_UPDATE_FUNC(lj_run_update)
         MENU_SET_VALUE("working...");
     else
         MENU_SET_VALUE("%d runs", lj_run_no);
-    MENU_SET_HELP("EXPERIMENT: Canon's encoder on the frame, 3 encodes (ML/LOGS/LJ3Rn.*).");
-    MENU_SET_WARNING(MENU_WARN_INFO, "First with LiveView OFF (photo mode), then with it on.");
+    MENU_SET_HELP("EXPERIMENT: Canon's encoder on the last grabbed frame (ML/LOGS/LJ3Rn.*).");
+    MENU_SET_WARNING(MENU_WARN_INFO, "RAW video off. After a restart it reuses the card's newest frame.");
 }
 
 static struct menu_entry d7probe_menu[] =
@@ -1868,7 +1907,7 @@ static struct menu_entry d7probe_menu[] =
                 .select = lj_grab_select,
                 .update = lj_grab_update,
                 .icon_type = IT_ACTION,
-                .help2  = "The encode test's input. Grabbing again replaces it.",
+                .help2  = "The encode test's input, kept on the card. Grabbing again replaces it.",
             },
             {
                 .name   = "Lossless: encode test",
