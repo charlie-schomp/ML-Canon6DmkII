@@ -26,6 +26,9 @@ void lossless_stats(int reset, int * calls, int * avg_us, int * max_us, int * no
  * there to the return (callback / stop / close / routing put back) */
 void lossless_stats_split(int * setup_us, int * encode_us, int * tail_us);
 
+/* 6D2: encodes finished by seeing the EOI land (no callback) since the reset */
+int lossless_stats_eoi(void);
+
 int lossless_decompress_raw(
     struct memSuite * src, void * dst,
     int width, int height,

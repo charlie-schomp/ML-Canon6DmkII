@@ -3,6 +3,7 @@
 #include "lens.h"
 #include "raw.h"
 #include "edmac.h"
+#include "timer.h"
 
 struct TwoInTwoOutLosslessPath_args
 { 
@@ -138,7 +139,13 @@ static uint8_t *lj6_buf = 0;            /* uncacheable: thumbnail, table, memory
 static volatile int lj6_cb_done;
 static volatile uint32_t lj6_cb_err;
 static int lj6_calls, lj6_no_cb, lj6_max_us;
+static int lj6_n_eoi;             /* encodes finished by the EOI landing */
 static long long lj6_sum_us, lj6_sum_setup, lj6_sum_encode, lj6_sum_tail;
+
+int lossless_stats_eoi(void)
+{
+    return lj6_n_eoi;
+}
 
 void lossless_stats_split(int * setup_us, int * encode_us, int * tail_us)
 {
@@ -156,15 +163,64 @@ void lossless_stats(int reset, int * calls, int * avg_us, int * max_us, int * no
     if (no_callback) *no_callback = lj6_no_cb;
     if (reset)
     {
-        lj6_calls = lj6_no_cb = lj6_max_us = 0;
+        lj6_calls = lj6_no_cb = lj6_max_us = lj6_n_eoi = 0;
         lj6_sum_us = lj6_sum_setup = lj6_sum_encode = lj6_sum_tail = 0;
     }
+}
+
+/* Waiting for the encode.  v107-v110 slept 1 ms at a time and read the
+ * millisecond clock: at 59.94p that measured 18.5 ms to the size and spent
+ * another 10 ms waiting out "3 ms after it", against 8 ms by the callback's
+ * own timestamp in d7probe.  Now the compress task sleeps on a semaphore,
+ * given by Canon's callback or by a 250 us high-precision timer that watches
+ * the compressed size and then the EOI landing at its end (the output DMA
+ * done) - 3 ms after the size at most.  The timer counts its own ticks
+ * rather than reading clocks in interrupt context, and each encode's timer
+ * carries its number so a late tick of the last one cannot finish this one. */
+#define LJ6_POLL_US     250
+#define LJ6_EOI_TICKS   12              /* 3 ms after the size */
+static struct semaphore * lj6_sem = 0;
+static volatile int lj6_watch;          /* this encode's number while it is watched, else 0 */
+static int lj6_gen;
+static volatile int lj6_ticks, lj6_size_tick, lj6_by_eoi;
+static volatile uint8_t * lj6_watch_out;
+static volatile int lj6_watch_room;
+
+static void lj6_finish(int gen)
+{
+    uint32_t old = cli();
+    int mine = lj6_watch && lj6_watch == gen;
+    if (mine) lj6_watch = 0;
+    sei(old);
+    if (mine) give_semaphore(lj6_sem);
 }
 
 static void lj6_cbr(uint32_t ctx, uint32_t a, uint32_t b, uint32_t c)
 {
     lj6_cb_err = b | c;
     lj6_cb_done = 1;
+    lj6_finish(lj6_watch);
+}
+
+static void lj6_poll(int last_expiry, void * priv)
+{
+    int gen = (int)priv;
+    if (lj6_watch != gen) return;       /* finished, or another encode's */
+    lj6_ticks++;
+    uint32_t size = MEM(LJ6_BASE + 0x18);
+    if (size != 0xffffffff)
+    {
+        if (!lj6_size_tick) lj6_size_tick = lj6_ticks;
+        int eoi = size >= 2 && (int)size <= lj6_watch_room
+               && lj6_watch_out[size - 2] == 0xFF && lj6_watch_out[size - 1] == 0xD9;
+        if (eoi || lj6_ticks - lj6_size_tick >= LJ6_EOI_TICKS)
+        {
+            lj6_by_eoi = eoi;
+            lj6_finish(gen);
+            return;
+        }
+    }
+    SetHPTimerNextTick(last_expiry, LJ6_POLL_US, lj6_poll, lj6_poll, priv);
 }
 
 /* returns the compressed size, or negative: -1 bad arguments / no memory,
@@ -175,6 +231,7 @@ static int lj6_compress(struct memSuite * dst_suite, void * src, int src_x, int 
 {
     int bpp = raw_info.bits_per_pixel;
     if (lj6_hung) return -4;
+    if (!lj6_sem) return -1;
     if (bpp != 12 && bpp != 14) return -1;
     if (!dst_suite || !src || width <= 0 || height <= 0 || (width & 1) || (height & 1)) return -1;
     int pitch_px = raw_info.pitch * 8 / bpp;
@@ -255,21 +312,19 @@ static int lj6_compress(struct memSuite * dst_suite, void * src, int src_x, int 
     lj6_set_huff(huff, spec2);
     lj6_set_param(&prm);
     MEM(LJ6_BASE + 0x18) = 0xffffffff;
-    uint32_t us_start = get_us_clock(), us_size = 0;
-    int t0 = get_ms_clock(), t_size = 0;
+    lj6_watch_out = (volatile uint8_t *)out;
+    lj6_watch_room = out_size;
+    lj6_ticks = lj6_size_tick = lj6_by_eoi = 0;
+    int gen = lj6_gen = (lj6_gen % 0x7fff) + 1;
+    lj6_watch = gen;
+    uint32_t us_start = get_us_clock();
     lj6_start();
-    while (!lj6_cb_done && get_ms_clock() - t0 < 1000)
-    {
-        if (!t_size && MEM(LJ6_BASE + 0x18) != 0xffffffff)
-        {
-            t_size = MAX(get_ms_clock(), 1);
-            us_size = get_us_clock();
-        }
-        if (t_size && get_ms_clock() - t_size > 3)
-            break;
-        msleep(1);
-    }
-    int done = lj6_cb_done || t_size;
+    SetHPTimerAfterNow(LJ6_POLL_US, lj6_poll, lj6_poll, (void *)gen);
+    int got = take_semaphore(lj6_sem, 1000) == 0;
+    uint32_t us_size = get_us_clock();  /* the task awake again: what the frame rate sees */
+    lj6_watch = 0;                      /* the timer stops at its next tick */
+    int done = got && (lj6_cb_done || lj6_size_tick);
+    if (lj6_by_eoi) lj6_n_eoi++;
     lj6_stop();
     lj6_unset_cbr();
     lj6_close();
@@ -288,7 +343,6 @@ static int lj6_compress(struct memSuite * dst_suite, void * src, int src_x, int 
     int size = (int)MEM(LJ6_BASE + 0x18);
     uint32_t us_end = get_us_clock();
     int us = (int)(us_end - us0);
-    if (!us_size) us_size = us_end;
     lj6_sum_setup  += (int)(us_start - us0);
     lj6_sum_encode += (int)(us_size - us_start);
     lj6_sum_tail   += (int)(us_end - us_size);
@@ -321,7 +375,8 @@ int lossless_init()
     {
         /* buffers on first use, so the thumbnail's 256 K is only taken when recording lossless */
         lj6_cam = 1;
-        return 1;
+        lj6_sem = create_named_semaphore(NULL, SEM_CREATE_LOCKED);
+        return lj6_sem != 0;
     }
 
     if (is_camera("5D3", "1.1.3"))

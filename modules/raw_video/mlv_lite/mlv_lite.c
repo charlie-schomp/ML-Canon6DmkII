@@ -4691,7 +4691,8 @@ cleanup:
             lossless_stats(1, &calls, &avg, &max, &no_cb);
             rec_log("lossless: %d encodes, avg %d us, max %d us, %d without callback; frame period %d us",
                     calls, avg, max, no_cb, fps ? (int)(1000000000LL / fps) : 0);
-            rec_log("lossless: avg %d us setup + %d us start to size + %d us to return", setup, enc, tail);
+            rec_log("lossless: avg %d us setup + %d us start to done + %d us stop / close / routing; %d done by the EOI",
+                    setup, enc, tail, lossless_stats_eoi());
         }
         log_frame_timer("take end");
         rec_log_mem("teardown: before free_buffers");
