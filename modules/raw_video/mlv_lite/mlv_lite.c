@@ -5168,8 +5168,11 @@ static int raw_rec_should_preview(void)
      * previews on its own: the flashing, the guide that only appeared on
      * half-press, and its wrong size. Canon preview in Auto here; a long
      * half-shutter press still gives ML's framing preview as a deliberate
-     * action, and PREVIEW_ML remains a choice. */
-    int prefer_framing_preview = is_camera("6D2", "*") ? 0 :
+     * action, and PREVIEW_ML remains a choice.  Lossless is the exception
+     * while a take runs: each frame's encode turns Canon's LiveView green
+     * (silent/lossless.c), so Auto shows ML's framing preview until the take
+     * ends - idle, Canon's LiveView and the recorded-area guide as before. */
+    int prefer_framing_preview = is_camera("6D2", "*") ? (lossless_6d2 && OUTPUT_COMPRESSION && !RAW_IS_IDLE) :
         (res_x < max_res_x * 80/100) ? 1 :  /* prefer correct framing instead of large black bars */
         (res_x*9 < res_y*16)         ? 1 :  /* tall aspect ratio -> prevent image hiding under info bars*/
         (framing_incorrect)          ? 1 :  /* use correct framing in modes where Canon preview is incorrect */
@@ -5238,6 +5241,17 @@ unsigned int raw_rec_update_preview(unsigned int ctx)
     if (ctx == 0)
     {
         int enabled = raw_rec_should_preview();
+
+        /* the recorded-area guide goes with Canon's preview: follow each
+         * switch (a take starting / ending in lossless Auto, a long
+         * half-shutter press) - the idle polling does not run during a take */
+        static int last_enabled = -1;
+        if (enabled != last_enabled)
+        {
+            last_enabled = enabled;
+            refresh_cropmarks();
+        }
+
         if (!enabled && preview_dirty)
         {
             /* cleanup the mess, if any */
