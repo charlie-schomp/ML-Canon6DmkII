@@ -244,13 +244,18 @@ static CONFIG_INT("raw.output_format", output_format, 3);
 #define OUTPUT_AUTO_BIT_LOSSLESS 5
 #define OUTPUT_COMPRESSION (output_format>2)
 
+/* 6D2 1.1.1: Canon's encoder (silent/lossless.c) takes the LiveView raw at 12
+ * or 14-bit as it is, so "12-bit lossless" is the native 12-bit stream - not
+ * 14-bit divided by 4 - and there is no digital gain or auto depth */
+static int lossless_6d2 = 0;
+
 /* container BPP (variable for uncompressed, always 14 for lossless JPEG) */
 static const int bpp_container[] = { 14, 12, 10, 14, 14, 14, 14, 14, 14 };
 
 /* "fake" lower bit depths using digital gain (for lossless JPEG) */
 //static const int bpp_digi_gain[] = { 14, 14, 14, 14, 12, 11, 10,  9,  8 };
 
-#define BPP     bpp_container[output_format]
+#define BPP     ((lossless_6d2 && output_format == OUTPUT_12BIT_LOSSLESS) ? 12 : bpp_container[output_format])
 #define BPP_D   (raw_digital_gain_ok() ? bpp_digital_gain() : 14)
 
 static int bpp_digital_gain()
@@ -309,6 +314,11 @@ static int bpp_digital_gain()
 
 static int raw_digital_gain_ok()
 {
+    if (lossless_6d2)
+    {
+        return 0;
+    }
+
     if (output_format > OUTPUT_14BIT_LOSSLESS)
     {
         /* fixme: not working in modes with higher resolution */
@@ -976,6 +986,12 @@ static int get_estimated_compression_ratio()
         return measured_compression_ratio;
     }
 
+    if (lossless_6d2)
+    {
+        /* 41-46% at 14-bit on the camera; 12-bit is untested */
+        return output_format == OUTPUT_12BIT_LOSSLESS ? 45 : 50;
+    }
+
     /* reasonable defaults */
     switch (output_format)
     {
@@ -1195,7 +1211,9 @@ void refresh_raw_settings(int force)
             setup_bit_depth_digital_gain(0);
 
             /* update compression ratio once every 2 seconds */
-            if (OUTPUT_COMPRESSION && compress_mq && should_run_polling_action(2000, &aux2))
+            /* 6D2: not in standby - each encode turns LiveView green for a
+             * moment; the clips measure it instead */
+            if (OUTPUT_COMPRESSION && compress_mq && !lossless_6d2 && should_run_polling_action(2000, &aux2))
             {
                 measure_compression_ratio();
             }
@@ -1491,7 +1509,11 @@ static MENU_UPDATE_FUNC(output_format_update)
             break;
     }
 
-    if (output_format > OUTPUT_14BIT_LOSSLESS)
+    if (lossless_6d2 && OUTPUT_COMPRESSION)
+    {
+        MENU_SET_WARNING(MENU_WARN_ADVICE, "Native %d-bit, Canon's encoder. LiveView turns green while recording.", BPP);
+    }
+    else if (output_format > OUTPUT_14BIT_LOSSLESS)
     {
         MENU_SET_VALUE("%d-bit lossless", BPP_D);
 
@@ -3189,6 +3211,24 @@ static void edmac_cbr_w(void *ctx)
     edmac_copy_rectangle_adv_cleanup();
 }
 
+/* left edge of the recorded crop: 8-pixel steps (raw_pixblock); 6D2 lossless,
+ * 64-pixel steps - the only ones tested on the encoder's input - rounded up
+ * into the active area where the width allows */
+static int crop_pos_x()
+{
+    if (!(lossless_6d2 && OUTPUT_COMPRESSION))
+    {
+        return (skip_x + 7) & ~7;
+    }
+
+    int x = (skip_x + 63) & ~63;
+    if (x + res_x > raw_info.active_area.x2)
+    {
+        x = skip_x & ~63;
+    }
+    return x;
+}
+
 static void compress_task()
 {
     ASSERT(compress_mq == 0);
@@ -3261,7 +3301,7 @@ static void compress_task()
 
             int compressed_size = lossless_compress_raw_rectangle(
                 outSuite, fullSizeBuffer,
-                raw_info.width, (skip_x + 7) & ~7, skip_y & ~1,
+                raw_info.width, crop_pos_x(), skip_y & ~1,
                 res_x, res_y
             );
 
@@ -3271,7 +3311,16 @@ static void compress_task()
             if (compressed_size < 0 && !RAW_IS_IDLE)
             {
                 printf("Compression error %d at frame %d\n", compressed_size, frame_count-1);
-                ASSERT(0);
+                if (lossless_6d2)
+                {
+                    rec_log("lossless encoder error %d at frame %d", compressed_size, frame_count-1);
+                    buffer_full_reason = 4;
+                    buffer_full = 1;
+                }
+                else
+                {
+                    ASSERT(0);
+                }
             }
 
             DeleteMemorySuite(outSuite);
@@ -3298,7 +3347,7 @@ static void compress_task()
                 /* resize frame slots on the fly, to compressed size */
                 if (!RAW_IS_IDLE)
                 {
-                    shrink_slot(slot_index, MIN(compressed_size, max_frame_size - VIDF_HDR_SIZE - 4));
+                    shrink_slot(slot_index, MIN(MAX(compressed_size, 0), max_frame_size - VIDF_HDR_SIZE - 4));
                 }
                 
                 /* our old EDMAC check assumes frame sizes known in advance - not the case here */
@@ -3408,7 +3457,7 @@ void process_frame(int next_fullsize_buffer_pos)
     /* set VIDF metadata for this frame */
     vidf_hdr.frameNumber = slots[capture_slot].frame_number - 1;
     mlv_set_timestamp((mlv_hdr_t*)&vidf_hdr, mlv_start_timestamp);
-    vidf_hdr.cropPosX = (skip_x + 7) & ~7;
+    vidf_hdr.cropPosX = crop_pos_x();
     vidf_hdr.cropPosY = skip_y & ~1;
     vidf_hdr.panPosX = skip_x;
     vidf_hdr.panPosY = skip_y;
@@ -4121,7 +4170,8 @@ void raw_video_rec_task(uint32_t card_index)
             int cmbs = ms ? (int)(written_total[card_index] * 100 * 1000 / (1024 * 1024) / ms) : 0;
             rec_log("BUFFER FULL (%s) card=%d frames=%d written=%dMB, %dms writing + %dms idle -> %d.%02d MB/s while writing",
                     buffer_full_reason == 1 ? "card too slow" : buffer_full_reason == 2 ? "EDMAC timeout" :
-                    buffer_full_reason == 3 ? "compressed frame too large" : "?",
+                    buffer_full_reason == 3 ? "compressed frame too large" :
+                    buffer_full_reason == 4 ? "lossless encoder error" : "?",
                     card_index, frame_count, (int)(written_total[card_index] / (1024 * 1024)),
                     ms, idle_time[card_index], cmbs / 100, cmbs % 100);
             }
@@ -5320,16 +5370,19 @@ static unsigned int raw_rec_init()
         if (e) e->shidden = 1; // Hide "Small hacks"
         small_hacks = 0;
     }
+    lossless_6d2 = is_camera("6D2", "1.1.1");
     if (version != 5)
     { // so far, only Digic 5 has working lossless compression, hide on other cams
+        /* 6D2 1.1.1: 14 and 12-bit lossless (no auto depth) */
+        int last = lossless_6d2 ? OUTPUT_12BIT_LOSSLESS : OUTPUT_10BIT_UNCOMPRESSED;
         struct menu_entry * e = raw_video_submenu_entry(&output_format);
-        if (e && e->max > 2)
+        if (e && e->max > last)
         {
-            e->max = 2; // hide lossless options, which are 3, 4, 5
+            e->max = last; // hide lossless options, which are 3, 4, 5
         }
-        /* this runs after the config was read: only a lossless pick (none on
-         * D4, D678 yet) goes back to plain 14-bit, so a saved 12/10-bit stays */
-        if (output_format > OUTPUT_10BIT_UNCOMPRESSED) output_format = OUTPUT_14BIT_NATIVE;
+        /* this runs after the config was read: only a pick that is hidden
+         * goes back to plain 14-bit, so a saved 12/10-bit stays */
+        if (output_format > last) output_format = OUTPUT_14BIT_NATIVE;
     }
 
     int cam_6d2 = is_camera("6D2", "*");
@@ -5373,9 +5426,9 @@ static unsigned int raw_rec_init()
         }
         resolution_index_crop = COERCE(resolution_index_crop, 0, (int)resolution_presets_n - 1);
 
-        /* 14/12/10-bit uncompressed: raw.c switches the depth through Canon's
-         * own raw-tap driver (CONFIG_LV_BPP_MEM1_PATCH); lossless stays hidden */
-        if (output_format > OUTPUT_10BIT_UNCOMPRESSED) output_format = OUTPUT_14BIT_NATIVE;
+        /* 14/12/10-bit: raw.c switches the depth through Canon's own raw-tap
+         * driver (CONFIG_LV_BPP_MEM1_PATCH); 14/12-bit lossless on 1.1.1 only */
+        if (output_format > (lossless_6d2 ? OUTPUT_12BIT_LOSSLESS : OUTPUT_10BIT_UNCOMPRESSED)) output_format = OUTPUT_14BIT_NATIVE;
     }
     menu_add("Movie", raw_video_menu, COUNT(raw_video_menu));
 
