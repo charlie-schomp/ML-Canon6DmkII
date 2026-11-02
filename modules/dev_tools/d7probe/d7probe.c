@@ -511,6 +511,9 @@ static MENU_SELECT_FUNC(status_dump_select)
 /* mlv_lite reads this by name at the start of each take, so the trace only
  * runs while this module is loaded and the switch is on */
 static CONFIG_INT("d7probe.rectrace", rec_trace, 0);
+/* read by mlv_lite at each lossless take (silent/lossless.c lossless_options) */
+static CONFIG_INT("d7probe.ljroute", lj_route_early, 0);
+static CONFIG_INT("d7probe.ljdelay", lj_start_delay, 0);    /* 0.5 ms steps */
 
 static MENU_UPDATE_FUNC(d7probe_update)
 {
@@ -1978,6 +1981,22 @@ static struct menu_entry d7probe_menu[] =
                 .help2  = "Canon's encoder setup and resource locks from one RAW photo.",
             },
             {
+                .name   = "Lossless: LV routing",
+                .priv   = &lj_route_early,
+                .max    = 1,
+                .choices = CHOICES("after close", "before start"),
+                .help   = "When each lossless encode gives LiveView its memory routing back.",
+                .help2  = "EXPERIMENT. Before start: if the encoder needs it, the take stops (restart).",
+            },
+            {
+                .name   = "Lossless: start delay",
+                .priv   = &lj_start_delay,
+                .max    = 10,
+                .choices = CHOICES("0", "0.5 ms", "1 ms", "1.5 ms", "2 ms", "2.5 ms", "3 ms", "3.5 ms", "4 ms", "4.5 ms", "5 ms"),
+                .help   = "Starts each lossless encode this long after its frame arrives.",
+                .help2  = "EXPERIMENT. At 59.94p, 5 ms + the 10 ms encode still fits the frame.",
+            },
+            {
                 .name   = "Recording trace",
                 .priv   = &rec_trace,
                 .max    = 1,
@@ -2109,6 +2128,8 @@ static unsigned int d7probe_deinit()
 
 MODULE_CONFIGS_START()
     MODULE_CONFIG(rec_trace)
+    MODULE_CONFIG(lj_route_early)
+    MODULE_CONFIG(lj_start_delay)
     MODULE_CONFIG(sd_exp_mode)
     MODULE_CONFIG(sd_exp_idx)
 MODULE_CONFIGS_END()

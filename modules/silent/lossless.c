@@ -134,6 +134,19 @@ static const uint32_t lj6_twain_photo[16] = { 0x4b7, 0x380, 0x380, 0x57f, 0, 0, 
 static const uint16_t lj6_routing[4] = { 0x3200, 0x3204, 0x3238, 0x323c };
 
 static int lj6_cam = 0;
+static int lj6_route_early = 0, lj6_delay_us = 0;
+static struct semaphore * lj6_delay_sem = 0;
+
+void lossless_options(int route_early, int delay_us)
+{
+    lj6_route_early = route_early;
+    lj6_delay_us = COERCE(delay_us, 0, 10000);
+}
+
+static void lj6_delay_cbr(int last_expiry, void * priv)
+{
+    give_semaphore(lj6_delay_sem);
+}
 static int lj6_hung = 0;                /* an encode never finished: no more */
 static uint8_t *lj6_buf = 0;            /* uncacheable: thumbnail, table, memory list */
 static volatile int lj6_cb_done;
@@ -294,6 +307,15 @@ static int lj6_compress(struct memSuite * dst_suite, void * src, int src_x, int 
         (uint32_t)UNCACHEABLE(src), (uint32_t)thumb,
     };
 
+    /* the frame arrived (the compress task woke at its vsync); start later
+     * into the frame period if asked - it must still end before the next
+     * vsync points LiveView's raw DMA back at this buffer */
+    if (lj6_delay_us > 0)
+    {
+        SetHPTimerAfterNow(lj6_delay_us, lj6_delay_cbr, lj6_delay_cbr, 0);
+        take_semaphore(lj6_delay_sem, 100);
+    }
+
     uint32_t image = MEM(LJ6_REG_IMAGE);
     int image_ok = image >= 0x100000 && image < 0x40000000;
     uint32_t routing[4];
@@ -311,6 +333,17 @@ static int lj6_compress(struct memSuite * dst_suite, void * src, int src_x, int 
     lj6_twain(twain, 0);
     lj6_set_huff(huff, spec2);
     lj6_set_param(&prm);
+    if (lj6_route_early && image_ok)
+    {
+        /* LiveView's routing back before the start: whether the encode
+         * itself needs open's routing (if it does, it never finishes) */
+        for (int j = 0; j < 4; j++)
+        {
+            MEM(image + lj6_routing[j]) = routing[j];
+            MEM(0xd0000000 + lj6_routing[j]) = routing[j];
+        }
+        sync_caches();
+    }
     MEM(LJ6_BASE + 0x18) = 0xffffffff;
     lj6_watch_out = (volatile uint8_t *)out;
     lj6_watch_room = out_size;
@@ -376,7 +409,8 @@ int lossless_init()
         /* buffers on first use, so the thumbnail's 256 K is only taken when recording lossless */
         lj6_cam = 1;
         lj6_sem = create_named_semaphore(NULL, SEM_CREATE_LOCKED);
-        return lj6_sem != 0;
+        lj6_delay_sem = create_named_semaphore(NULL, SEM_CREATE_LOCKED);
+        return lj6_sem && lj6_delay_sem;
     }
 
     if (is_camera("5D3", "1.1.3"))

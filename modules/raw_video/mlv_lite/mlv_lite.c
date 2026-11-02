@@ -3969,6 +3969,15 @@ void raw_video_rec_task(uint32_t card_index)
         rec_log_mem("take start");
         lossless_stats(1, 0, 0, 0, 0);
         log_frame_timer("take start");
+        if (lossless_6d2 && OUTPUT_COMPRESSION)
+        {
+            /* experiments from the developer tools (0 without d7probe) */
+            int route_early = get_config_var("d7probe.ljroute");
+            int delay_us = get_config_var("d7probe.ljdelay") * 500;
+            lossless_options(route_early, delay_us);
+            rec_log("lossless options: routing back %s, start delay %d us",
+                    route_early ? "before the start" : "after close", delay_us);
+        }
 
         /* Scratch audio: Canon's own WAV recorder, started alongside the raw clip.
          * Costs ~0.19 MB/s and records no video, unlike the H.264 proxy - which
