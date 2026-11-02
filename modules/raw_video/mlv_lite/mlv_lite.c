@@ -516,6 +516,41 @@ static GUARDED_BY(RawRecTask)   int64_t written_total[CARD_COUNT] = {0};        
 static GUARDED_BY(RawRecTask)   int64_t written_chunk[CARD_COUNT] = {0};          /* same for current chunk */
 static GUARDED_BY(RawRecTask)   int writing_time[CARD_COUNT] = {0};               /* time spent by raw_video_rec_task in FIO_WriteFile calls */
 static GUARDED_BY(RawRecTask)   int idle_time[CARD_COUNT] = {0};                  /* time spent by raw_video_rec_task doing something else */
+
+/* Writer probe (recording trace): the card benchmarks 70+ MB/s, yet 59.94p
+ * lossless takes stop with mlv_lite writing 45. Per take: the writes by how
+ * many frames each carried, with their bytes and time, and why each group
+ * ended - next frame not ready, next slot not contiguous, queue end, or cut
+ * short by the near-overflow limit. */
+#define WPROBE_BUCKETS 6                /* 1, 2-3, 4-7, 8-15, 16-31, 32+ frames */
+static GUARDED_BY(RawRecTask) struct
+{
+    int writes[WPROBE_BUCKETS], ms[WPROBE_BUCKETS];
+    int64_t bytes[WPROBE_BUCKETS];
+    int end_not_ready, end_not_contiguous, end_queue, end_limited;
+} wprobe;
+
+static int wprobe_bucket(int frames)
+{
+    int b = 0;
+    while (frames > 1 && b < WPROBE_BUCKETS - 1) { frames >>= 1; b++; }
+    return b;
+}
+
+static void wprobe_log(void)
+{
+    static const char * name[WPROBE_BUCKETS] = { "1", "2-3", "4-7", "8-15", "16-31", "32+" };
+    rec_log("writer: groups ended - next not ready %d, not contiguous %d, queue end %d, cut by overflow limit %d",
+            wprobe.end_not_ready, wprobe.end_not_contiguous, wprobe.end_queue, wprobe.end_limited);
+    for (int b = 0; b < WPROBE_BUCKETS; b++)
+    {
+        if (!wprobe.writes[b]) continue;
+        int kb = (int)(wprobe.bytes[b] / 1024 / wprobe.writes[b]);
+        int speed = wprobe.ms[b] ? (int)(wprobe.bytes[b] * 100 / 1024 / 1024 * 1000 / wprobe.ms[b]) : 0;
+        rec_log("writer: %s frames: %d writes, avg %d KB, %d ms, %d.%02d MB/s",
+                name[b], wprobe.writes[b], kb, wprobe.ms[b], speed / 100, speed % 100);
+    }
+}
 static volatile                 uint32_t edmac_active = 0;
 static volatile                 uint32_t skip_frames = 0;
 
@@ -3967,6 +4002,7 @@ void raw_video_rec_task(uint32_t card_index)
         rec_log("========== TAKE START, card=%d, srm_enabled=%d",
                 card_index, (int)use_srm_memory);
         rec_log_mem("take start");
+        memset(&wprobe, 0, sizeof(wprobe));
         lossless_stats(1, 0, 0, 0, 0);
         log_frame_timer("take start");
         if (lossless_6d2 && OUTPUT_COMPRESSION)
@@ -4269,6 +4305,7 @@ void raw_video_rec_task(uint32_t card_index)
         
         int group_size = 0;
         int meta_slots = 0;
+        int group_end = 0;      /* writer probe: 0 queue end, 1 not ready, 2 not contiguous */
         for (int i = w_head; i != w_tail; INC_MOD(i, COUNT(writing_queue)))
         {
             int slot_index = writing_queue[i];
@@ -4283,6 +4320,7 @@ void raw_video_rec_task(uint32_t card_index)
             {
                 /* frame not yet ready - stop here */
                 ASSERT(i != w_head);
+                group_end = 1;
                 break;
             }
 
@@ -4311,6 +4349,7 @@ void raw_video_rec_task(uint32_t card_index)
             }
             else
             {
+                group_end = 2;
                 break;
             }
             
@@ -4339,6 +4378,7 @@ void raw_video_rec_task(uint32_t card_index)
             {
                 //printf("will overflow in %d.%d seconds; writing %d/%d frames\n", overflow_time/10, overflow_time%10, frame_limit, num_frames);
                 num_frames = MAX(1, frame_limit);
+                group_end = 3;
             }
         }
         
@@ -4395,6 +4435,18 @@ void raw_video_rec_task(uint32_t card_index)
         
         last_write_timestamp = get_ms_clock();
         writing_time[card_index] += last_write_timestamp - t0;
+
+        if (rec_trace)
+        {
+            int b = wprobe_bucket(num_frames);
+            wprobe.writes[b]++;
+            wprobe.bytes[b] += group_size;
+            wprobe.ms[b] += last_write_timestamp - t0;
+            if (group_end == 0) wprobe.end_queue++;
+            else if (group_end == 1) wprobe.end_not_ready++;
+            else if (group_end == 2) wprobe.end_not_contiguous++;
+            else wprobe.end_limited++;
+        }
 
         /* for detecting early stops */
         last_block_size = MOD(after_last_grouped - w_head, COUNT(writing_queue));
@@ -4714,6 +4766,7 @@ cleanup:
                     setup, enc, tail, lossless_stats_eoi());
         }
         log_frame_timer("take end");
+        wprobe_log();
         rec_log_mem("teardown: before free_buffers");
         take_semaphore(settings_sem, 0);
         free_buffers();
