@@ -2181,6 +2181,20 @@ void raw_lv_request_update()
 }
 
 /* returns color */
+/* card space at take start, for the time-left figure */
+static int64_t take_free_bytes = 0;
+
+/* minutes of card left at this take's measured data rate (all streams this
+ * module writes), or -1 until there is a rate to go by */
+static int card_minutes_left(int recorded_s)
+{
+    int64_t written = 0;
+    for (int i = 0; i < CARD_COUNT; i++) written += written_total[i];
+    if (recorded_s < 3 || written <= 0 || take_free_bytes <= written) return -1;
+    int64_t rate = written / recorded_s;        /* bytes per second */
+    return (int)((take_free_bytes - written) / rate / 60);
+}
+
 static int update_status(char * buffer, int buffer_size)
 {
     /* Calculate the stats */
@@ -2244,7 +2258,12 @@ static int update_status(char * buffer, int buffer_size)
         }
         else if (predicted_frames_left > 10000)
         {
-            /* assume continuous recording */
+            /* assume continuous recording: say how long the card lasts */
+            int left = card_minutes_left(t);
+            if (left >= 0)
+            {
+                len += snprintf(buffer + len, buffer_size - len, " %dm left", MIN(left, 999));
+            }
             return COLOR_GREEN1;
         }
         else if (RAW_IS_RECORDING)
@@ -4014,6 +4033,7 @@ void raw_video_rec_task(uint32_t card_index)
         rec_log("========== TAKE START, card=%d, srm_enabled=%d",
                 card_index, (int)use_srm_memory);
         rec_log_mem("take start");
+        take_free_bytes = (int64_t)get_free_space_32k(get_shooting_card()) * 32 * 1024;
         memset(&wprobe, 0, sizeof(wprobe));
         lossless_stats(1, 0, 0, 0, 0);
         log_frame_timer("take start");
