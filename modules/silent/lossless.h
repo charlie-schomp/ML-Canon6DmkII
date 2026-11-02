@@ -29,10 +29,11 @@ void lossless_stats_split(int * setup_us, int * encode_us, int * tail_us);
 /* 6D2: encodes finished by seeing the EOI land (no callback) since the reset */
 int lossless_stats_eoi(void);
 
-/* 6D2: route_late - give LiveView its share-memory routing back only after
- * close (v107-v112: Canon's preview green while encodes run) instead of right
- * after open as well */
-void lossless_options(int route_late);
+/* 6D2: how the encoder leaves LiveView's share-memory routing alone -
+ * 0 (default): open with an empty share-memory table, so it never touches it;
+ * 1: Canon's table, routing put back right after open (v113);
+ * 2: Canon's table, routing put back after close only (v107-v112, green) */
+void lossless_options(int routing_mode);
 
 int lossless_decompress_raw(
     struct memSuite * src, void * dst,

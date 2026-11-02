@@ -512,7 +512,7 @@ static MENU_SELECT_FUNC(status_dump_select)
  * runs while this module is loaded and the switch is on */
 static CONFIG_INT("d7probe.rectrace", rec_trace, 0);
 /* read by mlv_lite at each lossless take (silent/lossless.c lossless_options) */
-static CONFIG_INT("d7probe.ljroute", lj_route_late, 0);
+static CONFIG_INT("d7probe.ljroute", lj_routing, 0);
 
 static MENU_UPDATE_FUNC(d7probe_update)
 {
@@ -1511,12 +1511,13 @@ static void lj_degeen_identity(uint32_t *d)
  *  B: A and the encoder's enables;
  *  C: A, 48 rounds at 24 fps, LiveView checked during the burst;
  *  D: A, and the routing also put back right after open (registers only,
- *     before the configuration) - what mlv_lite does since v113: written
- *     files check whether the encode stays bit-exact without open's routing.
+ *     before the configuration) - mlv_lite v113; bit-exact at 12-bit;
+ *  E: Canon's share-memory table passed empty, so open never routes the
+ *     memory to the encoder at all - mlv_lite since v114.
  * Round 1 still logs everything else that changed, untouched. */
 #define LJ_SHADOW_SIZE  0x80000
 static int lj_probe = 0;
-static const char *lj_probe_name[4] = { "A: share-mem routing", "B: routing + enables", "C: A at 24 fps", "D: routing back after open" };
+static const char *lj_probe_name[5] = { "A: share-mem routing", "B: routing + enables", "C: A at 24 fps", "D: routing back after open", "E: no routing table" };
 static const uint16_t lj_put_back[8] = { 0x3200, 0x3204, 0x3238, 0x323c, 0x33a8, 0x500c, 0x5224, 0x5960 };
 static uint32_t *lj_shadow_save;
 static uint32_t lj_shadow;
@@ -1601,7 +1602,7 @@ static int lj_encode(int k, const struct lj_rect *r, const uint8_t *spec, const 
     for (int c = 0; c < 4; c++) twain[8 + c] = black + 1;
     twain[13] = black + 1;
 
-    struct lj_rsc rsc = { 0, 0, s->rsc[2], s->rsc[3], 0, s->rsc[5], s->rsc[6], s->rsc[7] };
+    struct lj_rsc rsc = { 0, 0, s->rsc[2], lj_probe == 4 ? 0 : s->rsc[3], 0, s->rsc[5], s->rsc[6], s->rsc[7] };
     struct lj_prm prm = {
         (uint32_t)UNCACHEABLE(lj_huff), 1, (uint32_t)lj_mem,
         (uint32_t)UNCACHEABLE(lj_in), (uint32_t)UNCACHEABLE(lj_thumb),
@@ -1973,10 +1974,10 @@ static struct menu_entry d7probe_menu[] =
             {
                 .name   = "Lossless: LV probe",
                 .priv   = &lj_probe,
-                .max    = 3,
-                .choices = CHOICES("A: share-mem routing", "B: routing + enables", "C: A at 24 fps", "D: routing after open"),
+                .max    = 4,
+                .choices = CHOICES("A: share-mem routing", "B: routing + enables", "C: A at 24 fps", "D: routing after open", "E: no routing table"),
                 .help   = "What the encode test puts back of LiveView's registers after each encode.",
-                .help2  = "A: routing. B: A + enables. C: A, 48 at 24 fps. D: A + routing after open.",
+                .help2  = "A: routing. B: + enables. C: A at 24 fps. D: + back after open. E: no table.",
             },
             {
                 .name   = "Lossless: photo setup",
@@ -1987,11 +1988,11 @@ static struct menu_entry d7probe_menu[] =
             },
             {
                 .name   = "Lossless: LV routing",
-                .priv   = &lj_route_late,
-                .max    = 1,
-                .choices = CHOICES("after open", "after close only"),
-                .help   = "When each lossless encode gives LiveView its memory routing back.",
-                .help2  = "After open keeps Canon's preview right. After close only: v107-v112 (green).",
+                .priv   = &lj_routing,
+                .max    = 2,
+                .choices = CHOICES("untouched", "back after open", "after close only"),
+                .help   = "How lossless encodes leave LiveView's memory routing (Canon's preview).",
+                .help2  = "Untouched: empty table (v114). Back after open: v113. After close only: green.",
             },
             {
                 .name   = "Recording trace",
@@ -2125,7 +2126,7 @@ static unsigned int d7probe_deinit()
 
 MODULE_CONFIGS_START()
     MODULE_CONFIG(rec_trace)
-    MODULE_CONFIG(lj_route_late)
+    MODULE_CONFIG(lj_routing)
     MODULE_CONFIG(sd_exp_mode)
     MODULE_CONFIG(sd_exp_idx)
 MODULE_CONFIGS_END()

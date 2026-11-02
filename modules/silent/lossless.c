@@ -89,12 +89,14 @@ extern uint32_t edmac_read_chan;
  *  - done is the callback or, in LiveView, often only the compressed size
  *    landing in the base state (+0x18), so the encoder is stopped 3 ms later;
  *  - open points LiveView's share-memory routing (0xd0003200/04/38/3c) at the
- *    encoder and close zeroes it, and LiveView's colour goes (the green): it
- *    is put back right after open, again before the start, and after close -
- *    register and Canon's RAM image of it (v106; the per-frame words must not
- *    be).  The encode does not need open's routing (v112: 395 encodes at
- *    59.94p, same speed, decoding and noise); with the routing back only after
- *    close, Canon's preview stayed green while the encodes ran.
+ *    encoder from the table in its resources, close zeroes it, and LiveView's
+ *    colour goes (the green).  The encode does not need that routing (v112 /
+ *    v113: the routing back right after open, same speed, bit-exact), so the
+ *    table goes in empty: the apply (0xe0247e30) and the clear (0xe02480b8)
+ *    return at once on zero elements, leaving only a debug message.  Putting
+ *    it back after open still left a flash at the top of the picture, from
+ *    inside open; the routing is still put back after close, register and
+ *    Canon's RAM image of it (v106; the per-frame words must not be).
  * The thumbnail unit always runs; its output goes to a buffer of our own. */
 struct lj6_rsc { uint32_t rsc_ary, rsc_num, sharemem_tbl, sharemem_num, enc_mode, rd_ch, wr_raw_ch, wr_thumb_ch; };
 struct lj6_prm { uint32_t huff, mem_num, mem_list, rd_addr, thumb_addr; };
@@ -136,11 +138,11 @@ static const uint32_t lj6_twain_photo[16] = { 0x4b7, 0x380, 0x380, 0x57f, 0, 0, 
 static const uint16_t lj6_routing[4] = { 0x3200, 0x3204, 0x3238, 0x323c };
 
 static int lj6_cam = 0;
-static int lj6_route_late = 0;
+static int lj6_routing_mode = 0;
 
-void lossless_options(int route_late)
+void lossless_options(int routing_mode)
 {
-    lj6_route_late = route_late;
+    lj6_routing_mode = COERCE(routing_mode, 0, 2);
 }
 
 /* LiveView's routing, as it was before open: the registers (what LiveView
@@ -308,7 +310,8 @@ static int lj6_compress(struct memSuite * dst_suite, void * src, int src_x, int 
     for (int c = 0; c < 4; c++) twain[8 + c] = black + 1;
     twain[13] = black + 1;
 
-    struct lj6_rsc rsc = { 0, 0, 0xe0942290, 4, 0, 0x30, 0x11, 0x03 };
+    /* the share-memory table (Canon's at 0xe0942290, 4 elements), empty by default */
+    struct lj6_rsc rsc = { 0, 0, 0xe0942290, lj6_routing_mode ? 4 : 0, 0, 0x30, 0x11, 0x03 };
     struct lj6_prm prm = {
         (uint32_t)huff, 1, (uint32_t)list,
         (uint32_t)UNCACHEABLE(src), (uint32_t)thumb,
@@ -324,7 +327,7 @@ static int lj6_compress(struct memSuite * dst_suite, void * src, int src_x, int 
     lj6_cb_done = 0;
     lj6_cb_err = 0;
     lj6_open(&rsc);
-    if (!lj6_route_late && image_ok) lj6_put_routing(image, routing, 0);
+    if (lj6_routing_mode == 1 && image_ok) lj6_put_routing(image, routing, 0);
     uint32_t canon_rec = MEM(LJ6_STATE + 4);
     MEM(LJ6_STATE + 4) = (uint32_t)rec;
     lj6_set_cbr(lj6_cbr, 0x6c6a3600);
@@ -332,7 +335,7 @@ static int lj6_compress(struct memSuite * dst_suite, void * src, int src_x, int 
     lj6_twain(twain, 0);
     lj6_set_huff(huff, spec2);
     lj6_set_param(&prm);
-    if (!lj6_route_late && image_ok) lj6_put_routing(image, routing, 1);
+    if (lj6_routing_mode == 1 && image_ok) lj6_put_routing(image, routing, 1);
     MEM(LJ6_BASE + 0x18) = 0xffffffff;
     lj6_watch_out = (volatile uint8_t *)out;
     lj6_watch_room = out_size;
