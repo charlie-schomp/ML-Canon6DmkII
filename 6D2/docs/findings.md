@@ -230,7 +230,8 @@ unchanged on top of it. Verified on the camera:
 
 - **Bit-exact.** Encodes of grabbed LiveView frames decode to exactly the source pixels at 14 and
   12-bit (d7probe's encode test against `lj_verify.py`), including with the final routing setup
-  below.
+  below. This holds in the binned 1080p readout (1920×800 crops) and in the 1:1 crop readout
+  (3072×896 out of 3264×942, 14.2 ms per encode against crop mode's 33 ms frame).
 - **Every recorded frame decodes.** A strict decoder passed all 5,520 frames of nine test clips at
   14 and 12-bit, 23.976 and 59.94p. Each frame must use exactly its declared rows and end within the
   last byte before EOI. MLV Drive serves the frames as uncompressed CinemaDNG, pixel-identical to
@@ -350,9 +351,14 @@ that benchmarks 70+ MB/s:
 | 8–15 | 7.3 MB | 49 MB/s |
 | 16–31 | 14.9 MB | 56 MB/s |
 
-mlv_lite's writer drains whatever is queued, so with lossless (compressed frames finish one at a
-time) it mostly writes 4 MB at 40 MB/s. A 3 min 11 s take survived at ~42 MB/s with the writer busy
-99.7% of the time; busier scenes stop. Batching to ~16 MB per write is the fix.
+mlv_lite's writer drained whatever was queued. Lossless frames finish one at a time, so it mostly
+wrote 4 MB at 40 MB/s. A 3 min 11 s take survived at ~42 MB/s with the writer busy 99.7% of the
+time; busier scenes stopped.
+
+Holding lossless groups to ~20 MB (v116) raised 59.94p writes to **59–63 MB/s**, mostly 8–31 frames
+each, and a 2048×856 take ran without stopping. The hold must count *usable* slots. Each slot group
+carries as many reserved slots, which only become usable as compressed frames shrink, so a test
+against the total held nothing at 23.976 (v116 wrote single frames there; fixed in v117).
 
 **Cards.** The SDR104 path reads ~100 MB/s and Canon already runs its fastest divider; the limit is
 the card's write speed. A SanDisk Extreme PRO 64 GB writes ~83 MB/s new, **~62–65 MB/s after one full
@@ -412,7 +418,6 @@ From a blind code review of the port and from testing:
 - Firmware 1.2.0: 1.1.1 plus insertions (stubs move by a constant per ROM region); boots in QEMU,
   never run on a camera, and has no `ML-SETUP.FIR`.
 - **Lossless:**
-  - mlv_lite's writer should batch writes to ~16 MB (above).
   - 14-bit lossless at 59.94p (~80 MB/s at 2048 wide) needs a faster card than this one.
   - 10-bit lossless would need DIGIC 5's 1/4 gain in front of a 12-bit encode.
   - A failed encode ends the take, and an encode that never finishes leaves the encoder unused
