@@ -3950,6 +3950,7 @@ void raw_video_rec_task(uint32_t card_index)
         rec_log("========== TAKE START, card=%d, srm_enabled=%d",
                 card_index, (int)use_srm_memory);
         rec_log_mem("take start");
+        lossless_stats(1, 0, 0, 0, 0);
 
         /* Scratch audio: Canon's own WAV recorder, started alongside the raw clip.
          * Costs ~0.19 MB/s and records no video, unlike the H.264 proxy - which
@@ -4651,6 +4652,14 @@ cleanup:
 
     if (card_index == 0) // avoid cleaning up twice on dual slot cams
     {
+        if (lossless_6d2 && OUTPUT_COMPRESSION)
+        {
+            /* can the encoder keep up: compare with the frame period */
+            int calls, avg, max, no_cb, fps = fps_get_current_x1000();
+            lossless_stats(1, &calls, &avg, &max, &no_cb);
+            rec_log("lossless: %d encodes, avg %d us, max %d us, %d without callback; frame period %d us",
+                    calls, avg, max, no_cb, fps ? (int)(1000000000LL / fps) : 0);
+        }
         rec_log_mem("teardown: before free_buffers");
         take_semaphore(settings_sem, 0);
         free_buffers();

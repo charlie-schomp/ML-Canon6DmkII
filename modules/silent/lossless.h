@@ -17,6 +17,10 @@ int lossless_compress_raw_rectangle(
     int width, int height
 );
 
+/* 6D2: encode timing since the last reset - calls, mean and longest time
+ * per call (us), encodes that ended without Canon's callback */
+void lossless_stats(int reset, int * calls, int * avg_us, int * max_us, int * no_callback);
+
 int lossless_decompress_raw(
     struct memSuite * src, void * dst,
     int width, int height,

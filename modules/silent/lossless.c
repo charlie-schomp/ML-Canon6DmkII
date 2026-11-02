@@ -137,6 +137,21 @@ static int lj6_hung = 0;                /* an encode never finished: no more */
 static uint8_t *lj6_buf = 0;            /* uncacheable: thumbnail, table, memory list */
 static volatile int lj6_cb_done;
 static volatile uint32_t lj6_cb_err;
+static int lj6_calls, lj6_no_cb, lj6_max_us;
+static long long lj6_sum_us;
+
+void lossless_stats(int reset, int * calls, int * avg_us, int * max_us, int * no_callback)
+{
+    if (calls)       *calls = lj6_calls;
+    if (avg_us)      *avg_us = lj6_calls ? (int)(lj6_sum_us / lj6_calls) : 0;
+    if (max_us)      *max_us = lj6_max_us;
+    if (no_callback) *no_callback = lj6_no_cb;
+    if (reset)
+    {
+        lj6_calls = lj6_no_cb = lj6_max_us = 0;
+        lj6_sum_us = 0;
+    }
+}
 
 static void lj6_cbr(uint32_t ctx, uint32_t a, uint32_t b, uint32_t c)
 {
@@ -259,6 +274,11 @@ static int lj6_compress(struct memSuite * dst_suite, void * src, int src_x, int 
     }
 
     int size = (int)MEM(LJ6_BASE + 0x18);
+    int us = (int)(get_us_clock() - us0);
+    lj6_calls++;
+    lj6_sum_us += us;
+    lj6_max_us = MAX(lj6_max_us, us);
+    if (!lj6_cb_done) lj6_no_cb++;
     if (verbose >= 2)
     {
         printf("[LJ6] %dx%d at %d,%d %d-bit: %d bytes, %d us%s\n", width, height, src_x, src_y, bpp,
