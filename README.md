@@ -69,7 +69,10 @@ speeds you need, and shooting tips.
 - **Use a lens with an AF/MF switch, set to MF**, for crop mode and when changing bit depth. With
   the lens on autofocus, Canon blocks the zoom these use.
 - Raw clips play in [MLV App](https://mlv.app/). Your computer's normal video player can't open them.
-- Not possible on this camera so far: 24p in crop mode, lossless compression and 4K.
+- **Lossless raw:** 14 and 12-bit lossless MLV at 23.976 and 59.94p, using Canon's own CR2 encoder.
+  It is bit-exact, and frames are about 43% (14-bit) and 33% (12-bit) of uncompressed.
+  12-bit 59.94p at 1920 wide needs ~45 MB/s.
+- Not possible on this camera so far: 24p in crop mode, 48p, and 4K.
 
 ## Not built yet — contributions welcome
 
@@ -81,11 +84,10 @@ public build are left open. If you want to take one on, open an issue first; the
   the easy half. True anamorphic readouts (1x3 binning, as `crop_rec` does on DIGIC 5) need the
   sensor's register lists for each readout mode; the hidden `adtglog2` module logs every list
   Canon sends to the sensor, which is where that work would start.
-- **Higher frame rates.** The binned 1080p readout is paced by Canon's frame timer, which the
-  developer module can already set (Debug → 6D2 developer tools → FPS experiment). The ceiling is
-  the sensor's readout time: about 36–37 fps for the full 1080p readout and the low 60s for the
-  59.94p one; nobody has measured the result on a card yet. The 1:1 crop readout is fixed at
-  29.97 by the sensor.
+- **Higher frame rates.** Canon's 59.94p readout is a full 2128×1208 and records lossless at
+  ~45 MB/s. Rates in between (48p) are not reachable from it: it is paced on the sensor side, like
+  the 1:1 crop readout (fixed at 29.97). Whether the 23.976/29.97 readout can be sped up with
+  Canon's frame timer (Debug → 6D2 developer tools → FPS experiment) is still untested.
 
 ## Problems and feedback
 

@@ -220,6 +220,76 @@ page was refused (`BAD_MMU_PAGE`). `CONFIG_MMU_EXTRA_PAGES` backs further pages 
 (Review note: the allocation runs with interrupts off and the second core parked — pre-allocating
 before `cli()` would be safer.)
 
+### Lossless raw video on Canon's CR2 encoder
+
+mlv_lite records **14 and 12-bit lossless MLV (LJ92)** on the 6D2 1.1.1 at 23.976 and 59.94p, using
+the encoder Canon uses for CR2 photos (`LosslessEncode.c` on JpCore). The backend is a 6D2 branch
+of `modules/silent/lossless.c` behind `lossless_compress_raw_rectangle()`, so mlv_lite's existing
+DIGIC 5 lossless pipeline (double-buffered full-size frames, compress task, slot shrinking) runs
+unchanged on top of it. Verified on the camera:
+
+- **Bit-exact.** Encodes of grabbed LiveView frames decode to exactly the source pixels at 14 and
+  12-bit (d7probe's encode test against `lj_verify.py`), including with the final routing setup
+  below.
+- **Every recorded frame decodes.** A strict decoder passed all 5,520 frames of nine test clips at
+  14 and 12-bit, 23.976 and 59.94p. Each frame must use exactly its declared rows and end within the
+  last byte before EOI. MLV Drive serves the frames as uncompressed CinemaDNG, pixel-identical to
+  an independent decoder.
+- **Noise identical to uncompressed footage** of the same scene: single-frame flat-block noise,
+  lossless / uncompressed, median 0.996 (14-bit) and 1.002 (12-bit) across the signal range.
+
+**The recipe** (Thumb addresses, 1.1.1), in Canon's order with ML's record swapped in:
+
+| Step | Address | Notes |
+|---|---|---|
+| open | `0xe015936a` | resources `{0, 0, share-mem table, count, 0, 0x30, 0x11, 0x03}`: read / raw-write / thumbnail channels. **Pass count 0** (below) |
+| record | `MEM(0x26584 + 4)` | swap in ML's: width, height, pitch in pixels, crop x/y, depth code (2 = 14-bit, 1 = 12-bit), thumbnail area; restore Canon's after close |
+| callback | `0xe0159348` / `0xe0159358` | set / unset; `cbr(ctx, a, b, c)`, nonzero `b`/`c` = refused |
+| DEGEEN | `0xe01594d6` | 32 words; **identity** = offset 0, words 4–7 = 1, gain `0x400`, add-back 0, clip `0xffff`. The photo's block shifts every pixel by one; a zero clip zeroes the frame |
+| TWAIN | `0xe01594de` | the thumbnail's; Canon sets its black words to black + 1 |
+| Huffman | `0xe02474ec` | `(ram_table, spec)`; spec = 2 × (16 counts, 16 values, 16 zeros) |
+| parameters | `0xe015945c` | `{table, 1, memory list, input address, thumbnail buffer}`; list = `{output, size}` |
+| start / stop / close | `0xe01594ce` / `0xe01594d2` / `0xe0159422` | |
+
+- JpCore takes **12 or 14-bit only**, and reads the crop straight from the full-size packed frame.
+  Under 4096 lines it writes **2 components of width/2 × height** with predictor 1 and point
+  transform 0: MLV's LJ92 layout, so MLV App and MLV Drive decode it as is.
+- **Tables:** Canon refuses more than bpp + 1 symbols (categories 0..bpp) and codes longer than 10
+  bits: a 16-symbol table came back with callback `b = 1, c = 0x041c001c`. ML's video tables (in
+  `lossless.c`) give 41–46% at 14-bit and about 33% at 12-bit, against Canon's still table at 50%.
+- **Done:** in LiveView the callback is often missing. The compressed size appears at base state
+  `0x2b084 + 0x18` (set it to -1 before the start), and the EOI landing at `output[size-2..size-1]`
+  marks the output DMA done.
+- **Wait on an event, not a sleep loop.** Polling with `msleep(1)` and the millisecond clock made a
+  9.5 ms encode cost 29 ms at 59.94p (no take lasted past 69 frames). A semaphore given by the
+  callback or by a 250 µs `SetHPTimer` poller of the size and EOI gives 9.3–11 ms. The poller counts
+  its own ticks (no clock reads in interrupt context) and carries the encode's number.
+- **The thumbnail unit always runs.** It needs its own buffer (256 KB with a guard word; ~30 KB used
+  at 1920×800).
+
+**LiveView's green, and the fix.** Open applies the share-memory table from its resources (Canon's
+at ROM `0xe0942290`, 4 elements) to `0xd0003200/04/38/3c`, re-routing LiveView's memory to the
+encoder; close clears it. LiveView's values are `0x80000000 / 0x80010000 / 0x80060004 /
+0x80070004`. With them gone, Canon's preview (and the H.264 proxy) loses its colour until LiveView
+restarts. Every step of the way out was measured:
+
+1. Canon's unit setters write each value twice: the register, and a RAM image at `MEM(0x1faa4) +`
+   offset from `0xd0000000` (`0x021d0800`). **Restoring the RAM image alone does nothing.**
+2. Restoring every word the encode changed, registers included, kept the colour but crashed the
+   camera within a second (`LvJob.c:203`, `EvfState.c:660`). Most of those words are LiveView's
+   per-frame buffer addresses and toggling flags, and they were stale.
+3. Restoring only the four routing words after close fixed single encodes. Encoding every frame,
+   though, LiveView stayed green (half the screen at 59.94p).
+4. Restoring them right after open left only a flash at the top of the picture, from inside open.
+5. **The encoder does not need the routing.** Apply (`0xe0247e30`) and clear (`0xe02480b8`) return at
+   once when the element count is 0, leaving only `(SetTable)ElementNum is Zero` in a debug pointer
+   at `0x1f074`. With count 0 LiveView is never touched: the preview is clean, framing, peaking and
+   overlays work, and the encode stays bit-exact at the same speed.
+
+**Memory.** While RAW video is on in movie mode, mlv_lite holds the whole shoot pool and the SRM
+buffer. `shoot_malloc_suite(0)` with nothing free then asks Canon for 0 bytes, which resets the
+camera. Ask for exact sizes.
+
 ---
 
 ## 4. 6D2 hardware facts and measurements
@@ -228,7 +298,8 @@ before `cli()` would be safer.)
 footage as 35.9 fps), solved from VIDF timestamps. Canon's timer getters assert
 (`ImgSeqCoopStore.c:194`) for a moment during every LiveView mode change — read the store
 (`0x1c928 + 0x1c` for timer B) directly. The binned readouts are paced by timer B (estimated ceiling
-~36–37 fps for the full 1208-line 1080p readout, low 60s for the 59.94p one; unmeasured on a card).
+~36–37 fps for the full 1208-line 1080p readout; the 59.94p readout is a full 2128×1208 too, and is
+sensor-paced - its timer values do not change its rate).
 The 1:1 readout is paced on the sensor side.
 
 **Black level.** The 1080p raw is binned 3× across, so only ~40 columns are optical black (ML measured
@@ -256,6 +327,33 @@ input-referred noise improves 17×. Third stops are a full stop plus a digital p
 **Bit depth.** 12-bit is lossless in practice; 10-bit costs 0.42 EV of shadow range at ISO 100
 (measured; the step/√12 model says 0.32). Canon's packer has codes for 10/12/14 only.
 
+**Lossless.** At 2048×856, 14-bit frames are 1.33 MB (43% of uncompressed) and 12-bit frames
+0.84–0.90 MB (33%); both vary with the scene. Encode time is 8.2–9.9 ms from start to done, plus
+about 1.1 ms of setup and stop: 9.3–11 ms in all, under the 16.7 ms frame period. Data rates for
+12-bit 59.94p:
+
+| Width | Data rate |
+|---|---|
+| 2048×856 | ~49 MB/s |
+| 1920×804 | ~42–45 MB/s |
+
+The **59.94p readout is a full 2128×1208** (the same as 23.976), so 60p loses no lines. Scratch
+audio works at 59.94p: 48 kHz in real time, with the usual ~0.38 s lead-in.
+
+**Card writes are bound by write size.** Writes per take, 59.94p 12-bit lossless 1920×804, on a card
+that benchmarks 70+ MB/s:
+
+| Frames per write | Average write | Speed |
+|---|---|---|
+| 2–3 | 1.9 MB | 18 MB/s |
+| 4–7 | 4.1 MB | 40 MB/s |
+| 8–15 | 7.3 MB | 49 MB/s |
+| 16–31 | 14.9 MB | 56 MB/s |
+
+mlv_lite's writer drains whatever is queued, so with lossless (compressed frames finish one at a
+time) it mostly writes 4 MB at 40 MB/s. A 3 min 11 s take survived at ~42 MB/s with the writer busy
+99.7% of the time; busier scenes stop. Batching to ~16 MB per write is the fix.
+
 **Cards.** The SDR104 path reads ~100 MB/s and Canon already runs its fastest divider; the limit is
 the card's write speed. A SanDisk Extreme PRO 64 GB writes ~83 MB/s new, **~62–65 MB/s after one full
 fill** (a camera format does not restore it). Sustained recording needs the card's *slowest*
@@ -277,6 +375,14 @@ Tried and ruled out on the 6D2 — recorded so nobody repeats them blind.
 
 - **24p in the 1:1 readout**: five ways (timer B, Canon's timing lists, ROM list patches). Canon
   re-asserts the frame period on the sensor side; always 29.97.
+- **48p from the 59.94p readout.** Timer B × 1.25 through Canon's ImgSeqCoop store (`0x1c928`) and
+  apply: B snapped back, timer A moved (368 → 472), and the frame timestamps still measured 59.6–59.7
+  fps. Like the 1:1 readout, the 59.94p one is paced on the sensor side.
+- **Lossless: delaying the encode into the frame period** (2.5 / 5 ms after vsync), to dodge
+  LiveView's processing: the preview went fully green and the callbacks stopped. At 5 ms the encode
+  overran the frame. The empty share-memory table (section 3) is the fix.
+- **Lossless: restoring Canon's RAM register image** (`MEM(0x1faa4)`) has no effect on LiveView;
+  restoring LiveView's per-frame registers crashes it (section 3).
 - **Video dual ISO in 1080p**: the binned readout applies one gain (above).
 - **Telling DRIVE / metering / AF-point apart**, or the light button from the rear dial: identical at
   the MPU (above).
@@ -305,3 +411,9 @@ From a blind code review of the port and from testing:
   been tested together on the camera.
 - Firmware 1.2.0: 1.1.1 plus insertions (stubs move by a constant per ROM region); boots in QEMU,
   never run on a camera, and has no `ML-SETUP.FIR`.
+- **Lossless:**
+  - mlv_lite's writer should batch writes to ~16 MB (above).
+  - 14-bit lossless at 59.94p (~80 MB/s at 2048 wide) needs a faster card than this one.
+  - 10-bit lossless would need DIGIC 5's 1/4 gain in front of a 12-bit encode.
+  - A failed encode ends the take, and an encode that never finishes leaves the encoder unused
+    until a restart. Neither has happened on the camera since v111.
