@@ -1286,6 +1286,7 @@ static int lj_read_frame(void)
     FIO_CloseFile(f);
     return done == lj_in_size;
 }
+
 static void lj_flush_txt(void)
 {
     char name[32];
@@ -1413,47 +1414,79 @@ static void lj_degeen_identity(uint32_t *d)
 
 /* LiveView probes.  v103 / v104: LiveView's colour broke (chroma 20 -> 128,
  * the green) after the first round of every probe - even open / configure /
- * close with no start - and stayed broken until LiveView restarted.  The
- * share-memory registers read back 0 (write-only), so v104's restore wrote
- * zeros.  The unit setters write each value twice: to the register and to a
- * RAM copy at MEM(0x1faa4) + the register's offset from 0xd0000000
- * (0x021d0800 on the camera) - by the look of it LiveView's register image,
- * re-applied every frame, which would keep the encoder's values in force.
- * Each round snapshots that copy (512 KB) before open and puts back every
- * word the encode changed:
- *  A: the RAM copy only;
- *  B: the RAM copy and the same offsets of the live registers;
- *  C: B, 48 rounds at 24 fps, LiveView checked during the burst. */
+ * close with no start - and stayed broken until LiveView restarted.  The unit
+ * setters write each value twice: to the register and to a RAM copy at
+ * MEM(0x1faa4) + the register's offset from 0xd0000000 (0x021d0800).  v105:
+ * putting back every changed word of the copy alone left it green; the copy
+ * and the registers kept LiveView right (chroma 36) and the callback came -
+ * but restoring LiveView's per-frame words (buffer addresses, toggling flags)
+ * stale crashed the camera (LvJob / EvfState asserts) within a second.  The
+ * only LiveView words the encoder changes the same way every run are the
+ * share-memory routing (zeroed by close) and four enables it sets; the
+ * probes put back only those, register and copy, from the copy as it was
+ * before open:
+ *  A: the share-memory routing;
+ *  B: A and the encoder's enables;
+ *  C: A, 48 rounds at 24 fps, LiveView checked during the burst.
+ * Round 1 still logs everything else that changed, untouched. */
 #define LJ_SHADOW_SIZE  0x80000
 static int lj_probe = 0;
-static const char *lj_probe_name[3] = { "A: restore RAM copy", "B: restore copy + regs", "C: B at 24 fps" };
+static const char *lj_probe_name[3] = { "A: share-mem routing", "B: routing + enables", "C: A at 24 fps" };
+static const uint16_t lj_put_back[8] = { 0x3200, 0x3204, 0x3238, 0x323c, 0x33a8, 0x500c, 0x5224, 0x5960 };
 static uint32_t *lj_shadow_save;
 static uint32_t lj_shadow;
 
-static void lj_shadow_snap(void)
+static int lj_put_back_n(void)
 {
-    lj_shadow = MEM(0x1faa4);
-    if (lj_shadow_save && lj_shadow >= 0x100000 && lj_shadow < 0x40000000)
-        memcpy(lj_shadow_save, (void *)lj_shadow, LJ_SHADOW_SIZE);
+    return lj_probe == 1 ? 8 : 4;
+}
+static int lj_is_put_back(int off)
+{
+    for (int j = 0; j < lj_put_back_n(); j++)
+        if (lj_put_back[j] == off) return 1;
+    return 0;
 }
 
-/* put back what changed since the snapshot; the first round logs it */
+/* round 1 copies the whole image for the log, later rounds only the words
+ * that go back */
+static void lj_shadow_snap(int k)
+{
+    lj_shadow = MEM(0x1faa4);
+    if (!lj_shadow_save || lj_shadow < 0x100000 || lj_shadow >= 0x40000000) return;
+    if (k == 1)
+        memcpy(lj_shadow_save, (void *)lj_shadow, LJ_SHADOW_SIZE);
+    else
+        for (int j = 0; j < lj_put_back_n(); j++)
+            lj_shadow_save[lj_put_back[j] / 4] = MEM(lj_shadow + lj_put_back[j]);
+}
+
 static void lj_shadow_restore(int k)
 {
     if (!lj_shadow_save || lj_shadow < 0x100000 || lj_shadow >= 0x40000000) return;
     uint32_t *now = (uint32_t *)lj_shadow;
-    int n = 0;
-    for (int i = 0; i < LJ_SHADOW_SIZE / 4; i++)
+    if (k == 1)
     {
+        int n = 0;
+        for (int i = 0; i < LJ_SHADOW_SIZE / 4; i++)
+        {
+            if (now[i] == lj_shadow_save[i]) continue;
+            if (n++ < 48)
+                lj_printf("    RAM copy +%05x (%08x): was %08x now %08x%s\n", i * 4, 0xd0000000 + i * 4,
+                          lj_shadow_save[i], now[i], lj_is_put_back(i * 4) ? "  <- put back" : "");
+        }
+        lj_printf("    %d words of the RAM copy changed\n", n);
+    }
+    int n = 0;
+    for (int j = 0; j < lj_put_back_n(); j++)
+    {
+        int i = lj_put_back[j] / 4;
         if (now[i] == lj_shadow_save[i]) continue;
-        if (k == 1 && n < 48)
-            lj_printf("    RAM copy +%05x (%08x): was %08x now %08x\n", i * 4, 0xd0000000 + i * 4, lj_shadow_save[i], now[i]);
-        n++;
         now[i] = lj_shadow_save[i];
-        if (lj_probe) MEM(0xd0000000 + i * 4) = lj_shadow_save[i];
+        MEM(0xd0000000 + i * 4) = lj_shadow_save[i];
+        n++;
     }
     if (n) sync_caches();   /* the copy is cacheable; LiveView may read it from RAM */
-    lj_printf("    round %d: %d words of the RAM copy put back%s\n", k, n, lj_probe ? ", and the registers" : "");
+    if (k == 1) lj_printf("    round 1: %d of %d words put back, register and copy\n", n, lj_put_back_n());
 }
 
 static int lj_encode(int k, const struct lj_rect *r, const uint8_t *spec, const char *spec_name, int quiet)
@@ -1502,7 +1535,7 @@ static int lj_encode(int k, const struct lj_rect *r, const uint8_t *spec, const 
 
     lj_cb_done = 0;
     lj_cb[0] = lj_cb[1] = lj_cb[2] = lj_cb[3] = 0;
-    lj_shadow_snap();
+    lj_shadow_snap(k);
     lj_open(&rsc);
     uint32_t canon_rec = MEM(LJ_STATE + 4);
     MEM(LJ_STATE + 4) = (uint32_t)lj_rec;
@@ -1848,9 +1881,9 @@ static struct menu_entry d7probe_menu[] =
                 .name   = "Lossless: LV probe",
                 .priv   = &lj_probe,
                 .max    = 2,
-                .choices = CHOICES("A: restore RAM copy", "B: restore copy + regs", "C: B at 24 fps"),
-                .help   = "What the encode test puts back of LiveView's register image after each encode.",
-                .help2  = "A: the RAM copy. B: the copy and the registers. C: B, 48 at 24 fps.",
+                .choices = CHOICES("A: share-mem routing", "B: routing + enables", "C: A at 24 fps"),
+                .help   = "What the encode test puts back of LiveView's registers after each encode.",
+                .help2  = "A: share-memory routing. B: A + encoder enables. C: A, 48 at 24 fps.",
             },
             {
                 .name   = "Lossless: photo setup",
