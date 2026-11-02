@@ -236,6 +236,16 @@ static CONFIG_INT("raw.h264.proxy", h264_proxy_menu, -1);
 static CONFIG_INT("raw.sync_beep", sync_beep, -1);
 
 static CONFIG_INT("raw.output_format", output_format, 3);
+
+/* Clip info: slate metadata written into each clip (an INFO block, read by
+ * MLV App and MLV Drive). Take counts up after every recorded clip and goes
+ * back to 1 when the scene or shot changes. */
+static CONFIG_INT("raw.clip.info", clip_info_on, 0);
+static CONFIG_INT("raw.clip.camera", clip_camera, 0);      /* A..H */
+static CONFIG_INT("raw.clip.reel", clip_reel, 1);
+static CONFIG_INT("raw.clip.scene", clip_scene, 1);
+static CONFIG_INT("raw.clip.shot", clip_shot, 0);          /* 0 = none, 1..26 = A..Z */
+static CONFIG_INT("raw.clip.take", clip_take, 1);
 #define OUTPUT_14BIT_NATIVE 0
 #define OUTPUT_12BIT_UNCOMPRESSED 1
 #define OUTPUT_10BIT_UNCOMPRESSED 2
@@ -587,6 +597,8 @@ static GUARDED_BY(RawRecTask)   uint64_t mlv_start_timestamp = 0;
 static GUARDED_BY(RawRecTask)   uint64_t wav_start_us = 0;
 static GUARDED_BY(RawRecTask)   struct { mlv_info_hdr_t hdr; char text[48]; } wav_info_blk;
 static GUARDED_BY(RawRecTask)   int wav_info_ready = 0;
+static GUARDED_BY(RawRecTask)   struct { mlv_info_hdr_t hdr; char text[64]; } clip_info_blk;
+static GUARDED_BY(RawRecTask)   int clip_info_ready = 0;
        GUARDED_BY(RawRecTask)   uint32_t raw_rec_trace_ctx = TRACE_ERROR;
 
 static int raw_rec_should_preview(void);
@@ -1545,6 +1557,26 @@ static MENU_UPDATE_FUNC(output_format_bpp_update)
         MENU_SET_WARNING(MENU_WARN_ADVICE,
                          "Applies when you close the menu (or Canon MENU and back).");
     }
+}
+
+static MENU_UPDATE_FUNC(clip_info_update)
+{
+    if (!clip_info_on) return;
+    char cam[2] = { 'A' + COERCE(clip_camera, 0, 7), 0 };
+    char shot[2] = { clip_shot > 0 ? 'A' + COERCE(clip_shot, 1, 26) - 1 : 0, 0 };
+    MENU_SET_VALUE("%s%03d  %d%s-%d", cam, clip_reel, clip_scene, shot, clip_take);
+}
+
+/* a new scene or shot starts again at take 1 */
+static MENU_SELECT_FUNC(clip_scene_select)
+{
+    menu_numeric_toggle(&clip_scene, delta, 1, 999);
+    clip_take = 1;
+}
+static MENU_SELECT_FUNC(clip_shot_select)
+{
+    menu_numeric_toggle(&clip_shot, delta, 0, 26);
+    clip_take = 1;
 }
 
 static MENU_UPDATE_FUNC(output_format_update)
@@ -3787,6 +3819,24 @@ void init_mlv_chunk_headers(struct raw_info *raw_info)
         wav_info_ready = 1;
     }
     
+    /* slate: "camera=A reel=001 scene=12 shot=B take=3" (key=value, space separated) */
+    clip_info_ready = 0;
+    if (clip_info_on)
+    {
+        memset(&clip_info_blk, 0, sizeof(clip_info_blk));
+        mlv_set_type((mlv_hdr_t *)&clip_info_blk, "INFO");
+        mlv_set_timestamp((mlv_hdr_t *)&clip_info_blk, mlv_start_timestamp);
+        clip_info_blk.hdr.blockSize = sizeof(clip_info_blk);
+        /* no %c: Canon's vsnprintf does not implement it */
+        char cam[2] = { 'A' + COERCE(clip_camera, 0, 7), 0 };
+        char shot[2] = { clip_shot > 0 ? 'A' + COERCE(clip_shot, 1, 26) - 1 : 0, 0 };
+        int n = snprintf(clip_info_blk.text, sizeof(clip_info_blk.text), "camera=%s reel=%03d scene=%d",
+                         cam, clip_reel, clip_scene);
+        if (shot[0]) n += snprintf(clip_info_blk.text + n, sizeof(clip_info_blk.text) - n, " shot=%s", shot);
+        snprintf(clip_info_blk.text + n, sizeof(clip_info_blk.text) - n, " take=%d", clip_take);
+        clip_info_ready = 1;
+    }
+
     /* init MLV header for each frame (VIDF) */
     memset(&vidf_hdr, 0, sizeof(mlv_vidf_hdr_t));
     mlv_set_type((mlv_hdr_t*)&vidf_hdr, "VIDF");
@@ -3814,6 +3864,7 @@ int write_mlv_chunk_headers(FILE *f, int chunk, int card_index)
         fail |= !mlv_write_hdr(f, (mlv_hdr_t *)&rtci_hdr);
         fail |= !mlv_write_hdr(f, (mlv_hdr_t *)&wbal_hdr);
         if (wav_info_ready) fail |= !mlv_write_hdr(f, (mlv_hdr_t *)&wav_info_blk);
+        if (clip_info_ready) fail |= !mlv_write_hdr(f, (mlv_hdr_t *)&clip_info_blk);
         fail |= mlv_write_vers_blocks(f, mlv_start_timestamp);
     }
     
@@ -4856,6 +4907,10 @@ cleanup:
         wav_filing = file_wav;
 
         raw_recording_state = RAW_IDLE;
+        if (clip_info_on && frame_count > 1)
+        {
+            clip_take = MIN(clip_take + 1, 999);
+        }
         rec_log("========== TAKE END (state back to IDLE)");
         rec_trace = 0;      /* the next take reads the switch again */
 
@@ -5000,6 +5055,51 @@ static struct menu_entry raw_video_menu[] =
                               "14-bit compressed with Canon's Lossless JPEG. Recommended ISO < 100.\n"
                               "Signal divided by 4 before compression. Recommended ISO 100-1600.\n"
                               "Signal divided by 8/16/32/64 before compression, depending on ISO.\n"
+            },
+            {
+                .name = "Clip info",
+                .priv = &clip_info_on,
+                .max = 1,
+                .update = clip_info_update,
+                .help  = "Slate metadata in each clip: camera, reel, scene, shot, take.",
+                .help2 = "Take counts up after each clip, back to 1 when scene or shot changes.",
+                .children = (struct menu_entry[]) {
+                    {
+                        .name = "Camera",
+                        .priv = &clip_camera,
+                        .max = 7,
+                        .choices = CHOICES("A", "B", "C", "D", "E", "F", "G", "H"),
+                    },
+                    {
+                        .name = "Reel",
+                        .priv = &clip_reel,
+                        .min = 1, .max = 999,
+                        .unit = UNIT_DEC,
+                    },
+                    {
+                        .name = "Scene",
+                        .priv = &clip_scene,
+                        .min = 1, .max = 999,
+                        .unit = UNIT_DEC,
+                        .select = clip_scene_select,
+                    },
+                    {
+                        .name = "Shot",
+                        .priv = &clip_shot,
+                        .max = 26,
+                        .choices = CHOICES("-", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M",
+                                           "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"),
+                        .select = clip_shot_select,
+                    },
+                    {
+                        .name = "Take",
+                        .priv = &clip_take,
+                        .min = 1, .max = 999,
+                        .unit = UNIT_DEC,
+                        .help = "The next clip's take. Counts up by itself after each clip.",
+                    },
+                    MENU_EOL
+                },
             },
             {
                 .name = "Preview",
@@ -5678,5 +5778,11 @@ MODULE_CONFIGS_START()
     MODULE_CONFIG(warm_up)
     MODULE_CONFIG(sync_beep)
     MODULE_CONFIG(output_format)
+    MODULE_CONFIG(clip_info_on)
+    MODULE_CONFIG(clip_camera)
+    MODULE_CONFIG(clip_reel)
+    MODULE_CONFIG(clip_scene)
+    MODULE_CONFIG(clip_shot)
+    MODULE_CONFIG(clip_take)
     MODULE_CONFIG(h264_proxy_menu)
 MODULE_CONFIGS_END()
