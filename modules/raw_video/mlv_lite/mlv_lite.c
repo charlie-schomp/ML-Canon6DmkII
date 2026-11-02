@@ -3239,6 +3239,10 @@ static int crop_pos_x()
     return x;
 }
 
+/* a frame is being compressed right now (the flush waits only on that, or on
+ * frames still queued) */
+static volatile int compress_busy = 0;
+
 static void compress_task()
 {
     ASSERT(compress_mq == 0);
@@ -3289,6 +3293,8 @@ static void compress_task()
         int slot_index = msg & 0xFFFF;
         if (slot_index < 0)
             continue;
+
+        compress_busy = 1;
 
         int fullsize_index = msg >> 16;
 
@@ -3383,6 +3389,7 @@ static void compress_task()
         
         /* mark it as completed */
         slots[slot_index].status = SLOT_FULL;
+        compress_busy = 0;
     }
 }
 
@@ -4556,8 +4563,12 @@ abort_and_check_early_stop:
              * rather than write that into the clip */
             if (OUTPUT_COMPRESSION && !slots[slot_index].is_meta)
             {
+                /* only while the compress task has work: a frame whose
+                 * encode was never queued (the queue was full) never lands */
                 int t0 = get_ms_clock();
-                while (slots[slot_index].status == SLOT_CAPTURING && get_ms_clock() - t0 < 2000)
+                uint32_t queued = 0;
+                while (slots[slot_index].status == SLOT_CAPTURING && get_ms_clock() - t0 < 2000
+                       && (compress_busy || (msg_queue_count(compress_mq, &queued) == 0 && queued)))
                 {
                     msleep(5);
                 }
