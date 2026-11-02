@@ -850,6 +850,16 @@ static MENU_UPDATE_FUNC(statelog_update)
 static int fpsx_b = 0;          /* 0 = off; deliberately not saved: chosen each session */
 static int fpsx_orig_b = 0, fpsx_orig_mode = -1, fpsx_applies = 0, fpsx_running = 0;
 
+/* fps-engio.c: the header / shutter-angle rate while the experiment runs */
+extern int fps_6d2_experiment_x1000;
+extern int video_system_pal;
+
+static int fpsx_nominal_x1000(void)
+{
+    extern int video_mode_fps;
+    return video_system_pal ? video_mode_fps * 1000 : (video_mode_fps * 1000000 + 500) / 1001;
+}
+
 static int fpsx_mode_sig(void)
 {
     extern int video_mode_fps, video_mode_resolution;
@@ -879,8 +889,14 @@ static void fpsx_task(void * unused)
             FPSX_APPLY();
             fpsx_applies++;
         }
+        /* the binned readouts' rate goes as 1/B, so scale the mode's rate
+         * by Canon's B over ours (a 1080p60 header read 76.8 from the timer
+         * formula, so not that) */
+        fps_6d2_experiment_x1000 = fpsx_orig_b > 0
+            ? (int)((long long)fpsx_nominal_x1000() * fpsx_orig_b / fpsx_b) : 0;
         msleep(100);
     }
+    fps_6d2_experiment_x1000 = 0;
     /* switched off: give Canon its value back for this mode */
     if (lv && fpsx_orig_b > 0 && fpsx_orig_mode == fpsx_mode_sig())
     {
@@ -904,6 +920,36 @@ static MENU_SELECT_FUNC(fpsx_select)
     else fpsx_b = COERCE(was + delta * 20, 0, 4000);
     if (fpsx_b && fpsx_b < 600) fpsx_b = 0;
     if (!was && fpsx_b) fpsx_start();
+}
+
+/* 48p for 2x slow motion on a 23.976 timeline: 59.94p with timer B x 1.25
+ * (47.95 fps). Slower than Canon's mode, so the readout has more time, not
+ * less. Off gives Canon's B back. */
+static MENU_SELECT_FUNC(fpsx48_select)
+{
+    extern int video_mode_fps;
+    if (fpsx_b)
+    {
+        fpsx_b = 0;
+        return;
+    }
+    int canon = (int)MEM(FPSX_STORE + 0x1c);
+    if (!lv || !is_movie_mode() || video_mode_fps != 60 || video_system_pal || canon <= 0)
+    {
+        NotifyBox(3000, "Set Canon's movie size to FHD 59.94p first");
+        return;
+    }
+    fpsx_b = (canon * 5 + 2) / 4;
+    fpsx_start();
+}
+
+static MENU_UPDATE_FUNC(fpsx48_update)
+{
+    int x = fps_6d2_experiment_x1000;
+    if (!fpsx_b) MENU_SET_VALUE("OFF");
+    else if (x) MENU_SET_VALUE("%d.%03d fps", x / 1000, x % 1000);
+    else MENU_SET_VALUE("starting");
+    MENU_SET_WARNING(MENU_WARN_ADVICE, "EXPERIMENT. From FHD 59.94p: timer B x 1.25. Press again for OFF.");
 }
 
 static MENU_UPDATE_FUNC(fpsx_update)
@@ -1968,6 +2014,14 @@ static struct menu_entry d7probe_menu[] =
                 .update = fpsx_update,
                 .help   = "EXPERIMENT: sets Canon's frame timer in the binned readouts.",
                 .help2  = "Measure the real rate with cardcheck.py. OFF restores Canon's value.",
+            },
+            {
+                .name   = "48p (from 59.94p)",
+                .select = fpsx48_select,
+                .update = fpsx48_update,
+                .icon_type = IT_ACTION,
+                .help   = "EXPERIMENT: 47.95 fps, 2x slow motion on a 23.976 timeline.",
+                .help2  = "Canon movie size FHD 59.94p first. Same timer as the entry above.",
             },
             {
                 .name   = "SD clock: mode",

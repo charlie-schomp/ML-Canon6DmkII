@@ -932,10 +932,21 @@ static void fps_setup_timerB(int fps_x1000)
 #endif
 }
 
+#ifdef CONFIG_6D2
+/* set by d7probe's frame-rate experiment while it drives timer B: the rate
+ * that gives, scaled from Canon's own B for the mode - the nominal figure
+ * below would still name Canon's mode (59.94 for a 48p take) */
+int fps_6d2_experiment_x1000 = 0;
+#endif
+
 int fps_get_current_x1000()
 {
     if (!lv)
         return 0;
+#ifdef CONFIG_6D2
+    if (fps_6d2_experiment_x1000 > 0)
+        return fps_6d2_experiment_x1000;
+#endif
     int fps_timer = (get_fps_register_b() & 0xFFFF) + 1;
     int fps_x1000 = TIMER_TO_FPS_x1000(fps_timer);
 
