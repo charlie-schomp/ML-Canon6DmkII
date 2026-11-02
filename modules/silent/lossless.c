@@ -78,9 +78,215 @@ static void (*TTL_Finish)(void * ResLock, void * TTL_Args, uint32_t * output_siz
 extern uint32_t edmac_write_chan;
 extern uint32_t edmac_read_chan;
 
+/* 6D2 1.1.1 (DIGIC 7): Canon's CR2 encoder (LosslessEncode.c), driven the
+ * way d7probe worked it out (modules/dev_tools/d7probe, v101-v106):
+ *  - open, then ML's record swapped in for Canon's (crop, pitch, depth), then
+ *    callback, DEGEEN, TWAIN, Huffman table, parameters, start; stop, close;
+ *  - JpCore reads the crop straight from the full-size frame: 12 or 14-bit,
+ *    2 components of width/2 x height - MLV's LJ92 layout, bit-exact on the
+ *    camera with an identity DEGEEN (no offset, unity gain, clip open);
+ *  - done is the callback or, in LiveView, often only the compressed size
+ *    landing in the base state (+0x18), so the encoder is stopped 3 ms later;
+ *  - close zeroes LiveView's share-memory routing (0xd0003200/04/38/3c) and
+ *    LiveView's colour goes (the green): it is put back afterwards, register
+ *    and Canon's RAM image of it (v106; the per-frame words must not be).
+ *    Encoding every frame, LiveView stays green until the encodes stop; the
+ *    raw data is not affected.
+ * The thumbnail unit always runs; its output goes to a buffer of our own. */
+struct lj6_rsc { uint32_t rsc_ary, rsc_num, sharemem_tbl, sharemem_num, enc_mode, rd_ch, wr_raw_ch, wr_thumb_ch; };
+struct lj6_prm { uint32_t huff, mem_num, mem_list, rd_addr, thumb_addr; };
+
+#define LJ6_STATE       0x26584     /* LosslessEncode.c: +4 the record */
+#define LJ6_BASE        0x2b084     /* LosslessEncodeBase.c: +18 compressed size */
+#define LJ6_REG_IMAGE   0x1faa4     /* MEM(): Canon's RAM image of 0xd0000000.. */
+#define LJ6_THUMB_SIZE  (256 * 1024)    /* 30 KB seen at 1920x800 */
+#define LJ6_GUARD       0x4c4a3647
+
+static void (*const lj6_open)(struct lj6_rsc *) = (void *)0xe015936b;
+static void (*const lj6_set_cbr)(void (*)(uint32_t, uint32_t, uint32_t, uint32_t), uint32_t) = (void *)0xe0159349;
+static void (*const lj6_unset_cbr)(void) = (void *)0xe0159359;
+static void (*const lj6_degeen)(void *) = (void *)0xe01594d7;
+static void (*const lj6_twain)(void *, uint32_t) = (void *)0xe01594df;
+static void (*const lj6_set_huff)(void *, const void *) = (void *)0xe02474ed;
+static void (*const lj6_set_param)(struct lj6_prm *) = (void *)0xe015945d;
+static void (*const lj6_start)(void) = (void *)0xe01594cf;
+static void (*const lj6_stop)(void) = (void *)0xe01594d3;
+static void (*const lj6_close)(void) = (void *)0xe0159423;
+
+/* ML's tables from 6D2 footage (2 components, predictor 1), within Canon's
+ * limits: categories 0..bpp, codes of at most 10 bits.  41-46% of the
+ * uncompressed size at 14-bit on the camera. */
+static const uint8_t lj6_spec14[0x30] = {
+    0x00, 0x03, 0x00, 0x03, 0x00, 0x02, 0x02, 0x02, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x03, 0x04, 0x05, 0x01, 0x02, 0x06, 0x00, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x00,
+};
+static const uint8_t lj6_spec12[0x30] = {
+    0x00, 0x03, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x02, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x01, 0x02, 0x03, 0x00, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x00, 0x00, 0x00,
+};
+
+/* TWAIN (the thumbnail's) from an ISO 800 RAW photo; the black words are
+ * filled in per depth */
+static const uint32_t lj6_twain_photo[16] = { 0x4b7, 0x380, 0x380, 0x57f, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0x38de, 0 };
+
+/* the routing close zeroes, as offsets from 0xd0000000 */
+static const uint16_t lj6_routing[4] = { 0x3200, 0x3204, 0x3238, 0x323c };
+
+static int lj6_cam = 0;
+static int lj6_hung = 0;                /* an encode never finished: no more */
+static uint8_t *lj6_buf = 0;            /* uncacheable: thumbnail, table, memory list */
+static volatile int lj6_cb_done;
+static volatile uint32_t lj6_cb_err;
+
+static void lj6_cbr(uint32_t ctx, uint32_t a, uint32_t b, uint32_t c)
+{
+    lj6_cb_err = b | c;
+    lj6_cb_done = 1;
+}
+
+/* returns the compressed size, or negative: -1 bad arguments / no memory,
+ * -2 never finished (the encoder is then left alone until a restart),
+ * -3 no JPEG in the output, -4 an earlier one never finished, -5 refused,
+ * -6 thumbnail overran its buffer, -7 size out of range */
+static int lj6_compress(struct memSuite * dst_suite, void * src, int src_x, int src_y, int width, int height)
+{
+    int bpp = raw_info.bits_per_pixel;
+    if (lj6_hung) return -4;
+    if (bpp != 12 && bpp != 14) return -1;
+    if (!dst_suite || !src || width <= 0 || height <= 0 || (width & 1) || (height & 1)) return -1;
+    int pitch_px = raw_info.pitch * 8 / bpp;
+    if (src_x < 0 || src_y < 0 || src_x + width > pitch_px) return -1;
+
+    if (!lj6_buf)
+    {
+        void * buf = fio_malloc(LJ6_THUMB_SIZE + 0x200);
+        if (!buf) return -1;
+        lj6_buf = UNCACHEABLE(buf);
+    }
+    uint8_t  * thumb = lj6_buf;
+    uint32_t * huff  = (uint32_t *)(lj6_buf + LJ6_THUMB_SIZE);
+    uint32_t * list  = huff + 0x60 / 4;
+    uint32_t * guard = (uint32_t *)(thumb + LJ6_THUMB_SIZE - 4);
+    *guard = LJ6_GUARD;
+
+    struct memChunk * chunk = GetFirstChunkFromSuite(dst_suite);
+    uint32_t * out = UNCACHEABLE(GetMemoryAddressOfMemoryChunk(chunk));
+    int out_size = GetSizeOfMemoryChunk(chunk) - 4096;
+    if (out_size <= 0) return -1;
+    list[0] = (uint32_t)out;
+    list[1] = out_size;
+    out[0] = 0;
+
+    static uint32_t rec[19];
+    memset(rec, 0, sizeof(rec));
+    rec[1] = width;  rec[4] = height; rec[6] = pitch_px;
+    rec[7] = src_x;  rec[8] = src_y;  rec[9] = bpp == 14 ? 2 : 1;
+    rec[11] = width; rec[12] = height; rec[13] = 1;
+    rec[16] = width - width % 160;      /* thumbnail area */
+    rec[17] = height - height % 160;
+    rec[18] = 4;
+
+    static uint8_t spec2[0x60];
+    const uint8_t * spec = bpp == 14 ? lj6_spec14 : lj6_spec12;
+    memcpy(spec2, spec, 0x30);
+    memcpy(spec2 + 0x30, spec, 0x30);
+
+    /* DEGEEN identity: per channel offset 0, unity gain, add-back 0, clip open */
+    static uint32_t degeen[32];
+    memset(degeen, 0, sizeof(degeen));
+    for (int c = 0; c < 4; c++)
+    {
+        degeen[4 + c] = 1;
+        degeen[8 + c] = 0x400;
+        degeen[20 + c] = 0xffff;
+    }
+
+    /* Canon sets TWAIN's black words to black + 1 */
+    int black = 2048 >> (14 - bpp);
+    static uint32_t twain[16];
+    memcpy(twain, lj6_twain_photo, sizeof(twain));
+    for (int c = 0; c < 4; c++) twain[8 + c] = black + 1;
+    twain[13] = black + 1;
+
+    struct lj6_rsc rsc = { 0, 0, 0xe0942290, 4, 0, 0x30, 0x11, 0x03 };
+    struct lj6_prm prm = {
+        (uint32_t)huff, 1, (uint32_t)list,
+        (uint32_t)UNCACHEABLE(src), (uint32_t)thumb,
+    };
+
+    uint32_t image = MEM(LJ6_REG_IMAGE);
+    int image_ok = image >= 0x100000 && image < 0x40000000;
+    uint32_t routing[4];
+    for (int j = 0; j < 4; j++)
+        routing[j] = image_ok ? MEM(image + lj6_routing[j]) : 0;
+
+    lj6_cb_done = 0;
+    lj6_cb_err = 0;
+    lj6_open(&rsc);
+    uint32_t canon_rec = MEM(LJ6_STATE + 4);
+    MEM(LJ6_STATE + 4) = (uint32_t)rec;
+    lj6_set_cbr(lj6_cbr, 0x6c6a3600);
+    lj6_degeen(degeen);
+    lj6_twain(twain, 0);
+    lj6_set_huff(huff, spec2);
+    lj6_set_param(&prm);
+    MEM(LJ6_BASE + 0x18) = 0xffffffff;
+    uint32_t us0 = get_us_clock();
+    int t0 = get_ms_clock(), t_size = 0;
+    lj6_start();
+    while (!lj6_cb_done && get_ms_clock() - t0 < 1000)
+    {
+        if (!t_size && MEM(LJ6_BASE + 0x18) != 0xffffffff)
+            t_size = MAX(get_ms_clock(), 1);
+        if (t_size && get_ms_clock() - t_size > 3)
+            break;
+        msleep(1);
+    }
+    int done = lj6_cb_done || t_size;
+    lj6_stop();
+    lj6_unset_cbr();
+    lj6_close();
+    MEM(LJ6_STATE + 4) = canon_rec;
+
+    if (image_ok)
+    {
+        for (int j = 0; j < 4; j++)
+        {
+            MEM(image + lj6_routing[j]) = routing[j];
+            MEM(0xd0000000 + lj6_routing[j]) = routing[j];
+        }
+        sync_caches();      /* the image is cacheable */
+    }
+
+    int size = (int)MEM(LJ6_BASE + 0x18);
+    if (verbose >= 2)
+    {
+        printf("[LJ6] %dx%d at %d,%d %d-bit: %d bytes, %d us%s\n", width, height, src_x, src_y, bpp,
+               size, (int)(get_us_clock() - us0), lj6_cb_done ? "" : " (no callback)");
+    }
+
+    if (!done)
+    {
+        lj6_hung = 1;
+        return -2;
+    }
+    if (lj6_cb_done && lj6_cb_err) return -5;
+    if (*guard != LJ6_GUARD) return -6;
+    if (size <= 0 || size > out_size) return -7;
+    if (out[0] != 0xC4FFD8FF) return -3;
+    return size;
+}
+
 static void decompress_init();
 int lossless_init()
 {
+    if (is_camera("6D2", "1.1.1"))
+    {
+        /* buffers on first use, so the thumbnail's 256 K is only taken when recording lossless */
+        lj6_cam = 1;
+        return 1;
+    }
+
     if (is_camera("5D3", "1.1.3"))
     {
         /* ProcessTwoInTwoOutLosslessPath, 5D3 1.1.3 */
@@ -270,6 +476,11 @@ int lossless_compress_raw_rectangle(
     int width, int height
 )
 {
+    if (lj6_cam)
+    {
+        return lj6_compress(dst_suite, src, src_x, src_y, width, height);
+    }
+
     if (!TTL_ResLock || !lossless_sem || !TTL_Start)
     {
         /* not initialized */
