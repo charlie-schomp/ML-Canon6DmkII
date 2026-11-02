@@ -1791,7 +1791,9 @@ static void lj_run_task(void *unused)
               (uint32_t)lj_in, lj_in_size, (uint32_t)lj_out, lj_out_size, (uint32_t)lj_thumb, lj_thumb_size, (uint32_t)lj_huff, (uint32_t)lj_mem);
     lj_log_setup();
 
+    /* the crop-mode (1:1) readout is 3264 wide: test at its widest preset */
     struct lj_rect crop = { 0, 0, 1920, 800 };
+    if (lj_ri.width >= 3264 && lj_ri.height >= 928) { crop.w = 3072; crop.h = 896; }
     if (lj_ri.width < crop.w + 64 || lj_ri.height < crop.h + 32)
     {
         crop.w = (lj_ri.width / 2) & ~63;
