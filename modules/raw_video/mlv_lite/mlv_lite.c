@@ -528,8 +528,11 @@ static GUARDED_BY(RawRecTask)   int idle_time[CARD_COUNT] = {0};                
  * whatever is queued, wrote ~4 MB at a time - 40 MB/s on a card that does
  * 56 MB/s at 15 MB and 70+ in a benchmark (v115's probe). It now holds a
  * lossless group until it reaches this, unless the group cannot grow (the
- * next slot is not contiguous), half the slots are in use, the take is
- * ending, or the last write was half a second ago. */
+ * next slot is not contiguous), half the usable slots are in use, the take
+ * is ending, or the last write was half a second ago.  Usable: each slot
+ * group has as many reserved slots, counted in total_slot_count, that only
+ * become usable as compressed frames shrink - comparing with the total held
+ * nothing at 23.976 (v116: 603 single-frame writes at 38 MB/s). */
 #define WRITE_BATCH_BYTES   (20 * 1024 * 1024)
 #define WRITE_BATCH_MAX_MS  500
 static GUARDED_BY(RawRecTask) struct
@@ -4370,7 +4373,7 @@ void raw_video_rec_task(uint32_t card_index)
 
         if (OUTPUT_COMPRESSION && raw_recording_state == RAW_RECORDING && !buffer_full
             && group_end != 2 && group_size < WRITE_BATCH_BYTES
-            && count_free_slots() > total_slot_count / 2
+            && count_free_slots() > valid_slot_count / 2
             && (!last_write_timestamp || get_ms_clock() - last_write_timestamp < WRITE_BATCH_MAX_MS))
         {
             if (card_spanning)
