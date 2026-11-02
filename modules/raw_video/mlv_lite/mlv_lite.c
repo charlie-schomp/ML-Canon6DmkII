@@ -523,6 +523,15 @@ static GUARDED_BY(RawRecTask)   int idle_time[CARD_COUNT] = {0};                
  * ended - next frame not ready, next slot not contiguous, queue end, or cut
  * short by the near-overflow limit. */
 #define WPROBE_BUCKETS 6                /* 1, 2-3, 4-7, 8-15, 16-31, 32+ frames */
+
+/* Lossless frames are encoded one at a time, so the writer, which drains
+ * whatever is queued, wrote ~4 MB at a time - 40 MB/s on a card that does
+ * 56 MB/s at 15 MB and 70+ in a benchmark (v115's probe). It now holds a
+ * lossless group until it reaches this, unless the group cannot grow (the
+ * next slot is not contiguous), half the slots are in use, the take is
+ * ending, or the last write was half a second ago. */
+#define WRITE_BATCH_BYTES   (20 * 1024 * 1024)
+#define WRITE_BATCH_MAX_MS  500
 static GUARDED_BY(RawRecTask) struct
 {
     int writes[WPROBE_BUCKETS], ms[WPROBE_BUCKETS];
@@ -4358,6 +4367,17 @@ void raw_video_rec_task(uint32_t card_index)
 
         /* grouped frames from w_head to last_grouped (including both ends) */
         int num_frames = MOD(last_grouped - w_head + 1, COUNT(writing_queue));
+
+        if (OUTPUT_COMPRESSION && raw_recording_state == RAW_RECORDING && !buffer_full
+            && group_end != 2 && group_size < WRITE_BATCH_BYTES
+            && count_free_slots() > total_slot_count / 2
+            && (!last_write_timestamp || get_ms_clock() - last_write_timestamp < WRITE_BATCH_MAX_MS))
+        {
+            if (card_spanning)
+                give_semaphore(write_queue_sem);
+            msleep(10);
+            continue;
+        }
         
         int free_slots = count_free_slots();
         
