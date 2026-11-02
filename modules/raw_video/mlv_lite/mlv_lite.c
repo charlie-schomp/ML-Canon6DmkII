@@ -4539,6 +4539,26 @@ abort_and_check_early_stop:
             if (slot_index < 0)
                 continue;
 
+            /* lossless: a frame still queued for the encoder is a full-size
+             * slot of raw-buffer leftovers until its encode lands - wait for
+             * it (each takes well under a second, or fails), and drop it
+             * rather than write that into the clip */
+            if (OUTPUT_COMPRESSION && !slots[slot_index].is_meta)
+            {
+                int t0 = get_ms_clock();
+                while (slots[slot_index].status == SLOT_CAPTURING && get_ms_clock() - t0 < 2000)
+                {
+                    msleep(5);
+                }
+                if (slots[slot_index].status != SLOT_FULL || slots[slot_index].size >= max_frame_size)
+                {
+                    rec_log("flush: frame %d dropped (never encoded, status %d)",
+                            slots[slot_index].frame_number, slots[slot_index].status);
+                    if (slots[slot_index].status != SLOT_CAPTURING) free_slot(slot_index);
+                    continue;
+                }
+            }
+
             if (slots[slot_index].status != SLOT_FULL)
             {
                 bmp_printf( FONT_MED, 30, 110, 
