@@ -329,6 +329,13 @@ writes (24 KB/s). mlv_lite's block queue is the wrong path for this, since it is
 start and take end and holds 100 blocks. `mlv_dump` and MLV Drive step over the new blocks.
 `tools/gyro_export.py` writes Gyroflow's `.gcsv` from them.
 
+v122's first take reset the camera with no crash log, at the first frame. The suspect, not yet
+confirmed: `SetHPTimerNextTick` (`0xe06261a2`) calls the **overrun callback from inside the call** when the
+next tick has already passed, and the log passed its sampling function as that callback. A timer that
+never stops would then nest one call per millisecond of held-off interrupts on the interrupt stack.
+v123's overrun callback only restarts the timer. **Never give a free-running HP timer its own function as
+the overrun callback.**
+
 Not yet known: whether Canon's Movie digital IS setting changes the data (the camera flashes a warning
 on non-IS lenses or with lens IS off), and the rolling-shutter readout time a stabiliser needs; the
 exporter works it out from timer B, unconfirmed. See [gyro-test.md](gyro-test.md).
