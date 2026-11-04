@@ -329,12 +329,21 @@ writes (24 KB/s). mlv_lite's block queue is the wrong path for this, since it is
 start and take end and holds 100 blocks. `mlv_dump` and MLV Drive step over the new blocks.
 `tools/gyro_export.py` writes Gyroflow's `.gcsv` from them.
 
-v122's first take reset the camera with no crash log, at the first frame. The suspect, not yet
-confirmed: `SetHPTimerNextTick` (`0xe06261a2`) calls the **overrun callback from inside the call** when the
-next tick has already passed, and the log passed its sampling function as that callback. A timer that
-never stops would then nest one call per millisecond of held-off interrupts on the interrupt stack.
-v123's overrun callback only restarts the timer. **Never give a free-running HP timer its own function as
-the overrun callback.**
+`SetHPTimerNextTick` (`0xe06261a2`) calls the **overrun callback from inside the call** when the next tick
+has already passed, so a timer that is its own overrun callback nests on the interrupt stack while interrupts
+are held off. **Never give an HP timer its own function as the overrun callback.** v123 fixed this in the gyro
+log and v124 in the encoder's poll timer. It was not the whole story: resets at the first frame carried on with
+the gyro log off (below).
+
+**Keep the file offset on 512 bytes.** v123's GYRO block of 15160 bytes left the offset at 312 mod 512, and the
+next frame write never came back: the clip ends exactly on that block, status frozen at 146 frames. Timer-only
+ran 572 frames with no blocks written. v124 pads each block with a NULL block; not yet tried on the camera.
+
+**A boot's first take at 59.94p reset the camera at the first frame**, 5 of 5 on 2026-11-04 (v122 and v123, at
+least 2 of them gyro off, all WAV off, shutter 1/1000), with no crash log and a 1 KB clip. The same boot started
+with a 23.976p take was fine at 59.94p afterwards. First takes at 59.94p with WAV on and 1/125 had passed on 11-02
+on earlier builds, so WAV, shutter, the builds since, and the card format are all still open. The only first-take
+difference found in the code is the encoder's 256 K buffer, allocated at the first frame until v124.
 
 Not yet known: whether Canon's Movie digital IS setting changes the data (the camera flashes a warning
 on non-IS lenses or with lens IS off), and the rolling-shutter readout time a stabiliser needs; the
