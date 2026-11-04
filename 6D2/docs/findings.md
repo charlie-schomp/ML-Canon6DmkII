@@ -345,6 +345,13 @@ with a 23.976p take was fine at 59.94p afterwards. First takes at 59.94p with WA
 on earlier builds, so WAV, shutter, the builds since, and the card format are all still open. The only first-take
 difference found in the code is the encoder's 256 K buffer, allocated at the first frame until v124.
 
+More takes on v123 the same day made it 9 of 9, all gyro off in the last 4, and two left crash logs: `LvJob.c:203`,
+`g_LvJob[ m_dwLastJobNumber ].fEnableInstance`, task Evf, free memory already 256 K down, so the encoder's buffer
+had been allocated. The assert's string sits beside `LiveView CreateJob BufferOver` in the ROM (`0xe0072c88`; string
+order only, not disassembled), which suggests LiveView's job ring filling up because jobs stopped completing. A
+ring would fill 2.5x sooner at 59.94p than at 23.976p, which fits the pattern. Why jobs stall is not known. A second
+gyro-on take, at 23.976p, also stopped right after its first unpadded block (`M04-1404`, offset 168 mod 512).
+
 Not yet known: whether Canon's Movie digital IS setting changes the data (the camera flashes a warning
 on non-IS lenses or with lens IS off), and the rolling-shutter readout time a stabiliser needs; the
 exporter works it out from timer B, unconfirmed. See [gyro-test.md](gyro-test.md).
