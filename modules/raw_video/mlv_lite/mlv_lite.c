@@ -780,10 +780,14 @@ static void gyro_log_write(FILE ** pf, int card_index)
         gyro_tail = gyro_head;
         return;
     }
-    while (gyro_tail != gyro_head)
+
+    /* only what is there now: the timer adds samples during every write, so
+     * waiting for the ring to empty never ends and the frames are never written */
+    uint32_t end = gyro_head;
+    while (gyro_tail != end)
     {
-        uint32_t tail = gyro_tail, head = gyro_head;
-        uint32_t n = MIN((head > tail ? head : GYRO_RING_SAMPLES) - tail, GYRO_BLOCK_SAMPLES);
+        uint32_t tail = gyro_tail;
+        uint32_t n = MIN((end > tail ? end : GYRO_RING_SAMPLES) - tail, GYRO_BLOCK_SAMPLES);
         int bytes = sizeof(mlv_hdr_t) + n * sizeof(struct gyro_sample);
         mlv_set_type((mlv_hdr_t *) gyro_block, "GYRO");
         mlv_set_timestamp((mlv_hdr_t *) gyro_block, mlv_start_timestamp);
@@ -791,9 +795,8 @@ static void gyro_log_write(FILE ** pf, int card_index)
         memcpy(gyro_block->samples, &gyro_ring[tail], n * sizeof(struct gyro_sample));
         gyro_tail = (tail + n) & (GYRO_RING_SAMPLES - 1);
 
-        /* frames and headers keep the file at a multiple of 512 bytes; pad with a
-         * NULL block as the chunk header does.  v122/v123 did not, and the first
-         * frame write after the first block never came back. */
+        /* frames and headers keep the file at a multiple of 512 bytes, for write
+         * speed; pad with a NULL block as the chunk header does */
         int padded = (bytes + sizeof(mlv_hdr_t) + 511) & ~511;
         mlv_hdr_t * nul = (mlv_hdr_t *)((uint8_t *) gyro_block + bytes);
         mlv_set_type(nul, "NULL");
