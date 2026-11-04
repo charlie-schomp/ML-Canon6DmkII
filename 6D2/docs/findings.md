@@ -293,6 +293,26 @@ camera. Ask for exact sizes.
 
 ---
 
+### A gyro in the body
+
+Canon lists no gyro for the 6D2, but its electronic IS driver (`./ElectronicIS/Driver/DSLR/EIS.c`)
+keeps three-axis gyro data in plain RAM, and ML can read it without calling anything:
+
+| Address | Contents |
+|---|---|
+| `0xd9008664` / `68` / `6c` | pitch, yaw, roll, clamped to +-24960 |
+| `0xd9008610` / `14` / `18` | the same before the clamp, about 16x the scale, new about every 249 us (4 kHz) |
+
+`GetGyroData*` and `GetGyroHPFIN*` only load these words. Seven d7probe runs (`Gyro test`), five on a
+lens reporting no name and two on an EF 24-105 f/4L IS II: each axis answers its own motion on both
+lenses, with a steady per-axis offset at rest (yaw about -300, roll about -90, pitch about -10). The
+4 kHz rate rules out image motion vectors as the source. Fast deliberate rolls hit the clamp; the
+filter-input words go past it.
+
+Not yet known: the scale in deg/s, whether it keeps updating during a RAW take, and whether Canon's
+Movie digital IS setting changes it (those seven runs did not log the setting or RAW state). A polling
+task was held off for up to 112 ms, so a real log needs a timer.
+
 ## 4. 6D2 hardware facts and measurements
 
 **Frame timing.** `TG_FREQ_BASE` is **44.636 MHz** on this body (upstream's 66.8 MHz tagged 23.976
