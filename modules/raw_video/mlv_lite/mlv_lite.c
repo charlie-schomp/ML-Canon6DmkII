@@ -252,7 +252,7 @@ static CONFIG_INT("raw.temp.warn", temp_warn_index, 3);
 static const int temp_warn_c[] = { 0, 45, 50, 55, 60 };
 
 /* 6D2 1.1.1: log the body's gyro beside each clip, for stabilising in post */
-static CONFIG_INT("raw.gyro.log", gyro_log_on, 0);
+static CONFIG_INT("raw.gyro.log", gyro_log_on, 0);        /* 0 off, 1 on, 2 sample but write nothing (a test) */
 static int gyro_6d2 = 0;
 extern int efic_temp;                                       /* 6D2: board temperature, raw - 128 = deg C */
 static int temp_6d2 = 0;
@@ -670,10 +670,25 @@ static volatile uint32_t gyro_lost = 0;
 static volatile uint32_t gyro_max_gap = 0;
 static volatile uint32_t gyro_total = 0;
 static volatile uint32_t gyro_last_t = 0;
+static volatile uint32_t gyro_overruns = 0;
+static int gyro_first_write = 0;
 static volatile int gyro_sampling = 0;
 static int gyro_write_error = 0;
 
 static int write_frames(FILE **pf, void *ptr, int group_size, int num_frames, int card_index);
+
+static void gyro_poll(int last_expiry, void * priv);
+
+/* Canon's SetHPTimerNextTick calls the overrun callback from inside the call when
+ * the next tick has already passed. Never let that be the sampling callback, as
+ * the 250 us timer in lossless.c can: this timer never stops, so interrupts held off
+ * for N ms would nest N calls on the interrupt stack. Start again from now instead;
+ * the longest gap in the log shows what was missed. */
+static void gyro_overrun(int last_expiry, void * priv)
+{
+    gyro_overruns++;
+    if (gyro_sampling) SetHPTimerAfterNow(GYRO_PERIOD_US, gyro_poll, gyro_overrun, priv);
+}
 
 static void gyro_poll(int last_expiry, void * priv)
 {
@@ -703,7 +718,7 @@ static void gyro_poll(int last_expiry, void * priv)
     }
     if (gyro_total > 1 && t - gyro_last_t > gyro_max_gap) gyro_max_gap = t - gyro_last_t;
     gyro_last_t = t;
-    SetHPTimerNextTick(last_expiry, GYRO_PERIOD_US, gyro_poll, gyro_poll, priv);
+    SetHPTimerNextTick(last_expiry, GYRO_PERIOD_US, gyro_poll, gyro_overrun, priv);
 }
 
 /* with the chunk headers: the memory, and what the tools need to know. A clip
@@ -747,15 +762,23 @@ static void gyro_log_start(void)
     if (!gyro_info_ready) return;
     gyro_head = gyro_tail = 0;
     gyro_lost = gyro_max_gap = gyro_total = gyro_last_t = 0;
+    gyro_overruns = 0;
     gyro_write_error = 0;
+    gyro_first_write = 1;
     gyro_sampling = 1;
-    SetHPTimerAfterNow(GYRO_PERIOD_US, gyro_poll, gyro_poll, 0);
+    int r = SetHPTimerAfterNow(GYRO_PERIOD_US, gyro_poll, gyro_overrun, 0);
+    rec_log("gyro log: timer started, %d, mode %d", r, gyro_log_on);
 }
 
 /* whatever has arrived, as GYRO blocks in the clip */
 static void gyro_log_write(FILE ** pf, int card_index)
 {
     if (!gyro_info_ready || gyro_write_error) return;
+    if (gyro_log_on == 2)
+    {
+        gyro_tail = gyro_head;
+        return;
+    }
     while (gyro_tail != gyro_head)
     {
         uint32_t tail = gyro_tail, head = gyro_head;
@@ -766,11 +789,14 @@ static void gyro_log_write(FILE ** pf, int card_index)
         gyro_block->hdr.blockSize = bytes;
         memcpy(gyro_block->samples, &gyro_ring[tail], n * sizeof(struct gyro_sample));
         gyro_tail = (tail + n) & (GYRO_RING_SAMPLES - 1);
+        if (gyro_first_write) rec_log("gyro log: first block, %d bytes, %d overruns", bytes, (int) gyro_overruns);
         if (!write_frames(pf, gyro_block, bytes, 0, card_index))
         {
             gyro_write_error = 1;
             return;
         }
+        if (gyro_first_write) rec_log("gyro log: first block written");
+        gyro_first_write = 0;
     }
 }
 
@@ -782,8 +808,8 @@ static void gyro_log_finish(FILE ** pf, int card_index)
         gyro_sampling = 0;
         msleep(GYRO_PERIOD_US / 500);       /* the timer has stopped by now */
         if (*pf) gyro_log_write(pf, card_index);
-        rec_log("gyro log: %d samples, %d lost, longest gap %d us%s", (int) gyro_total, (int) gyro_lost,
-                (int) gyro_max_gap, gyro_write_error ? ", WRITE ERROR" : "");
+        rec_log("gyro log: %d samples, %d lost, %d overruns, longest gap %d us%s", (int) gyro_total, (int) gyro_lost,
+                (int) gyro_overruns, (int) gyro_max_gap, gyro_write_error ? ", WRITE ERROR" : "");
     }
     gyro_info_ready = 0;
     if (gyro_block) fio_free(gyro_block);
@@ -4530,6 +4556,7 @@ void raw_video_rec_task(uint32_t card_index)
             /* with the WAV start/stop lines, this says whether a WAV that
              * comes out short started late or lost time inside Canon's recorder */
             rec_log("first frame captured, bpp=%d %dx%d", BPP, res_x, res_y);
+            if (gyro_sampling) rec_log("gyro log: %d samples so far, %d overruns", (int) gyro_total, (int) gyro_overruns);
             first_frame_logged = 1;
         }
 
@@ -5336,7 +5363,8 @@ static struct menu_entry raw_video_menu[] =
             {
                 .name = "Gyro log",
                 .priv = &gyro_log_on,
-                .max = 1,
+                .max = 2,
+                .choices = CHOICES("OFF", "ON", "Timer only (test)"),
                 .update = gyro_log_update,
                 .help  = "Records the body's gyro inside each clip, for stabilising in post.",
                 .help2 = "About 24 KB/s. Turn lens IS off for shots you will stabilise.",
