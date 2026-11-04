@@ -339,8 +339,8 @@ the gyro log off (below).
 next frame write never came back: the clip ends exactly on that block, status frozen at 146 frames. Timer-only
 ran 572 frames with no blocks written. v124 pads each block with a NULL block; not yet tried on the camera.
 
-**A boot's first take at 59.94p reset the camera at the first frame**, 5 of 5 on 2026-11-04 (v122 and v123, at
-least 2 of them gyro off, all WAV off, shutter 1/1000), with no crash log and a 1 KB clip. The same boot started
+**A boot's first take at 59.94p reset the camera at the first frame**, 5 of 5 on 2026-11-04 (v122 and v123, 3 with
+the gyro log on and 2 with it off, all WAV off, shutter 1/1000), with no crash log and a 1 KB clip. The same boot started
 with a 23.976p take was fine at 59.94p afterwards. First takes at 59.94p with WAV on and 1/125 had passed on 11-02
 on earlier builds, so WAV, shutter, the builds since, and the card format are all still open. The only first-take
 difference found in the code is the encoder's 256 K buffer, allocated at the first frame until v124.
