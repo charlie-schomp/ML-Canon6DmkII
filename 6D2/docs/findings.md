@@ -307,7 +307,7 @@ keeps three-axis gyro data in plain RAM, and ML can read it without calling anyt
 lens reporting no name and two on an EF 24-105 f/4L IS II: each axis answers its own motion on both
 lenses, with a steady per-axis offset at rest (yaw about -300, roll about -90, pitch about -10). The
 4 kHz rate rules out image motion vectors as the source. Fast deliberate rolls hit the clamp; the
-filter-input words go past it.
+filter-input words reach only about 5% further (+-420000 at most, about 26000 on the same scale).
 
 Not yet known: the scale in deg/s, whether it keeps updating during a RAW take, and whether Canon's
 Movie digital IS setting changes it (those seven runs did not log the setting or RAW state). A polling
