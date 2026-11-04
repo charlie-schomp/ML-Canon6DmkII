@@ -1954,23 +1954,25 @@ static MENU_UPDATE_FUNC(lj_run_update)
  * 0xd9008610/14/18. This reads those words and calls nothing in the firmware.
  * Whether they move, on which lens, and with digital IS on or off, is the question.
  *
- * A timed run: hold still, pan, tilt, roll, then shake for a burst that shows how
- * often the values update. Min and max per phase of every word around them show
- * anything else that follows the motion.
+ * A timed run: hold still, pan, tilt, roll, a measured 90 degree turn that gives
+ * the scale, then shake for a burst that shows how often the values update. Min
+ * and max per phase of every word around them show anything else that follows the
+ * motion. Press REC during the countdown to test while recording.
  */
 #define GY_FIRST        0xd9008500
 #define GY_WORDS        256             /* 0xd9008500 .. 0xd9008900 */
 #define GY_REG(i)       (*(volatile int *)(GY_FIRST + (i) * 4))
 #define GY_INDEX(addr)  (((addr) - GY_FIRST) / 4)
-#define GY_PHASES       4
-#define GY_PHASE_MS     3000
-#define GY_ROWS         1300            /* 10 ms apart at best */
-#define GY_COLS         7
+#define GY_PHASES       5
+#define GY_CUE_MS       2000            /* "Next: ..." before each phase, not in its min and max */
+#define GY_PHASE_MS     6000
+#define GY_ROWS         4200            /* 10 ms apart at best */
+#define GY_COLS         8
 #define GY_BURST_US     300000
-#define GY_BURST_ROWS   1000
+#define GY_BURST_ROWS   4000
 
 static const int gy_addr[6] = { 0xd9008664, 0xd9008668, 0xd900866c, 0xd9008610, 0xd9008614, 0xd9008618 };
-static const char * const gy_phase[GY_PHASES] = { "HOLD STILL", "PAN left-right", "TILT up-down", "ROLL side to side" };
+static const char * const gy_phase[GY_PHASES] = { "HOLD STILL", "PAN left-right", "TILT up-down", "ROLL side to side", "TURN 90 RIGHT, then back" };
 static int gy_min[GY_PHASES][GY_WORDS];
 static int gy_max[GY_PHASES][GY_WORDS];
 static volatile int gy_busy = 0;
@@ -1985,8 +1987,8 @@ static void gy_write(int * rows, int n, int * burst, int bn, int reads)
     while (no < 999 && FIO_GetFileSize(name, &size) == 0);
     FILE * f = FIO_CreateFile(name);
     if (!f) return;
-    my_fprintf(f, "gyro test %d: lens '%s' focal %d, lv %d movie %d, menu open at the end %d\n",
-               no, lens_info.name, lens_info.focal_len, lv, is_movie_mode(), gui_menu_shown());
+    my_fprintf(f, "gyro test %d: lens '%s' focal %d, lv %d movie %d, raw %d, menu open at the end %d\n",
+               no, lens_info.name, lens_info.focal_len, lv, is_movie_mode(), raw_lv_is_enabled(), gui_menu_shown());
     my_fprintf(f, "rows %d, burst %d changes in %d reads over %d us\n\n", n, bn, reads, GY_BURST_US);
 
     my_fprintf(f, "Gyro words by phase (min..max): pitch yaw roll, then HPF in pitch yaw roll\n");
@@ -2000,7 +2002,7 @@ static void gy_write(int * rows, int n, int * burst, int bn, int reads)
         }
     }
 
-    my_fprintf(f, "\nWords that changed, range per phase (still pan tilt roll):\n");
+    my_fprintf(f, "\nWords that changed, range per phase (still pan tilt roll turn):\n");
     for (int i = 0; i < GY_WORDS; i++)
     {
         int moved = 0;
@@ -2012,11 +2014,11 @@ static void gy_write(int * rows, int n, int * burst, int bn, int reads)
         my_fprintf(f, "\n");
     }
 
-    my_fprintf(f, "\nRows: ms, pitch yaw roll, HPF in pitch yaw roll\n");
+    my_fprintf(f, "\nRows: ms, phase (-1 = cue), pitch yaw roll, HPF in pitch yaw roll\n");
     for (int r = 0; r < n; r++)
     {
         int * v = rows + r * GY_COLS;
-        my_fprintf(f, "%6d %8d %8d %8d %8d %8d %8d\n", v[0], v[1], v[2], v[3], v[4], v[5], v[6]);
+        my_fprintf(f, "%6d %2d %8d %8d %8d %8d %8d %8d\n", v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]);
     }
 
     my_fprintf(f, "\nBurst, a row per change: us, pitch, HPF in pitch\n");
@@ -2030,6 +2032,32 @@ static void gy_write(int * rows, int n, int * burst, int bn, int reads)
     NotifyBox(4000, "%s written", name);
 }
 
+/* sample until the given time; phase -1 is a cue, kept out of the per-phase ranges */
+static void gy_sample(int * rows, int * n, int t0, int phase, int until)
+{
+    while (get_ms_clock() - t0 < until)
+    {
+        if (phase >= 0)
+        {
+            for (int i = 0; i < GY_WORDS; i++)
+            {
+                int v = GY_REG(i);
+                if (v < gy_min[phase][i]) gy_min[phase][i] = v;
+                if (v > gy_max[phase][i]) gy_max[phase][i] = v;
+            }
+        }
+        if (*n < GY_ROWS)
+        {
+            int * v = rows + *n * GY_COLS;
+            v[0] = get_ms_clock() - t0;
+            v[1] = phase;
+            for (int k = 0; k < 6; k++) v[k + 2] = GY_REG(GY_INDEX(gy_addr[k]));
+            (*n)++;
+        }
+        msleep(10);
+    }
+}
+
 static void gy_task(void * unused)
 {
     int * rows = fio_malloc((GY_ROWS * GY_COLS + GY_BURST_ROWS * 3) * sizeof(int));
@@ -2041,9 +2069,9 @@ static void gy_task(void * unused)
     }
     int * burst = rows + GY_ROWS * GY_COLS;
 
-    for (int i = 5; i > 0; i--)
+    for (int i = 8; i > 0; i--)
     {
-        NotifyBox(1100, "Gyro test: close the menu (%d)", i);
+        NotifyBox(1100, "Gyro test: close the menu, REC if wanted (%d)", i);
         msleep(1000);
     }
 
@@ -2055,31 +2083,20 @@ static void gy_task(void * unused)
 
     int n = 0;
     int t0 = get_ms_clock();
+    int at = 0;
     for (int p = 0; p < GY_PHASES; p++)
     {
+        NotifyBox(GY_CUE_MS, "Next: %s", gy_phase[p]);
+        at += GY_CUE_MS;
+        gy_sample(rows, &n, t0, -1, at);
         NotifyBox(GY_PHASE_MS, "%s", gy_phase[p]);
-        while (get_ms_clock() - t0 < (p + 1) * GY_PHASE_MS)
-        {
-            for (int i = 0; i < GY_WORDS; i++)
-            {
-                int v = GY_REG(i);
-                if (v < gy_min[p][i]) gy_min[p][i] = v;
-                if (v > gy_max[p][i]) gy_max[p][i] = v;
-            }
-            if (n < GY_ROWS)
-            {
-                int * v = rows + n * GY_COLS;
-                v[0] = get_ms_clock() - t0;
-                for (int k = 0; k < 6; k++) v[k + 1] = GY_REG(GY_INDEX(gy_addr[k]));
-                n++;
-            }
-            msleep(10);
-        }
+        at += GY_PHASE_MS;
+        gy_sample(rows, &n, t0, p, at);
     }
 
     /* how often do they update? read as fast as possible for a moment */
-    NotifyBox(1500, "SHAKE");
-    msleep(500);
+    NotifyBox(3000, "SHAKE");
+    msleep(1500);
     int bn = 0, reads = 0, last_a = 0, last_b = 0;
     uint32_t us0 = get_us_clock();
     while (get_us_clock() - us0 < GY_BURST_US)
@@ -2115,7 +2132,7 @@ static MENU_UPDATE_FUNC(gy_update)
         MENU_SET_VALUE("running...");
     else if (gy_runs)
         MENU_SET_VALUE("GYRO%d.TXT", gy_runs);
-    MENU_SET_WARNING(MENU_WARN_INFO, "In LiveView. Select, close the menu, follow the prompts (about 20 s).");
+    MENU_SET_WARNING(MENU_WARN_INFO, "In LiveView. Select, close the menu, follow the prompts (about a minute).");
 }
 
 static struct menu_entry d7probe_menu[] =
@@ -2221,7 +2238,7 @@ static struct menu_entry d7probe_menu[] =
                 .select = gy_select,
                 .update = gy_update,
                 .icon_type = IT_ACTION,
-                .help   = "Read-only: logs Canon's gyro variables while you pan, tilt, roll.",
+                .help   = "Read-only: logs Canon's gyro variables while you pan, tilt, roll, turn 90.",
                 .help2  = "Writes ML/LOGS/GYROn.TXT. Nothing is changed or called in the firmware.",
             },
             {
