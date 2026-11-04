@@ -320,9 +320,21 @@ assumed). Pitch and roll did not give a clean figure from the image, so assuming
 them is untested. On a countertop the noise is 10 LSB (about 0.12 deg/s). Yaw's offset moved from
 -242 to -290 across three runs in a few minutes, so it needs measuring per take.
 
+The filter-input words already have the resting offset removed: they average about zero at rest,
+where yaw's clamped word sits near -290.
+
+**The log (v122):** `Gyro log` in mlv_lite samples all six words at 1 kHz from an HP timer, stamped on
+the VIDF clock, and writes them **inside the clip**: one `GYRI` block, then `GYRO` blocks between frame
+writes (24 KB/s). mlv_lite's block queue is the wrong path for this, since it is only written at chunk
+start and take end and holds 100 blocks. `mlv_dump` and MLV Drive step over the new blocks.
+`tools/gyro_export.py` writes Gyroflow's `.gcsv` from them.
+
 Not yet known: whether Canon's Movie digital IS setting changes the data (the camera flashes a warning
-on non-IS lenses or with lens IS off), and the rolling-shutter readout time a stabiliser needs. A
-polling task was held off for up to 112 ms, so a real log needs a timer.
+on non-IS lenses or with lens IS off), and the rolling-shutter readout time a stabiliser needs; the
+exporter works it out from timer B, unconfirmed. See [gyro-test.md](gyro-test.md).
+
+**Why the audio isn't inside the clip:** MLV has blocks for it (`WAVI`, `AUDF`), but `mlv_snd` needs ASIF,
+which DIGIC 7 doesn't expose, so the 6D2's scratch audio comes from Canon's own WAV recorder.
 
 ## 4. 6D2 hardware facts and measurements
 
