@@ -4535,6 +4535,14 @@ void raw_video_rec_task(uint32_t card_index)
         /* fake recording status, to integrate with other ml stuff (e.g. hdr video */
         set_recording_custom(CUSTOM_RECORDING_RAW);
 
+        /* the one thing a boot's first take did differently: not at the first frame */
+        if (lossless_6d2)
+        {
+            int ok = lossless_prepare();
+            rec_log("lossless: buffers ready, %d", ok);
+            rec_log_mem("lossless: buffers");
+        }
+
         gyro_log_start();
 
         /* this will enable the vsync CBR and the other task(s) */
@@ -4560,6 +4568,7 @@ void raw_video_rec_task(uint32_t card_index)
 
     /* main recording loop */
     int first_frame_logged = 0;
+    int first_write_logged = 0;
     while (RAW_IS_RECORDING && lv)
     {
         if (!first_frame_logged && frame_count > 0)
@@ -4782,6 +4791,8 @@ void raw_video_rec_task(uint32_t card_index)
             group_size += slots[slot_index].size;
         }
 
+        if (!first_write_logged) rec_log("first write: %d frames, %d KB", num_frames - meta_slots, group_size / 1024);
+
         int t0 = get_ms_clock();
         if (!last_write_timestamp) last_write_timestamp = t0;
         idle_time[card_index] += t0 - last_write_timestamp;
@@ -4794,6 +4805,10 @@ void raw_video_rec_task(uint32_t card_index)
         
         last_write_timestamp = get_ms_clock();
         writing_time[card_index] += last_write_timestamp - t0;
+
+        if (!first_write_logged) rec_log("first write done, %d ms", last_write_timestamp - t0);
+        if (first_write_logged == 1) rec_log("second write done, %d ms", last_write_timestamp - t0);
+        if (first_write_logged < 2) first_write_logged++;
 
         gyro_log_write(&f, card_index);
 

@@ -224,6 +224,16 @@ static void lj6_cbr(uint32_t ctx, uint32_t a, uint32_t b, uint32_t c)
     lj6_finish(lj6_watch);
 }
 
+static void lj6_poll(int last_expiry, void * priv);
+
+/* Canon's SetHPTimerNextTick runs the overrun callback from inside the call when
+ * the next tick has passed: if that were lj6_poll, interrupts held off for N x 250 us
+ * would nest N calls on the interrupt stack.  Start again from now instead. */
+static void lj6_overrun(int last_expiry, void * priv)
+{
+    if (lj6_watch == (int)priv) SetHPTimerAfterNow(LJ6_POLL_US, lj6_poll, lj6_overrun, priv);
+}
+
 static void lj6_poll(int last_expiry, void * priv)
 {
     int gen = (int)priv;
@@ -242,7 +252,18 @@ static void lj6_poll(int last_expiry, void * priv)
             return;
         }
     }
-    SetHPTimerNextTick(last_expiry, LJ6_POLL_US, lj6_poll, lj6_poll, priv);
+    SetHPTimerNextTick(last_expiry, LJ6_POLL_US, lj6_poll, lj6_overrun, priv);
+}
+
+/* the thumbnail, table and memory list, kept until power off */
+int lossless_prepare(void)
+{
+    if (!lj6_buf)
+    {
+        void * buf = fio_malloc(LJ6_THUMB_SIZE + 0x200);
+        if (buf) lj6_buf = UNCACHEABLE(buf);
+    }
+    return lj6_buf != 0;
 }
 
 /* returns the compressed size, or negative: -1 bad arguments / no memory,
@@ -259,12 +280,7 @@ static int lj6_compress(struct memSuite * dst_suite, void * src, int src_x, int 
     int pitch_px = raw_info.pitch * 8 / bpp;
     if (src_x < 0 || src_y < 0 || src_x + width > pitch_px) return -1;
 
-    if (!lj6_buf)
-    {
-        void * buf = fio_malloc(LJ6_THUMB_SIZE + 0x200);
-        if (!buf) return -1;
-        lj6_buf = UNCACHEABLE(buf);
-    }
+    if (!lossless_prepare()) return -1;
     uint8_t  * thumb = lj6_buf;
     uint32_t * huff  = (uint32_t *)(lj6_buf + LJ6_THUMB_SIZE);
     uint32_t * list  = huff + 0x60 / 4;
@@ -344,7 +360,7 @@ static int lj6_compress(struct memSuite * dst_suite, void * src, int src_x, int 
     lj6_watch = gen;
     uint32_t us_start = get_us_clock();
     lj6_start();
-    SetHPTimerAfterNow(LJ6_POLL_US, lj6_poll, lj6_poll, (void *)gen);
+    SetHPTimerAfterNow(LJ6_POLL_US, lj6_poll, lj6_overrun, (void *)gen);
     int got = take_semaphore(lj6_sem, 1000) == 0;
     uint32_t us_size = get_us_clock();  /* the task awake again: what the frame rate sees */
     lj6_watch = 0;                      /* the timer stops at its next tick */
@@ -390,7 +406,7 @@ int lossless_init()
 {
     if (is_camera("6D2", "1.1.1"))
     {
-        /* buffers on first use, so the thumbnail's 256 K is only taken when recording lossless */
+        /* buffers at the first take, so the thumbnail's 256 K is only taken when recording lossless */
         lj6_cam = 1;
         lj6_sem = create_named_semaphore(NULL, SEM_CREATE_LOCKED);
         return lj6_sem != 0;
