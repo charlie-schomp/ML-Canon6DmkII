@@ -250,6 +250,10 @@ static CONFIG_INT("raw.clip.take", clip_take, 1);
 /* 6D2: warn in the recording status above this board temperature (deg C, 0 = off) */
 static CONFIG_INT("raw.temp.warn", temp_warn_index, 3);
 static const int temp_warn_c[] = { 0, 45, 50, 55, 60 };
+
+/* 6D2 1.1.1: log the body's gyro beside each clip, for stabilising in post */
+static CONFIG_INT("raw.gyro.log", gyro_log_on, 0);
+static int gyro_6d2 = 0;
 extern int efic_temp;                                       /* 6D2: board temperature, raw - 128 = deg C */
 static int temp_6d2 = 0;
 static int board_celsius(void) { return temp_6d2 && efic_temp > 0 ? efic_temp - 128 : -1000; }
@@ -611,6 +615,182 @@ static GUARDED_BY(RawRecTask)   struct { mlv_info_hdr_t hdr; char text[48]; } wa
 static GUARDED_BY(RawRecTask)   int wav_info_ready = 0;
 static GUARDED_BY(RawRecTask)   struct { mlv_info_hdr_t hdr; char text[64]; } clip_info_blk;
 static GUARDED_BY(RawRecTask)   int clip_info_ready = 0;
+
+/* Gyro log, inside the clip. Canon's electronic IS driver keeps the gyro's data in
+ * plain RAM, read here from a timer with no firmware call: the filter inputs, about
+ * 16x the scale with the resting offset already removed and new every 249 us, and
+ * the clamped words, in pitch, yaw, roll order. Each sample is stamped on the same
+ * clock and base as the VIDF timestamps, so the log lines up with the frames.
+ *
+ * The clip gets one GYRI block (below) and GYRO blocks holding only samples, written
+ * by this task between its frame writes. MLV readers step over block types they
+ * don't know. tools/gyro_export.py turns them into a Gyroflow log. The block queue
+ * above is the wrong path for this: it is only written at chunk start and take end. */
+#define GYRO_HPF_ADDR       0xd9008610  /* int32 x 3, 4 bytes apart */
+#define GYRO_WORD_ADDR      0xd9008664  /* int32 x 3, 4 bytes apart, within +-24960 */
+#define GYRO_PERIOD_US      1000
+#define GYRO_RING_SAMPLES   8192        /* power of 2; 8 s without a frame write */
+#define GYRO_BLOCK_SAMPLES  1024
+
+struct gyro_sample
+{
+    uint32_t t_us;                      /* since mlv_start_timestamp */
+    int32_t  hpf[3];
+    int16_t  word[3];
+    int16_t  pad;
+};
+
+struct gyro_info_block
+{
+    mlv_hdr_t hdr;                      /* "GYRI" */
+    uint32_t sample_size;
+    uint32_t period_us;
+    uint32_t fps_x1000;
+    uint32_t res_x, res_y;              /* recorded frame */
+    uint32_t raw_w, raw_h;              /* readout */
+    uint32_t timer_a, timer_b;          /* timer B = lines per frame */
+    uint32_t shutter_us;
+    uint32_t focal_mm;                  /* as the camera reports it: wrong on an adapted lens */
+    char     lens[32];
+};
+
+struct gyro_data_block
+{
+    mlv_hdr_t hdr;                      /* "GYRO" */
+    struct gyro_sample samples[GYRO_BLOCK_SAMPLES];
+};
+
+static GUARDED_BY(RawRecTask) struct gyro_info_block gyro_info;
+static GUARDED_BY(RawRecTask) int gyro_info_ready = 0;
+static struct gyro_sample * gyro_ring = 0;
+static struct gyro_data_block * gyro_block = 0;
+static volatile uint32_t gyro_head = 0;         /* written by the timer */
+static volatile uint32_t gyro_tail = 0;         /* written by the recording task */
+static volatile uint32_t gyro_lost = 0;
+static volatile uint32_t gyro_max_gap = 0;
+static volatile uint32_t gyro_total = 0;
+static volatile uint32_t gyro_last_t = 0;
+static volatile int gyro_sampling = 0;
+static int gyro_write_error = 0;
+
+static int write_frames(FILE **pf, void *ptr, int group_size, int num_frames, int card_index);
+
+static void gyro_poll(int last_expiry, void * priv)
+{
+    if (!gyro_sampling) return;
+
+    uint32_t t = (uint32_t)(get_us_clock() - mlv_start_timestamp);
+    uint32_t head = gyro_head;
+    uint32_t next = (head + 1) & (GYRO_RING_SAMPLES - 1);
+    if (next == gyro_tail)
+    {
+        gyro_lost++;
+    }
+    else
+    {
+        struct gyro_sample * s = &gyro_ring[head];
+        const volatile int * hpf = (const volatile int *) GYRO_HPF_ADDR;
+        const volatile int * word = (const volatile int *) GYRO_WORD_ADDR;
+        s->t_us = t;
+        for (int k = 0; k < 3; k++)
+        {
+            s->hpf[k] = hpf[k];
+            s->word[k] = word[k];
+        }
+        s->pad = 0;
+        gyro_head = next;
+        gyro_total++;
+    }
+    if (gyro_total > 1 && t - gyro_last_t > gyro_max_gap) gyro_max_gap = t - gyro_last_t;
+    gyro_last_t = t;
+    SetHPTimerNextTick(last_expiry, GYRO_PERIOD_US, gyro_poll, gyro_poll, priv);
+}
+
+/* with the chunk headers: the memory, and what the tools need to know. A clip
+ * without a log is still a good clip. */
+static void gyro_log_prepare(struct raw_info * ri)
+{
+    gyro_info_ready = 0;
+    if (!gyro_log_on || !gyro_6d2) return;
+
+    if (!gyro_ring) gyro_ring = fio_malloc(GYRO_RING_SAMPLES * sizeof(struct gyro_sample));
+    if (!gyro_block) gyro_block = fio_malloc(sizeof(struct gyro_data_block));
+    if (!gyro_ring || !gyro_block)
+    {
+        rec_log("gyro log: no memory");
+        NotifyBox(3000, "Gyro log: no memory, not logging");
+        return;
+    }
+
+    memset(&gyro_info, 0, sizeof(gyro_info));
+    mlv_set_type((mlv_hdr_t *)&gyro_info, "GYRI");
+    mlv_set_timestamp((mlv_hdr_t *)&gyro_info, mlv_start_timestamp);
+    gyro_info.hdr.blockSize = sizeof(gyro_info);
+    gyro_info.sample_size = sizeof(struct gyro_sample);
+    gyro_info.period_us = GYRO_PERIOD_US;
+    gyro_info.fps_x1000 = fps_get_current_x1000();
+    gyro_info.res_x = res_x;
+    gyro_info.res_y = res_y;
+    gyro_info.raw_w = ri->width;
+    gyro_info.raw_h = ri->height;
+    gyro_info.timer_a = MEM(0x1c928 + 0x2c);
+    gyro_info.timer_b = MEM(0x1c928 + 0x1c);
+    gyro_info.shutter_us = (uint32_t) expo_hdr.shutterValue;
+    gyro_info.focal_mm = lens_hdr.focalLength;
+    memcpy(gyro_info.lens, lens_hdr.lensName, MIN(sizeof(gyro_info.lens), sizeof(lens_hdr.lensName)));
+    gyro_info_ready = 1;
+}
+
+/* before the take's first frame */
+static void gyro_log_start(void)
+{
+    if (!gyro_info_ready) return;
+    gyro_head = gyro_tail = 0;
+    gyro_lost = gyro_max_gap = gyro_total = gyro_last_t = 0;
+    gyro_write_error = 0;
+    gyro_sampling = 1;
+    SetHPTimerAfterNow(GYRO_PERIOD_US, gyro_poll, gyro_poll, 0);
+}
+
+/* whatever has arrived, as GYRO blocks in the clip */
+static void gyro_log_write(FILE ** pf, int card_index)
+{
+    if (!gyro_info_ready || gyro_write_error) return;
+    while (gyro_tail != gyro_head)
+    {
+        uint32_t tail = gyro_tail, head = gyro_head;
+        uint32_t n = MIN((head > tail ? head : GYRO_RING_SAMPLES) - tail, GYRO_BLOCK_SAMPLES);
+        int bytes = sizeof(mlv_hdr_t) + n * sizeof(struct gyro_sample);
+        mlv_set_type((mlv_hdr_t *) gyro_block, "GYRO");
+        mlv_set_timestamp((mlv_hdr_t *) gyro_block, mlv_start_timestamp);
+        gyro_block->hdr.blockSize = bytes;
+        memcpy(gyro_block->samples, &gyro_ring[tail], n * sizeof(struct gyro_sample));
+        gyro_tail = (tail + n) & (GYRO_RING_SAMPLES - 1);
+        if (!write_frames(pf, gyro_block, bytes, 0, card_index))
+        {
+            gyro_write_error = 1;
+            return;
+        }
+    }
+}
+
+/* idempotent: at the take's end, and again on every way out */
+static void gyro_log_finish(FILE ** pf, int card_index)
+{
+    if (gyro_sampling)
+    {
+        gyro_sampling = 0;
+        msleep(GYRO_PERIOD_US / 500);       /* the timer has stopped by now */
+        if (*pf) gyro_log_write(pf, card_index);
+        rec_log("gyro log: %d samples, %d lost, longest gap %d us%s", (int) gyro_total, (int) gyro_lost,
+                (int) gyro_max_gap, gyro_write_error ? ", WRITE ERROR" : "");
+    }
+    gyro_info_ready = 0;
+    if (gyro_block) fio_free(gyro_block);
+    if (gyro_ring) fio_free(gyro_ring);
+    gyro_block = 0;
+    gyro_ring = 0;
+}
        GUARDED_BY(RawRecTask)   uint32_t raw_rec_trace_ctx = TRACE_ERROR;
 
 static int raw_rec_should_preview(void);
@@ -1589,6 +1769,14 @@ static MENU_SELECT_FUNC(clip_shot_select)
 {
     menu_numeric_toggle(&clip_shot, delta, 0, 26);
     clip_take = 1;
+}
+
+static MENU_UPDATE_FUNC(gyro_log_update)
+{
+    if (!gyro_6d2)
+    {
+        MENU_SET_WARNING(MENU_WARN_NOT_WORKING, "Needs a 6D Mark II on firmware 1.1.1.");
+    }
 }
 
 static MENU_UPDATE_FUNC(temp_warn_update)
@@ -3870,6 +4058,8 @@ void init_mlv_chunk_headers(struct raw_info *raw_info)
         clip_info_ready = 1;
     }
 
+    gyro_log_prepare(raw_info);
+
     /* init MLV header for each frame (VIDF) */
     memset(&vidf_hdr, 0, sizeof(mlv_vidf_hdr_t));
     mlv_set_type((mlv_hdr_t*)&vidf_hdr, "VIDF");
@@ -3898,6 +4088,7 @@ int write_mlv_chunk_headers(FILE *f, int chunk, int card_index)
         fail |= !mlv_write_hdr(f, (mlv_hdr_t *)&wbal_hdr);
         if (wav_info_ready) fail |= !mlv_write_hdr(f, (mlv_hdr_t *)&wav_info_blk);
         if (clip_info_ready) fail |= !mlv_write_hdr(f, (mlv_hdr_t *)&clip_info_blk);
+        if (gyro_info_ready) fail |= !mlv_write_hdr(f, (mlv_hdr_t *)&gyro_info);
         fail |= mlv_write_vers_blocks(f, mlv_start_timestamp);
     }
     
@@ -4307,6 +4498,8 @@ void raw_video_rec_task(uint32_t card_index)
         /* fake recording status, to integrate with other ml stuff (e.g. hdr video */
         set_recording_custom(CUSTOM_RECORDING_RAW);
 
+        gyro_log_start();
+
         /* this will enable the vsync CBR and the other task(s) */
         raw_recording_state = pre_record ? RAW_PRE_RECORDING : RAW_RECORDING;
     }
@@ -4564,6 +4757,8 @@ void raw_video_rec_task(uint32_t card_index)
         last_write_timestamp = get_ms_clock();
         writing_time[card_index] += last_write_timestamp - t0;
 
+        gyro_log_write(&f, card_index);
+
         if (rec_trace)
         {
             int b = wprobe_bucket(num_frames);
@@ -4731,6 +4926,7 @@ abort_and_check_early_stop:
             wav_scratch_stop();
             rec_log("scratch WAV stopped, frames=%d", frame_count);
         }
+        gyro_log_finish(&f, card_index);
 
         /* write remaining frames */
         /* H.264: we will be recording black frames during this time,
@@ -4863,6 +5059,7 @@ cleanup:
     {
         wav_scratch_stop();
     }
+    if (card_index == 0) gyro_log_finish(&f, card_index);
 
     if (f)
         finish_chunk(f, card_index);
@@ -5135,6 +5332,14 @@ static struct menu_entry raw_video_menu[] =
                     },
                     MENU_EOL
                 },
+            },
+            {
+                .name = "Gyro log",
+                .priv = &gyro_log_on,
+                .max = 1,
+                .update = gyro_log_update,
+                .help  = "Records the body's gyro inside each clip, for stabilising in post.",
+                .help2 = "About 24 KB/s. Turn lens IS off for shots you will stabilise.",
             },
             {
                 .name = "Temperature warning",
@@ -5704,6 +5909,7 @@ static unsigned int raw_rec_init()
 
     int cam_6d2 = is_camera("6D2", "*");
     temp_6d2 = cam_6d2;
+    gyro_6d2 = is_camera("6D2", "1.1.1");
     if (h264_proxy_menu < 0)  h264_proxy_menu  = cam_6d2 ? 1 : 0;
     if (sync_beep < 0)        sync_beep        = cam_6d2 ? 0 : 1;
     if (aspect_fit_width < 0) aspect_fit_width = cam_6d2 ? 1 : 0;
@@ -5830,5 +6036,6 @@ MODULE_CONFIGS_START()
     MODULE_CONFIG(clip_shot)
     MODULE_CONFIG(clip_take)
     MODULE_CONFIG(temp_warn_index)
+    MODULE_CONFIG(gyro_log_on)
     MODULE_CONFIG(h264_proxy_menu)
 MODULE_CONFIGS_END()
