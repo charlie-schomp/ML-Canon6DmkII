@@ -658,6 +658,7 @@ struct gyro_data_block
 {
     mlv_hdr_t hdr;                      /* "GYRO" */
     struct gyro_sample samples[GYRO_BLOCK_SAMPLES];
+    uint8_t  null_block[512 + sizeof(mlv_hdr_t)];   /* room for the padding, see gyro_log_write */
 };
 
 static GUARDED_BY(RawRecTask) struct gyro_info_block gyro_info;
@@ -789,8 +790,18 @@ static void gyro_log_write(FILE ** pf, int card_index)
         gyro_block->hdr.blockSize = bytes;
         memcpy(gyro_block->samples, &gyro_ring[tail], n * sizeof(struct gyro_sample));
         gyro_tail = (tail + n) & (GYRO_RING_SAMPLES - 1);
-        if (gyro_first_write) rec_log("gyro log: first block, %d bytes, %d overruns", bytes, (int) gyro_overruns);
-        if (!write_frames(pf, gyro_block, bytes, 0, card_index))
+
+        /* frames and headers keep the file at a multiple of 512 bytes; pad with a
+         * NULL block as the chunk header does.  v122/v123 did not, and the first
+         * frame write after the first block never came back. */
+        int padded = (bytes + sizeof(mlv_hdr_t) + 511) & ~511;
+        mlv_hdr_t * nul = (mlv_hdr_t *)((uint8_t *) gyro_block + bytes);
+        mlv_set_type(nul, "NULL");
+        mlv_set_timestamp(nul, mlv_start_timestamp);
+        nul->blockSize = padded - bytes;
+
+        if (gyro_first_write) rec_log("gyro log: first block, %d bytes, %d overruns", padded, (int) gyro_overruns);
+        if (!write_frames(pf, gyro_block, padded, 0, card_index))
         {
             gyro_write_error = 1;
             return;
