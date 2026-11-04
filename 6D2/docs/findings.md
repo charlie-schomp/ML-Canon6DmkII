@@ -335,9 +335,12 @@ are held off. **Never give an HP timer its own function as the overrun callback.
 log and v124 in the encoder's poll timer. It was not the whole story: resets at the first frame carried on with
 the gyro log off (below).
 
-**Keep the file offset on 512 bytes.** v123's GYRO block of 15160 bytes left the offset at 312 mod 512, and the
-next frame write never came back: the clip ends exactly on that block, status frozen at 146 frames. Timer-only
-ran 572 frames with no blocks written. v124 pads each block with a NULL block; not yet tried on the camera.
+**The gyro-on hang was a loop, not the card.** `gyro_log_write` wrote until the ring was empty while the timer kept
+adding samples, so it never returned to the frames: `M04-1409` holds 23 frames and 11007 GYRO blocks, written for 43 s
+until the power went off. The other tasks filled the buffers, hence the counter frozen in red at about 150 frames, and
+the task that would end the take was the one stuck. v125 writes what was there when called. An earlier guess blamed
+the file offset; v124's 512-byte padding did not stop the hang, and stays only because frames and headers keep that
+alignment for write speed.
 
 **A boot's first take at 59.94p reset the camera at the first frame**, 5 of 5 on 2026-11-04 (v122 and v123, 3 with
 the gyro log on and 2 with it off, all WAV off, shutter 1/1000), with no crash log and a 1 KB clip. The same boot started
@@ -349,8 +352,11 @@ More takes on v123 the same day made it 9 of 9, all gyro off in the last 4, and 
 `g_LvJob[ m_dwLastJobNumber ].fEnableInstance`, task Evf, free memory already 256 K down, so the encoder's buffer
 had been allocated. The assert's string sits beside `LiveView CreateJob BufferOver` in the ROM (`0xe0072c88`; string
 order only, not disassembled), which suggests LiveView's job ring filling up because jobs stopped completing. A
-ring would fill 2.5x sooner at 59.94p than at 23.976p, which fits the pattern. Why jobs stall is not known. A second
-gyro-on take, at 23.976p, also stopped right after its first unpadded block (`M04-1404`, offset 168 mod 512).
+ring would fill 2.5x sooner at 59.94p than at 23.976p, which fits the pattern. Why jobs stall is not known.
+
+On v124, with the encoder's buffer allocated before recording and its poll timer no longer nesting, 3 of 3 boots
+passed the first 59.94p frames and first write, one of them a full take. Which change did it, and whether it holds,
+is still open: 3 boots is little against 9 of 9 failures.
 
 Not yet known: whether Canon's Movie digital IS setting changes the data (the camera flashes a warning
 on non-IS lenses or with lens IS off), and the rolling-shutter readout time a stabiliser needs; the
