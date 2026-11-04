@@ -309,9 +309,20 @@ lenses, with a steady per-axis offset at rest (yaw about -300, roll about -90, p
 4 kHz rate rules out image motion vectors as the source. Fast deliberate rolls hit the clamp; the
 filter-input words reach only about 5% further (+-420000 at most, about 26000 on the same scale).
 
-Not yet known: the scale in deg/s, whether it keeps updating during a RAW take, and whether Canon's
-Movie digital IS setting changes it (those seven runs did not log the setting or RAW state). A polling
-task was held off for up to 112 ms, so a real log needs a timer.
+It keeps working during a lossless RAW take. M04-0845 (2048x1152 12-bit, 1296 frames, 54.0 s, none
+lost) ran with the test polling at 100 Hz and a 300 ms busy read inside the take. Frame-to-frame image
+shift against the integrated gyro gives one offset from yaw and from pitch independently (gyro row 0 at
+clip time 6.35 s), which also shows the log and the picture are the same motion.
+
+Scale, yaw only, from that take on a 55 mm lens: about **80 LSB per deg/s**, so the clamp is about
+310 deg/s (87% of the 84 fastest usable frames within 20% of the ratio; 3x binned pixels of 17.25 um
+assumed). Pitch and roll did not give a clean figure from the image, so assuming the same scale on
+them is untested. On a countertop the noise is 10 LSB (about 0.12 deg/s). Yaw's offset moved from
+-242 to -290 across three runs in a few minutes, so it needs measuring per take.
+
+Not yet known: whether Canon's Movie digital IS setting changes the data (the camera flashes a warning
+on non-IS lenses or with lens IS off), and the rolling-shutter readout time a stabiliser needs. A
+polling task was held off for up to 112 ms, so a real log needs a timer.
 
 ## 4. 6D2 hardware facts and measurements
 
