@@ -358,6 +358,17 @@ On v124, with the encoder's buffer allocated before recording and its poll timer
 passed the first 59.94p frames and first write, one of them a full take. Which change did it, and whether it holds,
 is still open: 3 boots is little against 9 of 9 failures.
 
+v125 ran the log for real on 2026-11-04: `M04-1420` and `-1421`, 59.94p, 4146 frames with none dropped, 69748 samples
+with none lost, 1 overrun per take, longest gap 2 ms, and encode time no higher than with the log off. With v124 and
+v125, 6 of 6 boots got past a first 59.94p take. Two takes started 3.6 s and 6.3 s after boot ended by themselves
+with no frames and no clip.
+
+Those moves were too fast to calibrate well (median correlation peak 0.32 to 0.43). Yaw and pitch come out at about
+80 to 90 LSB per deg/s, assuming the Takumar 55, against 80 from the slow pan; roll is unresolved, and strip readout
+ranged from -67 to +18 ms. Slow sweeps are needed. RGB keyboard flicker (`M04-1426`, about 326 Hz) gave a line time
+of 20.8 to 20.9 us against 21.17 us from the timers, but its phase is not straight down the rows (band period 125 at
+the top, 151 at the bottom), so it supports about 21 us, not an exact figure. Mains light is the better test.
+
 Not yet known: whether Canon's Movie digital IS setting changes the data (the camera flashes a warning
 on non-IS lenses or with lens IS off), and the rolling-shutter readout time a stabiliser needs; the
 exporter works it out from timer B, unconfirmed. See [gyro-test.md](gyro-test.md).
