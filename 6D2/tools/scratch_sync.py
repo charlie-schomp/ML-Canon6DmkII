@@ -145,7 +145,9 @@ def ltc_frames(samples, rate):
     if len(samples) < rate // 10:
         return []
     mean = sum(samples) / len(samples)
-    peak = max(abs(x - mean) for x in samples) or 1
+    # not the very peak: each WAV opens with a thump, up to 10x louder than LTC at a low gain
+    dev = sorted(abs(x - mean) for x in samples)
+    peak = dev[int(len(dev) * 0.99)] or 1
     hyst = 0.15 * peak
     edges = []
     state = None
