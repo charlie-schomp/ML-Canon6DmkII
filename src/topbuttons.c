@@ -48,11 +48,10 @@
  * while rolling (v88's 60 ms missed about a third of presses) */
 #define PRESS_WINDOW_MS 250
 
-/* defaults: AF toggles focus peaking, DRIVE/metering false colour, ISO nothing
- * (ISO keeps Canon's ISO screen) - indices into action_vars below */
-static CONFIG_INT("topbtn.af",    topbtn_af,    2);
+/* all OFF until assigned - indices into action_vars below */
+static CONFIG_INT("topbtn.af",    topbtn_af,    0);
 static CONFIG_INT("topbtn.iso",   topbtn_iso,   0);
-static CONFIG_INT("topbtn.drive", topbtn_drive, 4);
+static CONFIG_INT("topbtn.drive", topbtn_drive, 0);
 
 /* action index -> (name shown, config variable toggled, value when turned on
  * with nothing remembered) */

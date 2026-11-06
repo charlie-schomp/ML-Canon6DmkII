@@ -240,7 +240,7 @@ static CONFIG_INT("raw.small.hacks", small_hacks, 1);
 static CONFIG_INT("raw.h264.proxy", h264_proxy_menu, -1);
 static CONFIG_INT("raw.sync_beep", sync_beep, -1);
 
-static CONFIG_INT("raw.output_format", output_format, 3);
+static CONFIG_INT("raw.output_format", output_format, 4);
 
 /* 6D2: warn in the recording status above this board temperature (deg C, 0 = off) */
 static CONFIG_INT("raw.temp.warn", temp_warn_index, 3);
