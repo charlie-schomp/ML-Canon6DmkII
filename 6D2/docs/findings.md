@@ -5,10 +5,11 @@ added that is not in upstream `magiclantern_simplified` (`dev` at `142472e95`, c
 2026). It covers fixes that matter to every camera, rules for DIGIC 6/7/8 work, capabilities new on
 this processor, hardware facts, and negative results that should save someone the time.
 
-Everything here was tested on one camera over seven weeks unless it says otherwise. The full history
+Everything here was tested on one camera over ten weeks unless it says otherwise. The full history
 is in the [development log](devlog.md); the code is on branch
 [`6d2-port`](https://github.com/charlie-schomp/ML-Canon6DmkII/tree/6d2-port) as one commit per feature
-on top of upstream `dev`.
+on top of upstream `dev`. Lossless and the gyro log are on
+[`main`](https://github.com/charlie-schomp/ML-Canon6DmkII) only.
 
 > **How this was made.** Nearly all of the code was written by an LLM (Anthropic's Claude), directed
 > and tested on the camera by the repository owner. Under ML's `LLM_POLICY.md` that rules the code out
@@ -47,6 +48,8 @@ Also: the lua module did not link with current arm-none-eabi newlib.
 
 ## 2. Rules for DIGIC 6/7/8 work
 
+- **Q inside a submenu closes it** (`menu_toggle_submenu`), on every body. A `.children` inside a child can't be
+  reached, though it builds and draws normally. Check that a nested setting really opens.
 Learned on the 6D2's RGBA compositor; probably true of every `FEATURE_VRAM_RGBA` body.
 
 1. **Canon never clears ML's layer.** On DIGIC 4/5 Canon repaints its bitmap and wipes ML's graphics;
@@ -323,7 +326,7 @@ them is untested. On a countertop the noise is 10 LSB (about 0.12 deg/s). Yaw's 
 The filter-input words already have the resting offset removed: they average about zero at rest,
 where yaw's clamped word sits near -290.
 
-**The log (v122):** `Gyro log` in mlv_lite samples all six words at 1 kHz from an HP timer, stamped on
+**The log (v122, marked experimental in the menu):** `Gyro log` in mlv_lite samples all six words at 1 kHz from an HP timer, stamped on
 the VIDF clock, and writes them **inside the clip**: one `GYRI` block, then `GYRO` blocks between frame
 writes (24 KB/s). mlv_lite's block queue is the wrong path for this, since it is only written at chunk
 start and take end and holds 100 blocks. `mlv_dump` and MLV Drive step over the new blocks.
@@ -369,9 +372,46 @@ ranged from -67 to +18 ms. Slow sweeps are needed. RGB keyboard flicker (`M04-14
 of 20.8 to 20.9 us against 21.17 us from the timers, but its phase is not straight down the rows (band period 125 at
 the top, 151 at the bottom), so it supports about 21 us, not an exact figure. Mains light is the better test.
 
-Not yet known: whether Canon's Movie digital IS setting changes the data (the camera flashes a warning
-on non-IS lenses or with lens IS off), and the rolling-shutter readout time a stabiliser needs; the
-exporter works it out from timer B, unconfirmed. See [gyro-test.md](gyro-test.md).
+**Readout, measured.** The binned 1080p readout takes **10.59 us per row**, at both 23.976p and 59.94p, half the 21.17 us
+timer B tick: two rows per tick. Mains flicker on a plain wall under a dimmable light (`M05-1725`, `M05-1727`,
+ISO 1600 and 3200, only about 50 DN over black) gives bands 786.5 rows apart at 120 Hz, phase rms 0.002 cycle. The 240 Hz and
+360 Hz harmonics agree (393.7 and 262.2 rows), the bands drift at the 120 Hz alias rate at both frame rates, and there is
+almost no 60 Hz. Separately, top and bottom strips against the gyro in `M05-1734` (804 rows) give 8.3 +- 0.9 ms, against 8.5 ms
+predicted and 17 ms for a whole tick per row. That is 7.63 ms for 720 rows, 9.07 for 856, 12.2 for 1152 and 12.8 for the full 1208.
+The earlier 15 ms was wrong, and the keyboard flicker only seemed to support it because that test assumed 600 to 1000 lines per
+frame. The crop readout is unmeasured.
+
+Scale from the same round's fast frames: pitch 83 to 89 LSB per deg/s across five clips, yaw a looser 62 to 86; roll still
+unresolved. The takes were dark, median correlation peak 0.26 to 0.47. 
+
+**Canon's digital IS changes nothing measurable.** `M05-1739` (on) against `M05-1740` (off), same 24-105 at 24 mm, 1600x670 59.94p: word
+to filter-input gain 1.00 on yaw and roll in both (pitch 1.00 and 1.03), same offsets, no clamping. The raw picture follows the gyro at least as closely with it on (6 to 30 px per
+frame: pitch 0.98 of prediction on, 0.58 off; yaw 0.67 on, 0.51 off), where stabilised raw would move less. The off take tracked worse (median correlation
+peak 0.26 against 0.33), so these are not exact ratios, and the moves were not identical. See [gyro-test.md](gyro-test.md).
+
+**Where the gyro stands (v126).**
+
+| | |
+|---|---|
+| Reading it | Works, including during lossless takes at 59.94p |
+| Log in the clip | Works: 4146 frames and 69748 samples with none lost |
+| Readout | Measured for binned 1080p; crop readout unmeasured |
+| Scale | Pitch 83-89 LSB per deg/s, yaw 62-86, roll unresolved; `gyro_export.py` assumes 80 on all three |
+| Signs | From image motion on pitch and yaw; roll's direction is not confirmed |
+| Gyroflow | Logs are written in its format, but not yet tried in it |
+
+Next: spins on a table for the scale on each axis, one bright take for roll's direction and delay, then a Gyroflow trial.
+
+**Write speed against card fill** (SanDisk 64 GB, exFAT, formatted before the first of these takes). Sustained 59.94p takes, large writes:
+about 74 MB/s empty, falling 0.16 +- 0.05 MB/s per 1% of the card used (12 takes, 8% to 72% full, rms 1.8): about 70 at 25%, 66 at 50%,
+62 at 75%. Fill and board temperature rose together (correlation 0.80), but 65.6 MB/s at 48% and 35 C points to fill. Short dips are the
+bigger change: the first 20 MB of a take wrote at a median of 73 to 75 MB/s under 50% full and 54 MB/s (35 to 76) above it, with one
+17 MB/s stall. Takes at 23.976p and 29.97p held 72 to 76 MB/s to 52% full. Before the earlier format the same card gave 49 to 67 MB/s
+at 72% to 81%. Noise matters as much: 1920x804 at ISO 6400 needs about 66 MB/s, against 42 to 45 in a clean scene.
+
+**59.94p above 1920x960 fails.** 2048x1152 at 59.94p encodes in 16.3 ms on average, 18.4 at most, against a 16.68 ms frame, with 47 of 68
+encodes missing the callback. `M05-1726` (2048x1152) reset at the first frame with no crash log. `M05-1732` (2048x1024) took 1233 ms over its
+first write, with 8 gyro overruns, then asserted at `EvfState.c:660` and `:584` (`TryPostEvent` failing, so Evf's queue is likely full; not disassembled).
 
 **Why the audio isn't inside the clip:** MLV has blocks for it (`WAVI`, `AUDF`), but `mlv_snd` needs ASIF,
 which DIGIC 7 doesn't expose, so the 6D2's scratch audio comes from Canon's own WAV recorder.
@@ -505,3 +545,4 @@ From a blind code review of the port and from testing:
   - 10-bit lossless would need DIGIC 5's 1/4 gain in front of a 12-bit encode.
   - A failed encode ends the take, and an encode that never finishes leaves the encoder unused
     until a restart. Neither has happened on the camera since v111.
+- **Gyro log:** see "Where the gyro stands" above.
