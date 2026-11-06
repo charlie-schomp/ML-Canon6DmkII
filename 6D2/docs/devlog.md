@@ -623,12 +623,12 @@ their bar.
 **On the camera, v131:**
 
 - False colour clears when turned off mid-take: confirmed.
-- Changing many settings, in and out of crop mode, gave no crash and no new crash log. The cause of the five crashes was not
+- Changing many settings gave no crash and no new crash log. The cause of the five crashes was not
   found and nothing in this build targets it, so they are open, not fixed.
 - Frame guides were still missing, with `crop.mode = 0` and Preview on Framing both saved, either of which hides them.
   A guide with both set correctly has not been seen yet.
 - Dual ISO, five more takes: 2136×894 and 3072×614, bright rows over dark 3.18 to 3.32 (1.7 EV) on every frame, none missing.
-  `M06-1305` and `M06-1358` hold abrupt steps of about a third of a stop within one frame, on a moving camera. Cause not known:
+  `M06-1305` and `M06-1358` hold abrupt steps of about a third of a stop within one frame. Cause not known, and the picture also moves in those takes:
   clips record exposure once, in the header. `M06-1306`, `M06-1359` and `M06-1360` are steady.
 - Clips from this round have no black edge rows or columns, at 2136×894, 3072×768, 3072×614 and 2048×856.
 

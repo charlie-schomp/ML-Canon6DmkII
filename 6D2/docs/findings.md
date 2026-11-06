@@ -140,7 +140,7 @@ x5/x10 zoom.)
   Canon's ISO gain, so ML's "DR gained" estimate is optimistic on this body.
 
 **On lossless crop takes** (v130 and v131), the line pairs hold on every frame: bright rows over dark 3.18 to 3.32, or 1.7 EV, at ISO 100
-with recovery as set, and the gain is flat with brightness (3.25 to 3.34 from 16 DN to about 1000 DN over black, per colour). Which rows are bright depends on
+with recovery as set, and the gain is flat with brightness (3.25 to 3.34 from 16 DN to about 1000 DN over black; one frame set, `M06-1305`; red read 3.57 above 512 DN, unexplained). Which rows are bright depends on
 where the recording window starts, so measure the phase per clip. The `DISO` block's `isoValue` read 3 on these and did not give the gap.
 
 ### Crop mode from Canon's own zoom
