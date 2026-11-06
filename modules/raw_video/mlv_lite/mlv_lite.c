@@ -217,7 +217,7 @@ static CONFIG_INT("raw.dolly", dolly_mode, 0);
 #define FRAMING_CENTER (dolly_mode == 0)
 #define FRAMING_PANNING (dolly_mode == 1)
 
-static CONFIG_INT("raw.preview", preview_mode, 0);
+static CONFIG_INT("raw.preview", preview_mode, -1);    /* resolved per body, see below */
 #define PREVIEW_AUTO   (preview_mode == 0)
 #define PREVIEW_CANON  (preview_mode == 1)
 #define PREVIEW_ML     (preview_mode == 2)
@@ -234,7 +234,8 @@ static CONFIG_INT("raw.small.hacks", small_hacks, 1);
  * them: 6D2 - H.264 proxy on (the in-camera review copy, ~3.6 MB/s on top of
  * the raw stream) and sync beep off (the scratch WAV is the sync track, and
  * the beep lands in it and in the proxy's audio); every other body - the
- * upstream defaults, proxy off and beep on.  raw_rec_init() also makes that
+ * upstream defaults, proxy off and beep on.  The same goes for the preview: Real-time
+ * on the 6D2, which keeps the recorded-area guide, and Auto elsewhere.  raw_rec_init() also makes that
  * value the default: the menu always shows an advanced entry whose value differs
  * from its default, so one left at -1 could never hide. */
 static CONFIG_INT("raw.h264.proxy", h264_proxy_menu, -1);
@@ -5422,6 +5423,23 @@ static struct menu_entry raw_video_menu[] =
 };
 
 
+/* 6D2: in Overlay, with the guide it decides about. Elsewhere: RAW video. */
+static struct menu_entry raw_preview_menu[] =
+{
+    {
+        .name = "RAW preview",
+        .priv = &preview_mode,
+        .max = 3,
+        .choices = CHOICES("Auto", "Real-time", "Framing", "Frozen LV"),
+        .help  = "Picture while RAW video is on. Recorded-area bars need Auto or Real-time.",
+        .help2 = "Auto: ML chooses what's best for each video mode\n"
+                 "Plain old LiveView (color and real-time). Framing is not always correct.\n"
+                 "Slow (not real-time) and low-resolution, but has correct framing.\n"
+                 "Freeze LiveView for more speed; uses 'Framing' preview if Global Draw ON.\n",
+        .depends_on = DEP_GLOBAL_DRAW,
+    },
+};
+
 /* 6D2: Prefs */
 static struct menu_entry temp_warn_menu[] =
 {
@@ -5895,6 +5913,8 @@ static unsigned int raw_rec_init()
     if (h264_proxy_menu < 0)  h264_proxy_menu  = cam_6d2 ? 1 : 0;
     if (sync_beep < 0)        sync_beep        = cam_6d2 ? 0 : 1;
     if (aspect_fit_width < 0) aspect_fit_width = cam_6d2 ? 1 : 0;
+    if (preview_mode < 0)     preview_mode     = cam_6d2 ? 1 : 0;
+    __config_preview_mode.default_value = cam_6d2 ? 1 : 0;
     __config_h264_proxy_menu.default_value = cam_6d2 ? 1 : 0;
     __config_sync_beep.default_value = cam_6d2 ? 0 : 1;
     __config_aspect_fit_width.default_value = cam_6d2 ? 1 : 0;
@@ -5941,7 +5961,13 @@ static unsigned int raw_rec_init()
     }
     menu_add("Movie", raw_video_menu, COUNT(raw_video_menu));
     menu_add(cam_6d2 ? "Scratch audio" : "RAW video", sync_beep_menu, COUNT(sync_beep_menu));
-    if (cam_6d2) menu_add("Prefs", temp_warn_menu, COUNT(temp_warn_menu));
+    if (cam_6d2)
+    {
+        menu_add("Prefs", temp_warn_menu, COUNT(temp_warn_menu));
+        menu_add("Overlay", raw_preview_menu, COUNT(raw_preview_menu));
+        struct menu_entry * e = raw_video_submenu_entry(&preview_mode);
+        if (e) e->shidden = 1;
+    }
 
     /* hack: force proper alignment in menu */
     raw_video_menu->children->parent_menu->split_pos = 15;
