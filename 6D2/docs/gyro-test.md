@@ -1,51 +1,36 @@
-# Gyro log: the camera tests
+# Gyro log: what's left to test
 
-What `Movie > RAW video > Gyro log (experimental)` still has to prove. Everything runs from ordinary takes; no
-prompts to follow and no timing to hit. Mount the card afterwards and the analysis comes from the
-clips.
+Current as of v136. `Movie > RAW video > Gyro log (experimental)` records the body's gyro inside each clip.
 
-**For every take:** RAW video on, lossless, Gyro log ON. Note the clip order; digital IS is not
-recorded in the clip.
+## Done
 
-## Set A: readout time and pitch/roll scale
+| Test | Result |
+|---|---|
+| Log during lossless takes | Works at 59.94p: 4,146 frames and 69,748 samples with none lost |
+| Readout, binned 1080p | 10.59 µs per row at 23.976 and 59.94p, from mains flicker |
+| Canon's digital IS | No measurable effect on the gyro or the raw picture |
 
-The picture measures both, but only if it stays sharp, so go slow and use a fast shutter.
+Details are in the [findings](findings.md). The readout in crop mode has not been measured.
 
-1. Super Takumar 55 mm (a known focal length). Canon Movie digital IS **off**.
-2. Shutter **1/250 or faster**, raising ISO as needed. Aim at something with plenty of detail a few
-   metres away, like a bookshelf. Note the focus distance if it's close.
-3. **A1, 23.976p, about 40 s:** hold still for 3 s. Then slow, smooth moves, each taking about 2 s to
-   sweep the frame, for about 12 s each: **pan** back and forth, **tilt** up and down, **roll** side
-   to side, keeping the subject in frame.
-4. **A2, 59.94p 12-bit, about 15 s:** the same, pan and tilt only. The line time differs from 23.976p,
-   and this checks the log doesn't cost frames at the highest rate.
+## Still to do
 
-Results: yaw, pitch and roll scale, the delay between log and frames, readout at each frame rate, and
-whether samples were lost (`gyro log:` line in `ML/LOGS/RECDBG.LOG`).
+Everything runs from ordinary takes. For every take: RAW video on, lossless, Gyro log ON, lens IS off. Note the clip order.
 
-## Set B: readout time from light flicker (a cross-check, skip if there's no suitable light)
+### Set A: scale on each axis
 
-**B1, about 5 s:** camera on a table, any lens. A plain wall under a light that bands on camera: try a
-dimmable LED or a fluorescent tube, with the shutter at **1/1000 or faster**. If you can see horizontal
-bands in LiveView, it works. Tell me the mains frequency if it isn't 60 Hz.
+The takes so far were too dark and too fast to pin down the scale: pitch is 83 to 89 LSB per deg/s, yaw a looser 62 to 86, and roll is unresolved. Spins need no light.
 
-## Set C: does Canon's digital IS change the data?
+1. Camera on a rotating surface, or turned by hand as evenly as you can.
+2. **Each axis in turn** (pan, tilt, roll): 4 full turns at about 5 s per turn.
+3. **One slow turn** per axis, about 20 s.
 
-EF 24-105 f/4L IS II at one focal length, lens **IS switch off**. A warning flashing on screen is
-expected.
+Note which axis each clip is.
 
-1. **C1, about 20 s:** digital IS **off**. Hold still 3 s, then slow pan and tilt.
-2. **C2, about 20 s:** digital IS **on**, the same moves.
+### Set B: roll direction and delay
 
-Results: scale and resting signal compared between the two. With lens IS off, the gyro should be all
-that's moving. Tell me if Canon's menu won't let you turn digital IS on.
+One bright take, with plenty of detail, shutter **1/250 or faster**. Hold still for 3 s, then roll side to side slowly for about 15 s, keeping the subject in frame.
 
-## Set D: other software
+### Set C: other software
 
-1. **D1:** open one of these clips in **MLV App**. It should play normally; `mlv_dump` and MLV Drive
-   already step over the gyro blocks, but MLV App hasn't been tried.
-2. **D2:** Gyroflow. `python gyro_export.py <card>` writes `<clip>.gcsv`. Export the clip from MLV App
-   to a movie with the same name, put it beside the log and open it. Run **Auto sync** (rough offset 0).
-   If it stabilises the wrong way, the axes need changing: try Gyroflow's IMU orientation options and
-   tell me which one worked. The sign convention was measured against image motion, but it hasn't been
-   tried in Gyroflow.
+1. Open one of these clips in **MLV App**. It should play normally. MLV Drive and `mlv_dump` already step over the gyro blocks, but MLV App hasn't been tried.
+2. **Gyroflow:** `python gyro_export.py <card>` writes `<clip>.gcsv`. Export the clip to a movie with the same name, put it beside the log and open it. Run **Auto sync** (rough offset 0). If it stabilises the wrong way, try Gyroflow's IMU orientation options and note which one worked.

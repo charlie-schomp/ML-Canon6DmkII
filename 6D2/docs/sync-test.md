@@ -1,4 +1,6 @@
-# Sync calibration and clock-drift test (v91)
+# Sync calibration and clock-drift test
+
+Still valid on current builds. The first clap takes (v91) put the scratch audio within -12 to +10 ms of the picture with latency 0, so that constant stays 0 for now. The Tentacle tests are listed in the [roadmap](roadmap.md).
 
 Two sets of takes. Set A measures the one constant the scratch-WAV sync still needs (how late the
 WAV's first sample comes after the moment the camera stamps). Set B checks whether picture and

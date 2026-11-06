@@ -6,3 +6,5 @@
 - [Roadmap](roadmap.md): what is still planned, and what is known not to be possible.
 - [**DIGIC 7 findings**](findings.md) ([PDF](findings.pdf)): for ML developers - fixes useful beyond this camera, rules for
   DIGIC 6/7/8 work, what is new on this processor, hardware facts and negative results.
+- [Gyro log tests](gyro-test.md): what the experimental gyro log still has to prove.
+- [Sync test](sync-test.md): calibrating the scratch WAV, and the camera clock against a steady reference.

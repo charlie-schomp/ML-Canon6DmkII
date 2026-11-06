@@ -14,7 +14,7 @@ Development happens in [our fork of magiclantern_simplified](https://github.com/
 
 | Your camera's firmware | Download | Status |
 |---|---|---|
-| **1.1.1** | [**ML-6D2-fw1.1.1-v90.zip**](6D2/download/ML-6D2-fw1.1.1-v90.zip) | Tested on a camera |
+| **1.1.1** | [**ML-6D2-fw1.1.1-v136.zip**](6D2/download/ML-6D2-fw1.1.1-v136.zip) | Tested on a camera. The newest change, moving RAW preview to the Overlay menu, is not confirmed yet |
 | 1.2.0 | — | Not supported in current releases |
 
 To check your firmware: Canon menu → Wrench (setup) tab → **Firmware**. This build needs 1.1.1.
@@ -44,15 +44,17 @@ Magic Lantern puts itself back afterwards.
 
 The official Magic Lantern build for this camera only boots and shows the menu. This one adds:
 
-- **Raw video** (MLV files) at 14, 12 or 10 bit, in 1080p up to **2048 wide** (DCI 2K), or a
-  **1:1 crop mode** up to 3072×926.
+- **Raw video** (MLV files), lossless at 14 or 12 bit (the default is 12-bit lossless) or uncompressed at 14, 12 or
+  10 bit, in 1080p up to **2048 wide** (DCI 2K) at 23.976 or 59.94p, or a **1:1 crop mode** up to 3072 wide or 896 tall.
 - **H.264 proxy**: Canon's own H.264 recorded next to every raw clip on the same card, for smooth
   review in the camera's player.
 - **Scratch audio**: a WAV recorded alongside every raw clip and named after it, with per-channel
   gain, a backup "safety" channel for loud sound, and a level meter.
 - **Focus peaking, zebras, false colour, waveform, vectorscope, histograms, magic zoom**, frame
   guides for the area you're recording, clean HDMI out — aligned with the flip screen in any
-  position.
+  position. Exposure tools read raw at every bit depth while you set up, with a marker for middle grey.
+- **Clip info**: a slate (camera, reel, scene, shot, take) on every take.
+- **Gyro log** (experimental): the body's gyro recorded inside each clip, for stabilising in post.
 - **Top buttons as overlay toggles**: in movie mode the AF, ISO and DRIVE buttons each switch an
   overlay of your choice on and off, the way cinema cameras use assignable buttons.
 - **Shutter angle lock**: keeps the shutter at 180° (or another angle) when the frame rate changes,
@@ -65,15 +67,17 @@ speeds you need, and shooting tips.
 
 ## Good to know
 
-- **Your SD card decides the resolution.** A SanDisk Extreme PRO (~83 MB/s) records 2048×856 12-bit
-  with the H.264 proxy without stopping, about 16 minutes per 64 GB card. The user guide has the
-  table, and the [development log](6D2/docs/devlog.md) the full ladder.
+- **Your SD card decides the resolution.** In a test on a 64 GB card, 2048×856 12-bit lossless at 59.94p recorded 2,563
+  frames at about 58 MB/s. Write speed falls as a card fills, and noise raises the data rate. The user guide has the tables.
+- **Expose by the raw tools, not by LiveView.** Put the middle of the scene just left of the yellow line on the raw
+  histogram or waveform. The [user guide](6D2/docs/user-guide.md) explains why the graph's own middle is much too low.
 - **Use a lens with an AF/MF switch, set to MF**, for crop mode and when changing bit depth. With
   the lens on autofocus, Canon blocks the zoom these use.
-- Raw clips play in [MLV App](https://mlv.app/). Your computer's normal video player can't open them.
+- Raw clips play in [MLV App](https://mlv.app/). Your computer's normal video player can't open them. To edit in DaVinci
+  Resolve with nothing to convert, try [MLV Drive](https://github.com/charlie-schomp/MLVDrive).
 - **Lossless raw:** 14 and 12-bit lossless MLV at 23.976 and 59.94p, using Canon's own CR2 encoder.
   It is bit-exact, and frames are about 43% (14-bit) and 33% (12-bit) of uncompressed.
-  12-bit 59.94p at 1920 wide needs ~45 MB/s.
+  12-bit 59.94p at 1920 wide needs ~45 MB/s. At 59.94p, frames above 1920×960 can fail, because the encoder runs out of time.
 - Not possible on this camera so far: 24p in crop mode, 48p, and 4K.
 
 ## Not built yet — contributions welcome
@@ -107,22 +111,22 @@ the software. Everything specific to the 6D Mark II is in [`6D2/`](6D2/):
 | [`6D2/download`](6D2/download) | the ready-to-install zips |
 | [`6D2/docs`](6D2/docs) | user guide, development log, roadmap |
 | [`6D2/tools`](6D2/tools) | scripts for checking and repairing clips |
-| [`6D2/testing`](6D2/testing) | test procedures for people helping to test |
+| [`6D2/testing`](6D2/testing) | the test procedure for people helping to test |
 
 <details>
 <summary><b>For developers</b></summary>
 
-Based on [magiclantern_simplified](https://github.com/reticulatedpines/magiclantern_simplified)
-@ `40c0a133b`, with upstream history kept and the 6D2 work as commits on top. The camera ports
+Based on [magiclantern_simplified](https://github.com/reticulatedpines/magiclantern_simplified),
+merged up to `dev` at `142472e95`, with upstream history kept and the 6D2 work as commits on top. The camera ports
 are `platform/6D2.111` and `platform/6D2.120`; `modules/dev_tools/d7probe` is the **6D2 developer
 tools** module (state / button / MPU logger, recording trace, dumps, two register experiments),
 shipped but off by default. [**DIGIC 7 findings**](6D2/docs/findings.md) summarises what this port
 found that is useful to other ML work; the [development log](6D2/docs/devlog.md) has the full
-history. Branch [`6d2-port`](https://github.com/charlie-schomp/ML-Canon6DmkII/tree/6d2-port) carries
-the code as one commit per feature on top of current upstream `dev`.
+history. Branch [`6d2-port`](https://github.com/charlie-schomp/magiclantern_simplified/tree/6d2-port) carries
+an older state, around v90, as one commit per feature: it has no lossless or gyro work. Use `main`.
 
 ```sh
-cd platform/6D2.111 && make          # or platform/6D2.120
+cd platform/6D2.111 && make
 cd modules/raw_video/mlv_lite && make clean && make
 python 6D2/tools/dev/package.py      # builds the zips in 6D2/download (see the script)
 ```

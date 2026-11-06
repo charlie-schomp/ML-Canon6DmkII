@@ -1,6 +1,6 @@
 # Magic Lantern for the Canon EOS 6D Mark II — development log
 
-**Build v134 · 6 November 2026 · firmware 1.1.1 · base `magiclantern_simplified` `dev` @ `142472e95` (merged in v132; the port began at `40c0a133b`)**
+**Build v136 · 6 November 2026 · firmware 1.1.1 · base `magiclantern_simplified` `dev` @ `142472e95` (merged in v132; the port began at `40c0a133b`)**
 
 The 6D Mark II is a DIGIC 7 body. The official ML build for it boots and shows the menu, and not
 much else. This port adds raw video at 10/12/14-bit, lossless raw video at 14 and 12-bit, an in-camera H.264
@@ -14,7 +14,7 @@ hard way are collected in the appendices.
 
 ---
 
-## Status at v134
+## Status at v136
 
 | | |
 |---|---|
@@ -665,6 +665,21 @@ Checked off the camera: the readers give the same values at 12-bit as at 14-bit 
 **The dark footage, measured again.** With most of the raw histogram at its middle to 65%, `M06-1529` to `-1531` (ISO 100, f/4.9, 1/48 and 1/62) have a green median 5.2 to 7.0 stops under clipping, which a
 plain Rec.709 display shows at 3 to 12%. The tools were right: the raw histogram and waveform are logarithmic, so their middle is 6 stops under clipping, where middle grey belongs at about 3 to 3.5.
 `-1530` and `-1531` had room for 3 more stops, with about 1% of green or less clipping.
+
+### v135 · 6 November
+
+- **Middle grey marker.** A yellow line on the raw histogram and waveform, 3.25 stops under clipping.
+  Exposure tests on the camera found it accurate, and `M06-1605`, chosen by eye, has its median 3.6 stops under clipping.
+- **Recorded-area bars.** v135 also changed the bars' colour on a wrong guess.
+
+### v136 · 6 November
+
+- **The missing bars were a setting.** Git shows the drawing code unchanged since the first port. The Framing preview resets the guide to the whole image, which leaves only a thin outline. Real-time on the camera
+  brought the bars back, so v135's colour change is undone.
+- **RAW preview** moves to the Overlay tab, as **RAW preview**, and defaults to Real-time on the 6D2.
+- **Speculars.** Every clip checked saturates at the top of the range at every ISO from 100 to 1600, so the white level is right. Green clips first: in `M06-1605`, where green has clipped, red is at
+  72% of its range and blue at 48%. Under 1% of pixels barely registers on Resolve's histogram, so raw false colour on the camera is the better warning.
+- **Published files brought up to date:** the download (it was still v90), README, roadmap, user guide and gyro test. A new field test replaces the v79 fast-card test and the v77 retest.
 
 ---
 

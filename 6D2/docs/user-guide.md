@@ -39,7 +39,7 @@ changes.
 | Scratch audio | Movie → **Scratch audio**, one submenu: **Mode** OFF / Auto with RAW / Manual, **Record WAV now** (Manual mode only), **Input** Auto (jack) / Internal / External, **Level meter** OFF / While recording, **Gain** Factory / Manual with **Left gain** in 3 dB stops (Mute, −12 … +42 dB), **Right channel** Same as left / Own level / Safety −6 … −24 dB, **Right gain** |
 | Gyro log | Movie → RAW video → **Gyro log (experimental)**: records the body's gyro inside each clip (about 24 KB/s), for stabilising in post. `python extras/tools/gyro_export.py <card>` writes a Gyroflow log per clip. Turn lens IS off for those shots. Being tested: see [gyro-test.md](gyro-test.md) |
 | Focus peaking | Overlay → Focus Peak — **Edge density: Dots / Lines**, **Noise rejection: OFF / Steady / Steady + Wide** |
-| Frame guides | Overlay → Cropmarks = **OFF / Recorded area** (shades outside what's recorded) + **Framing guide** inside it. Off in crop mode and in the Framing preview, which already shows the recorded area. Bitmap cropmarks are not in this build. |
+| Frame guides | Overlay → Cropmarks = **OFF / Recorded area** (shades outside what's recorded) + **Framing guide** inside it. Off in crop mode. Needs Overlay → **RAW preview** on Real-time (the default) or Auto: in Framing you see only a thin outline. Bitmap cropmarks are not in this build. |
 | Resolution / aspect | Movie → RAW video. 1080p goes up to **2048** wide (2080 active columns), crop mode up to 3072; each keeps its own pick. Aspect **1.90:1 (DCI)** gives 2048×1080. **If aspect too tall** (RAW video's Advanced section) = Shrink width (default) keeps the ratio; Clamp height keeps the width |
 | Flip screen | automatic — overlays follow Canon's image in all three screen positions |
 | H.264 proxy | Movie → RAW video → **H.264 proxy**, under Crop mode (on by default). Records Canon's H.264 next to every raw clip on the same card, for smooth review in Canon's player: `IMG_1234.MLV` pairs with `MVI_1234.MP4`. Canon movie size **1080 IPB 23.98**. Costs ~3.6 MB/s |
@@ -49,6 +49,7 @@ changes.
 | Clip info | Movie → **Clip info**, ON, then press **Q** for **Camera**, **Reel**, **Scene**, **Shot** and **Take**. Take counts up after each clip and goes back to 1 when the scene or shot changes. RAW takes carry the slate in the MLV, which MLV Drive and MLV App read. MP4-only takes add a line to `SLATE.CSV` beside the clips, ready for Resolve's Import Metadata |
 | Sync beep | Movie → Scratch audio → **Sync beep** (off by default). Beeps when a RAW take starts, for sound recorded on another device. It lands in the scratch WAV and the proxy's audio |
 | MP4 length | Movie → **MOV/MP4 time limit**, the last entry |
+| RAW preview | Overlay → **RAW preview**: Auto / **Real-time** (default) / Framing / Frozen LV |
 | Clean HDMI | Overlay → **Clean HDMI out** — no ML overlays or bars while HDMI is connected |
 | Temperature | Debug → **Internal Temp** shows the camera's **board temperature** (checked: 22–23 °C at a cold start in a 21 °C room); from 45 °C it also appears in the LiveView top bar (orange from 50 °C, red from 60 °C). Canon protects itself regardless: a thermometer icon, then it stops recording. Prefs → **Temperature warning** (55 °C by default) shows HOT in the recording status above that |
 | False colour | Overlay → False color → **Source: Preview (YUV) / RAW sensor** |
@@ -97,7 +98,8 @@ slate or clap at the start of a take and sync on that rather than lining up the 
 ## Worth knowing before you shoot
 
 **Set exposure before you roll, and read the raw waveform in stops.** Set to RAW, the waveform, histogram and false colour read the sensor at any bit depth. Below 14-bit, they switch to
-the preview picture during a take, so check them before you press record. The histogram and waveform spread 12 stops evenly, so **their middle is not a mid-tone**: it is 6 stops under clipping. Put the bulk of the picture well to the right of it.
+the preview picture during a take, so check them before you press record. The histogram and waveform spread 12 stops evenly, so **their middle is not a mid-tone**: it is 6 stops under clipping. The yellow line marks middle grey: put the middle of your scene on it, and
+expose as brightly as you can without clipping what matters.
 
 | Raw histogram or waveform | Stops under clipping | Raw false colour | Plain Rec.709 in post | |
 |---|---|---|---|---|
@@ -144,7 +146,18 @@ for the H.264 proxy and scratch WAV):
 | 2048×1080 (1.90:1 DCI) | 92.8 | 79.5 | 66.3 |
 | 2048×856 (2.39:1) | 73.6 | 63.0 | 52.5 |
 
-Crop mode runs at 29.97, so multiply by 1.25. A SanDisk Extreme PRO 64 GB writes ~83 MB/s new:
+That table is uncompressed. **Lossless**, the default, needs far less, and how much depends on the scene. Some measured takes at 12-bit lossless:
+
+| Format | Frame rate | MB/s |
+|---|---|---|
+| 2048×1152 | 23.976 | 32 |
+| 3072×614 or 2136×894 (crop) | 29.97 | 34 |
+| 1920×720 | 59.94 | 49 |
+| 2048×856 | 59.94 | 58 |
+
+Noise raises these: 1920×804 at ISO 6400 needed about 66 MB/s, against 42 to 45 in a clean scene. A card also slows as it fills: one 64 GB card wrote about 74 MB/s empty and 62 MB/s at 75% full. At 59.94p, frames above 1920×960 can fail, because the encoder runs out of time.
+
+For the uncompressed table, crop mode runs at 29.97, so multiply by 1.25. A SanDisk Extreme PRO 64 GB writes ~83 MB/s new:
 **2048×856 12-bit + proxy** (66.8 MB/s, ~16 min per card) runs continuously on it. The same card
 after being filled once dropped to ~62 MB/s; there, use **1920×804 10-bit + proxy** (50 MB/s, ~21
 min). Benchmark a card in a photo mode (Debug → Benchmarks): with RAW video on, the benchmark cannot
@@ -175,8 +188,8 @@ Photo dual ISO works. Face-tracking AF works natively. See the [roadmap](roadmap
 | `README.txt` | install steps |
 | `SHA256SUMS.txt` | checksums of the camera files |
 | `extras/user-guide.md` | this guide |
-| `extras/tools/` | `cardcheck.py` (checks every clip on a card), `scratch_sync.py` (lines scratch WAVs up with their clips and stamps them with Tentacle timecode), `wav_dualgain.py` (merges a Safety-mode WAV into a 32-bit float file), `fix_mlv_black.py` (repairs pre-v62 black levels) |
-| `extras/testing/` | the fast-card test procedure, as text and as a fillable PDF |
+| `extras/tools/` | `cardcheck.py` (checks every clip on a card), `gyro_export.py` (writes Gyroflow logs from clips recorded with Gyro log on), `scratch_sync.py` (lines scratch WAVs up with their clips and stamps them with Tentacle timecode), `wav_dualgain.py` (merges a Safety-mode WAV into a 32-bit float file), `fix_mlv_black.py` (repairs pre-v62 black levels) |
+| `extras/testing/` | the field test procedure |
 | `extras/developer/` | development log and roadmap |
 
 Nothing under `extras` goes on the card.
