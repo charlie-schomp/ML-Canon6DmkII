@@ -454,50 +454,23 @@ static volatile int display_dont_mirror_dirty;
  * (PROP_LCD_POSITION == 1). Confirmed on hardware once the peaking cache
  * actually rebuilt - see zebra_update_lut(). The transform was briefly
  * selectable while that was being chased; it is a plain horizontal mirror. */
-static CONFIG_INT("overlay.mirror", overlay_mirror_mode, 1);       /* 0 off, 1 on */
-/* What Canon does to its image layer in each screen position, as a transform
- * for ML's overlays: 0 none, 1 mirror (left-right), 2 flip (upside down),
- * 3 rotate 180.  PROP_LCD_POSITION: 0 stowed facing out, 1 facing forward,
- * 2 flipped outside.  Both confirmed on hardware: position 1 = mirror (v32,
- * again v79), position 2 = none (v79).  The defaults are right, so the
- * settings live in the Debug menu. */
-static CONFIG_INT("overlay.mirror.pos1", overlay_xform_pos1, 1);
-static CONFIG_INT("overlay.mirror.pos2", overlay_xform_pos2, 0);
+/* PROP_LCD_POSITION: 0 stowed facing out, 1 facing forward, 2 flipped outside.
+ * Confirmed on hardware: Canon's image is mirrored in position 1 only (v32,
+ * again v79, position 2 v79). */
 extern int overlay_mirror_x;   /* vram.c */
-extern int overlay_mirror_y;   /* vram.c */
 
 static void overlay_mirror_apply(void)
 {
-    int t = !overlay_mirror_mode ? 0
-          : lcd_position == 1 ? overlay_xform_pos1
-          : lcd_position == 2 ? overlay_xform_pos2 : 0;
-    int wx = (t == 1 || t == 3);
-    int wy = (t == 2 || t == 3);
-    if (wx != overlay_mirror_x || wy != overlay_mirror_y)
+    int wx = (lcd_position == 1);
+    if (wx != overlay_mirror_x)
     {
         overlay_mirror_x = wx;
-        overlay_mirror_y = wy;
         vram_params_set_dirty();
         get_yuv422_vram();         /* rebuild BM2LV_X now, not on some later pass */
         redraw_after(100);         /* and wipe overlays drawn the old way */
     }
 }
 
-static MENU_UPDATE_FUNC(overlay_mirror_update)
-{
-    overlay_mirror_apply();
-    MENU_SET_RINFO("screen pos %d", lcd_position);
-}
-
-static MENU_UPDATE_FUNC(overlay_xform_update)
-{
-    overlay_mirror_apply();
-    int pos = (entry->priv == &overlay_xform_pos1) ? 1 : 2;
-    if (lcd_position == pos)
-        MENU_SET_RINFO("active now");
-    else
-        MENU_SET_WARNING(MENU_WARN_INFO, "Put the screen in position %d to see this one (now %d).", pos, lcd_position);
-}
 #endif
 
 #if defined(CONFIG_VARIANGLE_DISPLAY) || defined(CONFIG_MIRROR_OVERLAYS)
@@ -3450,39 +3423,6 @@ struct menu_entry zebra_menus[] = {
 };
 
 static struct menu_entry livev_dbg_menus[] = {
-    #ifdef CONFIG_MIRROR_OVERLAYS
-    {
-        .name = "Flip-screen overlays",
-        .priv = &overlay_mirror_mode,
-        .max = 1,
-        .update = overlay_mirror_update,
-        .help  = "Transform peaking/zebras/false colour to follow Canon's image",
-        .help2 = "when the vari-angle screen is flipped. Text and menus stay upright.",
-        .depends_on = DEP_GLOBAL_DRAW,
-        .submenu_width = 700,
-        .children = (struct menu_entry[]) {
-            {
-                .name = "Facing forward (pos 1)",
-                .priv = &overlay_xform_pos1,
-                .max = 3,
-                .update = overlay_xform_update,
-                .choices = CHOICES("None", "Mirror", "Flip", "Rotate 180"),
-                .help  = "Screen turned to face the subject. Canon mirrors the image here:",
-                .help2 = "Mirror (default, confirmed on the camera).",
-            },
-            {
-                .name = "Flipped outside (pos 2)",
-                .priv = &overlay_xform_pos2,
-                .max = 3,
-                .update = overlay_xform_update,
-                .choices = CHOICES("None", "Mirror", "Flip", "Rotate 180"),
-                .help  = "Screen flipped outside. Canon does not transform the image here:",
-                .help2 = "None (default, confirmed on the camera).",
-            },
-            MENU_EOL,
-        },
-    },
-    #endif
     #ifdef FEATURE_SHOW_OVERLAY_FPS
     {
         .name = "Show Overlay FPS",
