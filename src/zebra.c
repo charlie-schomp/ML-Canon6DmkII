@@ -3394,7 +3394,7 @@ struct menu_entry zebra_menus[] = {
                 .max = 1,
                 .choices = CHOICES("Preview (YUV)", "RAW sensor"),
                 .help  = "RAW plots the sensor. Top of graph = raw clipping,",
-                .help2 = "bottom = 12 stops under. Same scale as RAW histogram.",
+                .help2 = "bottom = 12 stops under. Below 14-bit, a take shows Preview.",
             },
             #endif
             MENU_EOL

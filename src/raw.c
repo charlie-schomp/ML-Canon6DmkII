@@ -1888,6 +1888,12 @@ int raw_update_params()
 {
     int ans = raw_update_params_retry();
 
+    #ifdef CONFIG_LV_BPP_MEM1_PATCH
+    /* overlays read any depth in LiveView, but not during a take below 14-bit:
+     * nothing there is worth risking the recording's time */
+    if (lv && NOT_RECORDING) return ans;
+    #endif
+
     if (raw_info.bits_per_pixel != 14)
     {
         /* hack: this will disable all overlays at bit depths other than 14 */
@@ -1898,8 +1904,8 @@ int raw_update_params()
 }
 
 /* The same update, valid at any bit depth - for raw recorders.
- * raw_update_params() fails below 14-bit on purpose, so the overlays (which
- * only decode 14-bit) switch themselves off.  Recorders must not inherit that:
+ * raw_update_params() fails below 14-bit during a take, so the overlays switch
+ * themselves off.  Recorders must not inherit that:
  * the 6D2 holds 12/10-bit between clips, so mlv_lite's record-start check ran
  * into it every time and gave up with "Raw detect error". */
 int raw_update_params_any_bpp()
@@ -2068,10 +2074,27 @@ raw_set_geometry(int width, int height, int skip_left, int skip_right, int skip_
     dbg_printf("  should be: (%d,%d) - (%d,%d)\n", raw_info.active_area.x1, raw_info.active_area.y1, raw_info.active_area.x2, raw_info.active_area.y2);
 }
 
+/* A pixel at any packed depth, on the 14-bit scale raw_info's levels stay on, so
+ * overlays and their lookup tables need no other change.  Rows are a stream of
+ * 16-bit words, pixels MSB first; raw_pixblock is this layout at 14-bit. */
+static inline int raw_px_scaled(int x, int y)
+{
+    int bpp = raw_info.bits_per_pixel;
+    uint32_t bit = x * bpp;
+    const uint16_t * w = (const uint16_t *) ((const char *) raw_info.buffer + y * raw_info.pitch) + (bit >> 4);
+    uint32_t v = ((uint32_t) w[0] << 16) | w[1];
+    return ((v >> (32 - (bit & 15) - bpp)) & ((1 << bpp) - 1)) << (14 - bpp);
+}
+
+/* the same pixels the 14-bit readers below pick: a and h of an 8-pixel block */
+#define RAW_BLOCK_A(x) ((x) & ~7)
+#define RAW_BLOCK_H(x) (((x) & ~7) + 7)
+
 int FAST raw_red_pixel(int x, int y)
 {
     struct raw_pixblock * buf = (void*)raw_info.buffer;
     y = (y/2) * 2;
+    if (raw_info.bits_per_pixel != 14) return raw_px_scaled(RAW_BLOCK_A(x), y);
     int i = ((y * raw_info.width + x) / 8);
     return buf[i].a;
 }
@@ -2080,6 +2103,7 @@ int FAST raw_green_pixel(int x, int y)
 {
     struct raw_pixblock * buf = (void*)raw_info.buffer;
     y = (y/2) * 2;
+    if (raw_info.bits_per_pixel != 14) return raw_px_scaled(RAW_BLOCK_H(x), y);
     int i = ((y * raw_info.width + x) / 8);
     return buf[i].h;
 }
@@ -2088,6 +2112,7 @@ int FAST raw_blue_pixel(int x, int y)
 {
     struct raw_pixblock * buf = (void*)raw_info.buffer;
     y = (y/2) * 2 - 1;
+    if (raw_info.bits_per_pixel != 14) return raw_px_scaled(RAW_BLOCK_H(x), y);
     int i = ((y * raw_info.width + x) / 8);
     return buf[i].h;
 }
@@ -2096,6 +2121,7 @@ int FAST raw_red_pixel_dark(int x, int y)
 {
     struct raw_pixblock * buf = (void*)raw_info.buffer;
     y = (y/2) * 2;
+    if (raw_info.bits_per_pixel != 14) return MIN(raw_px_scaled(RAW_BLOCK_A(x), y), raw_px_scaled(RAW_BLOCK_A(x), y - 2));
     int i = ((y * raw_info.width + x) / 8);
     return MIN(buf[i].a, buf[i - raw_info.width*2/8].a);
 }
@@ -2104,6 +2130,7 @@ int FAST raw_green_pixel_dark(int x, int y)
 {
     struct raw_pixblock * buf = (void*)raw_info.buffer;
     y = (y/2) * 2;
+    if (raw_info.bits_per_pixel != 14) return MIN(raw_px_scaled(RAW_BLOCK_H(x), y), raw_px_scaled(RAW_BLOCK_H(x), y - 2));
     int i = ((y * raw_info.width + x) / 8);
     return MIN(buf[i].h, buf[i - raw_info.width*2/8].h);
 }
@@ -2112,6 +2139,7 @@ int FAST raw_blue_pixel_dark(int x, int y)
 {
     struct raw_pixblock * buf = (void*)raw_info.buffer;
     y = (y/2) * 2 - 1;
+    if (raw_info.bits_per_pixel != 14) return MIN(raw_px_scaled(RAW_BLOCK_H(x), y), raw_px_scaled(RAW_BLOCK_H(x), y - 2));
     int i = ((y * raw_info.width + x) / 8);
     return MIN(buf[i].h, buf[i - raw_info.width*2/8].h);
 }
@@ -2120,6 +2148,7 @@ int FAST raw_red_pixel_bright(int x, int y)
 {
     struct raw_pixblock * buf = (void*)raw_info.buffer;
     y = (y/2) * 2;
+    if (raw_info.bits_per_pixel != 14) return MAX(raw_px_scaled(RAW_BLOCK_A(x), y), raw_px_scaled(RAW_BLOCK_A(x), y - 2));
     int i = ((y * raw_info.width + x) / 8);
     return MAX(buf[i].a, buf[i - raw_info.width*2/8].a);
 }
@@ -2128,6 +2157,7 @@ int FAST raw_green_pixel_bright(int x, int y)
 {
     struct raw_pixblock * buf = (void*)raw_info.buffer;
     y = (y/2) * 2;
+    if (raw_info.bits_per_pixel != 14) return MAX(raw_px_scaled(RAW_BLOCK_H(x), y), raw_px_scaled(RAW_BLOCK_H(x), y - 2));
     int i = ((y * raw_info.width + x) / 8);
     return MAX(buf[i].h, buf[i - raw_info.width*2/8].h);
 }
@@ -2136,12 +2166,14 @@ int FAST raw_blue_pixel_bright(int x, int y)
 {
     struct raw_pixblock * buf = (void*)raw_info.buffer;
     y = (y/2) * 2 - 1;
+    if (raw_info.bits_per_pixel != 14) return MAX(raw_px_scaled(RAW_BLOCK_H(x), y), raw_px_scaled(RAW_BLOCK_H(x), y - 2));
     int i = ((y * raw_info.width + x) / 8);
     return MAX(buf[i].h, buf[i - raw_info.width*2/8].h);
 }
 
 
 int FAST raw_get_pixel(int x, int y) {
+    if (raw_info.bits_per_pixel != 14) return raw_px_scaled(x, y);
     struct raw_pixblock * p = (void*)raw_info.buffer + y * raw_info.pitch + (x/8)*14;
     switch (x%8) {
         case 0: return p->a;
@@ -3391,6 +3423,10 @@ int can_use_raw_overlays()
 #ifdef CONFIG_RAW_LIVEVIEW
     if (lv && raw_lv_is_enabled())
     {
+        /* below 14-bit, not during a take: see raw_update_params() */
+        #ifdef CONFIG_LV_BPP_MEM1_PATCH
+        if (NOT_RECORDING) return 1;
+        #endif
         /* currently, raw overlays only work with 14 bits per pixel */
         return raw_info.bits_per_pixel == 14;
     }
