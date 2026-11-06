@@ -54,7 +54,7 @@ ML_MODULES = \
     dev_tools/edmac \
     dev_tools/adtglog2 \
     dev_tools/d7probe \
-    sd_uhs \
+    sd_clock \
     raw_video/raw_vidx \
     yolo
 
