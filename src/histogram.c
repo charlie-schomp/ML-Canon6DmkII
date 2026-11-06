@@ -344,6 +344,11 @@ void hist_draw_image(
     #ifdef FEATURE_RAW_HISTOGRAM
     if (histogram.is_raw)
     {
+        /* middle grey, 3.25 stops under clipping on this 12-stop scale: the
+         * graph's own middle is 6 under, which reads as a mid-tone and isn't */
+        int grey_x = x_origin + HIST_WIDTH * 35 / 48;
+        draw_line(grey_x, y_origin, grey_x, y_origin + hist_height - 1, COLOR_YELLOW);
+
         char msg[10];
         switch (hist_meter)
         {

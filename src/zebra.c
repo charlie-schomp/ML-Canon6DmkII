@@ -378,6 +378,7 @@ static CONFIG_INT( "waveform.raw",  waveform_raw,   1 );
 static CONFIG_INT( "waveform.raw",  waveform_raw,   0 );
 #endif
 static CONFIG_INT( "waveform.bg",   waveform_bg,    COLOR_ALMOST_BLACK ); // solid black
+static int waveform_shows_raw = 0;
 
 int histogram_or_small_waveform_enabled()
 {
@@ -715,6 +716,7 @@ hist_build()
     
 #ifdef FEATURE_RAW_WAVEFORM
     int waveform_is_raw = (waveform_draw && waveform_raw && can_use_raw_overlays());
+    waveform_shows_raw = waveform_is_raw;
     if (waveform_is_raw)
     {
         waveform_build_raw();
@@ -1175,6 +1177,10 @@ waveform_draw_image(
                 else
                 if( count >  0 )
                     count += 38 + 5;
+                else
+                // Middle grey on the 12-stop raw scale: 3.25 stops under clipping
+                if( waveform_shows_raw && y == WAVEFORM_HEIGHT * 13 / 48 )
+                    count = COLOR_YELLOW;
                 else
                 // Draw a series of colored scales
                 if( y == (WAVEFORM_HEIGHT*1)>>2 )
@@ -3393,7 +3399,7 @@ struct menu_entry zebra_menus[] = {
                 .priv = &waveform_raw,
                 .max = 1,
                 .choices = CHOICES("Preview (YUV)", "RAW sensor"),
-                .help  = "RAW plots the sensor. Top of graph = raw clipping,",
+                .help  = "RAW plots the sensor. Top = raw clipping, yellow = middle grey,",
                 .help2 = "bottom = 12 stops under. Below 14-bit, a take shows Preview.",
             },
             #endif
