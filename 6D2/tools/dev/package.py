@@ -13,8 +13,8 @@ Zip layout - the camera files at the top, everything else under extras/:
     README.txt                     install steps
     SHA256SUMS.txt                 checksums of the camera files
     extras/user-guide.md
-    extras/tools/                  cardcheck.py, wav_dualgain.py, scratch_sync.py, fix_mlv_black.py
-    extras/testing/                fast-card test (md + fillable pdf)
+    extras/tools/                  cardcheck.py, gyro_export.py, wav_dualgain.py, scratch_sync.py, fix_mlv_black.py
+    extras/testing/                field test
     extras/developer/              devlog.md, roadmap.md
 Older zips in 6D2/download are removed.
 """
@@ -28,11 +28,11 @@ OUT = os.path.join(PORT, 'download')
 EXTRAS = [
     ('docs/user-guide.md', 'extras/user-guide.md'),
     ('tools/cardcheck.py', 'extras/tools/cardcheck.py'),
+    ('tools/gyro_export.py', 'extras/tools/gyro_export.py'),
     ('tools/wav_dualgain.py', 'extras/tools/wav_dualgain.py'),
     ('tools/scratch_sync.py', 'extras/tools/scratch_sync.py'),
     ('tools/fix_mlv_black.py', 'extras/tools/fix_mlv_black.py'),
-    ('testing/fast-card-test.md', 'extras/testing/fast-card-test.md'),
-    ('testing/fast-card-test.pdf', 'extras/testing/fast-card-test.pdf'),
+    ('testing/field-test.md', 'extras/testing/field-test.md'),
     ('docs/devlog.md', 'extras/developer/devlog.md'),
     ('docs/roadmap.md', 'extras/developer/roadmap.md'),
 ]
@@ -61,7 +61,7 @@ UPDATING
 MORE
     extras/user-guide.md   where everything is, card speeds, tips
     extras/tools           cardcheck.py checks the clips on a card
-    https://github.com/charlie-schomp/ML-Canon6DmkII
+    https://github.com/charlie-schomp/magiclantern_simplified
 
 Experimental software, no warranty. If the camera ever locks up, take the
 battery out, and keep any CRASH*.LOG / ASSERT*.LOG from the card.
@@ -89,7 +89,7 @@ def build(version, fw, src):
     readme = README.format(
         version=version, fw=fw,
         status=('NEVER RUN ON A CAMERA. There is no installer for 1.2.0.' if untested
-                else 'Tested on a camera.'),
+                else 'Tested on a camera, apart from any change made since the last camera round: see the development log.'),
         fir_line=('' if untested else '    ML-SETUP.FIR  (first install only)\n'))
     sums = ''.join('%s  %s\n' % (hashlib.sha256(open(a, 'rb').read()).hexdigest(), n)
                    for a, n in files if not n.startswith('extras/'))
