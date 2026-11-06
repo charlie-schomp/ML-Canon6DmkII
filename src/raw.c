@@ -1421,7 +1421,11 @@ int raw_update_params_work()
         // edge, 4 on the right for the last partial bin: 2080 active, DCI 2K
         // fits (v64 M25-0906: 2048x1108, clean to all four edges).  The 1:1
         // zoom window has no OB at the left and keeps its validated geometry.
-        skip_top    = 16;
+        // The picture starts lower than the OB's 16 rows, measured: row 28 of
+        // 1208 in 1080p (a full grabbed frame, picture to the last row), row
+        // 44 of 942 in the 1:1 window (clips; picture seen to row 939 only).
+        skip_top    = zoom ? 44 : 28;
+        skip_bottom = zoom ? 2 : 0;
         skip_left   = zoom ? 100 : 44;
         skip_right  = zoom ? 0 : 4;
         #endif
@@ -1975,6 +1979,9 @@ raw_set_geometry(int width, int height, int skip_left, int skip_right, int skip_
     {
         preview_skip_left = 100 + 14;
         preview_width = (width - 100) - 28;
+        /* same for the top edge, which moved from 16 to 28 */
+        preview_skip_top = 16 + 8;
+        preview_height = (height - 16) - 16;
     }
 #endif
 
@@ -2020,6 +2027,15 @@ raw_set_geometry(int width, int height, int skip_left, int skip_right, int skip_
             preview_width = vram_hd.width / zoom_corr;
             preview_height = vram_hd.height / zoom_corr;
         }
+        #ifdef CONFIG_6D2
+        else
+        {
+            /* no focus box: stay on the reference the mapping was aligned on,
+             * a top edge of 16, not the picture's real one (see skip_top) */
+            preview_skip_top = 16 + 8;
+            preview_height = (height - 16) - 16;
+        }
+        #endif
     }
 #endif
 

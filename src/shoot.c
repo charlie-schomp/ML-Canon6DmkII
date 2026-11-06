@@ -897,7 +897,13 @@ int focus_box_get_raw_crop_offset(int* delta_x, int* delta_y)
             int here_x = (x1+x2) * scale_x / 200;
             int here_y = (y1+y2) * scale_y / 200;
             
+            #ifdef CONFIG_6D2
+            /* an empirical term, tied to the top edge it was found with, not
+             * the picture's real one (raw.c skip_top) */
+            here_y += 16 / (lv_dispsize == 5 ? 4 : 8);
+            #else
             here_y += raw_info.active_area.y1 / (lv_dispsize == 5 ? 4 : 8); /* don't ask me why */
+            #endif
             
             /* we want to be in the center */
             int dest_x = raw_info.active_area.x1 + raw_info.jpeg.width / 2;

@@ -188,7 +188,7 @@ static int * res_index(void)
 }
 /* 6D2 crop mode.  There are no readout-window registers we can drive on this
  * body, but Canon's 5x/10x LiveView magnification IS a 1:1 sensor window
- * (3264x942 raw, 3164x926 active, measured), and mlv_lite records from it
+ * (3264x942 raw, 3164x896 active, measured), and mlv_lite records from it
  * like any other mode.  This just requests that zoom whenever RAW video is on
  * in movie LiveView, so the resolution list and the framing are the same
  * every time instead of depending on whether the magnify button was pressed. */
@@ -5292,7 +5292,7 @@ static struct menu_entry raw_video_menu[] =
                 .max = 1,
                 .choices = CHOICES("OFF", "1:1 (5x zoom)"),
                 .update = crop_zoom_update,
-                .help  = "1:1 window via Canon's 5x zoom: 3164x926 max, no binning, ALWAYS 30p.",
+                .help  = "1:1 window via Canon's 5x zoom: 3164x896 max, no binning, ALWAYS 30p.",
                 .help2 = "Held while RAW video is on (magnify still gives 10x). Enables dual ISO.",
             },
             {
