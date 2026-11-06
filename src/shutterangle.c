@@ -148,7 +148,7 @@ static struct menu_entry angle_lock_menu[] = {
 
 static void angle_lock_init()
 {
-    menu_add("Expo", angle_lock_menu, COUNT(angle_lock_menu));
+    menu_add("Movie", angle_lock_menu, COUNT(angle_lock_menu));
 }
 
 INIT_FUNC(__FILE__, angle_lock_init);

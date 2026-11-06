@@ -961,6 +961,10 @@ static void change_mov_time_limit(void* priv, int delta)
 }
 #endif // FEATURE_OVERRIDE_MOVIE_30_MIN_LIMIT
 
+#ifdef FEATURE_OVERRIDE_MOVIE_30_MIN_LIMIT
+static struct menu_entry mov_time_limit_menu[1];
+#endif
+
 void movtweak_task_init()
 {
 #ifdef FEATURE_FORCE_LIVEVIEW
@@ -977,6 +981,7 @@ void movtweak_task_init()
 #ifdef FEATURE_OVERRIDE_MOVIE_30_MIN_LIMIT
     // This restores saved time limit from config file
     change_mov_time_limit(NULL, 0);
+    menu_add("Movie", mov_time_limit_menu, COUNT(mov_time_limit_menu));
 #endif
 
 #ifdef FEATURE_EXPO_OVERRIDE
@@ -1757,6 +1762,9 @@ static struct menu_entry mov_menus[] = {
      * (the same placeholder mechanism upstream uses for Dual ISO, Silent
      * Picture and Cropmarks).  Hidden if no raw recorder is loaded. */
     MENU_PLACEHOLDER("RAW video"),
+    MENU_PLACEHOLDER("Clip info"),
+    MENU_PLACEHOLDER("Shutter angle lock"),
+    MENU_PLACEHOLDER("Top Button C-FN"),
     #ifdef FEATURE_MOVIE_RECORDING_50D
     {
         .name       = "Movie Record",
@@ -1811,18 +1819,6 @@ static struct menu_entry mov_menus[] = {
         },
     },
     #endif
-    #ifdef FEATURE_OVERRIDE_MOVIE_30_MIN_LIMIT
-    {
-        .name = "MOV/MP4 time limit",
-        .priv = &mov_time_limit,
-        .update = print_mov_time_limit,
-        .select = change_mov_time_limit,
-        .min = 1,
-        .max = 180,
-        .help = "Change 29:59 movie recording limit",
-        .help2 = "Too long recording makes empty files on ExFAT, ok on FAT32",
-    },
-    #endif
     #ifdef FEATURE_GRADUAL_EXPOSURE
     {
         .name = "Gradual Exposure",
@@ -1847,7 +1843,7 @@ static struct menu_entry mov_menus[] = {
     },
     #endif
     #ifdef FEATURE_WAV_AUDIO
-    /* All audio in one submenu, at the end of the Movie tab. */
+    /* All audio in one submenu. */
     {
         .name       = "Scratch audio",
         .select     = menu_open_submenu,
@@ -1936,6 +1932,23 @@ static struct menu_entry mov_menus[] = {
     },
     #endif
 };
+
+#ifdef FEATURE_OVERRIDE_MOVIE_30_MIN_LIMIT
+/* added by movtweak_task_init: tasks start after every INIT_FUNC, so this is
+ * the last entry of the Movie tab whatever the link order */
+static struct menu_entry mov_time_limit_menu[] = {
+    {
+        .name = "MOV/MP4 time limit",
+        .priv = &mov_time_limit,
+        .update = print_mov_time_limit,
+        .select = change_mov_time_limit,
+        .min = 1,
+        .max = 180,
+        .help = "Change 29:59 movie recording limit",
+        .help2 = "Too long recording makes empty files on ExFAT, ok on FAT32",
+    },
+};
+#endif
 
 // Only create this menu if the cam has any feature that needs it
 #if defined(FEATURE_NITRATE) || defined(FEATURE_MOVIE_RESTART) \

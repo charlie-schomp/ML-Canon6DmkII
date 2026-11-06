@@ -127,7 +127,7 @@ int handle_top_buttons(struct event * event)
 
 static struct menu_entry topbtn_menus[] = {
     {
-        .name = "Top buttons (movie)",
+        .name = "Top Button C-FN",
         .select = menu_open_submenu,
         .help  = "Use the AF, ISO and DRIVE/metering/AF-point buttons to toggle",
         .help2 = "overlays in movie LiveView. Canon's own screen still flashes up.",
@@ -164,7 +164,7 @@ static struct menu_entry topbtn_menus[] = {
 
 static void topbtn_init()
 {
-    menu_add("Prefs", topbtn_menus, COUNT(topbtn_menus));
+    menu_add("Movie", topbtn_menus, COUNT(topbtn_menus));
 }
 
 INIT_FUNC(__FILE__, topbtn_init);
