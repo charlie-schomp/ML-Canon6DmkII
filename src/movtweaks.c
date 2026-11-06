@@ -1762,86 +1762,6 @@ static struct menu_entry mov_menus[] = {
      * (the same placeholder mechanism upstream uses for Dual ISO, Silent
      * Picture and Cropmarks).  Hidden if no raw recorder is loaded. */
     MENU_PLACEHOLDER("RAW video"),
-    MENU_PLACEHOLDER("Clip info"),
-    MENU_PLACEHOLDER("Shutter angle lock"),
-    MENU_PLACEHOLDER("Top Button C-FN"),
-    #ifdef FEATURE_MOVIE_RECORDING_50D
-    {
-        .name       = "Movie Record",
-        .priv       = &lv_movie_select,
-        .select     = lv_movie_toggle,
-        .select_Q   = lv_movie_size_toggle,
-        .update     = lv_movie_print,
-        .help       = "Enable movie recording on 50D :) ",
-        .depends_on = DEP_LIVEVIEW,
-    },
-    #endif
-    #ifdef CONFIG_MOVIE_RECORDING_50D_SHUTTER_HACK
-    {
-        .name = "Shutter Button",
-        .priv = &shutter_btn_rec,
-        .max  = 2,
-        .choices = CHOICES("Leave unchanged", "Block during REC", "Hold during REC"),
-        .help  = "Block shutter button while recording (avoids ERR99)",
-        .help2 = "or hold it pressed halfway (enables image stabilization).",
-        .depends_on = DEP_MOVIE_MODE,
-    },
-    #endif
-
-    #ifdef FEATURE_MOVIE_REC_KEY
-    {
-        .name = "REC key",
-        .priv = &movie_rec_key, 
-        .max = 1,
-        .icon_type = IT_BOOL,
-        .choices = CHOICES("OFF", "HalfShutter"),
-        .help = "Start recording by pressing shutter halfway. Wired remote.",
-        .submenu_width = 700,
-        .depends_on = DEP_MOVIE_MODE,
-        .children =  (struct menu_entry[]) {
-            {
-                .name = "Require long press",
-                .priv = &movie_rec_key_long,
-                .max = 1,
-                .icon_type = IT_BOOL,
-                .choices = CHOICES("OFF", "ON (1s)"),
-                .help = "If ON, you have to hold half-shutter pressed for 1 second.",
-            },
-            {
-                .name = "Allowed actions",
-                .priv = &movie_rec_key_action,
-                .max = 2,
-                .icon_type = IT_DICE,
-                .choices = CHOICES("Start/Stop", "Start only", "Stop only"),
-                .help = "Select actions for half-shutter.",
-            },
-            MENU_EOL,
-        },
-    },
-    #endif
-    #ifdef FEATURE_GRADUAL_EXPOSURE
-    {
-        .name = "Gradual Exposure",
-        .priv = &smooth_iso,
-        .max = 1,
-        .help   = "Use smooth exposure transitions, by compensating with ISO.",
-        .help2  = "=> adjust ISO, shutter speed and aperture without large jumps.",
-        .submenu_width = 700,
-        .depends_on = DEP_MOVIE_MODE | DEP_MANUAL_ISO,
-        .children =  (struct menu_entry[]) {
-            {
-                .name = "Ramping speed",
-                .priv       = &smooth_iso_speed,
-                .min = 1,
-                .max = 7,
-                .icon_type = IT_PERCENT,
-                .choices = CHOICES("1 EV / 8 frames", "1 EV / 16 frames", "1 EV / 32 frames", "1 EV / 64 frames", "1 EV / 128 frames", "1 EV / 256 frames", "1 EV / 512 frames"),
-                .help = "How fast the exposure transitions should be.",
-            },
-            MENU_EOL
-        },
-    },
-    #endif
     #ifdef FEATURE_WAV_AUDIO
     /* All audio in one submenu. */
     {
@@ -1928,6 +1848,86 @@ static struct menu_entry mov_menus[] = {
             },
             #endif
             MENU_EOL,
+        },
+    },
+    #endif
+    MENU_PLACEHOLDER("Shutter angle lock"),
+    MENU_PLACEHOLDER("Clip info"),
+    MENU_PLACEHOLDER("Top Button C-FN"),
+    #ifdef FEATURE_MOVIE_RECORDING_50D
+    {
+        .name       = "Movie Record",
+        .priv       = &lv_movie_select,
+        .select     = lv_movie_toggle,
+        .select_Q   = lv_movie_size_toggle,
+        .update     = lv_movie_print,
+        .help       = "Enable movie recording on 50D :) ",
+        .depends_on = DEP_LIVEVIEW,
+    },
+    #endif
+    #ifdef CONFIG_MOVIE_RECORDING_50D_SHUTTER_HACK
+    {
+        .name = "Shutter Button",
+        .priv = &shutter_btn_rec,
+        .max  = 2,
+        .choices = CHOICES("Leave unchanged", "Block during REC", "Hold during REC"),
+        .help  = "Block shutter button while recording (avoids ERR99)",
+        .help2 = "or hold it pressed halfway (enables image stabilization).",
+        .depends_on = DEP_MOVIE_MODE,
+    },
+    #endif
+
+    #ifdef FEATURE_MOVIE_REC_KEY
+    {
+        .name = "REC key",
+        .priv = &movie_rec_key, 
+        .max = 1,
+        .icon_type = IT_BOOL,
+        .choices = CHOICES("OFF", "HalfShutter"),
+        .help = "Start recording by pressing shutter halfway. Wired remote.",
+        .submenu_width = 700,
+        .depends_on = DEP_MOVIE_MODE,
+        .children =  (struct menu_entry[]) {
+            {
+                .name = "Require long press",
+                .priv = &movie_rec_key_long,
+                .max = 1,
+                .icon_type = IT_BOOL,
+                .choices = CHOICES("OFF", "ON (1s)"),
+                .help = "If ON, you have to hold half-shutter pressed for 1 second.",
+            },
+            {
+                .name = "Allowed actions",
+                .priv = &movie_rec_key_action,
+                .max = 2,
+                .icon_type = IT_DICE,
+                .choices = CHOICES("Start/Stop", "Start only", "Stop only"),
+                .help = "Select actions for half-shutter.",
+            },
+            MENU_EOL,
+        },
+    },
+    #endif
+    #ifdef FEATURE_GRADUAL_EXPOSURE
+    {
+        .name = "Gradual Exposure",
+        .priv = &smooth_iso,
+        .max = 1,
+        .help   = "Use smooth exposure transitions, by compensating with ISO.",
+        .help2  = "=> adjust ISO, shutter speed and aperture without large jumps.",
+        .submenu_width = 700,
+        .depends_on = DEP_MOVIE_MODE | DEP_MANUAL_ISO,
+        .children =  (struct menu_entry[]) {
+            {
+                .name = "Ramping speed",
+                .priv       = &smooth_iso_speed,
+                .min = 1,
+                .max = 7,
+                .icon_type = IT_PERCENT,
+                .choices = CHOICES("1 EV / 8 frames", "1 EV / 16 frames", "1 EV / 32 frames", "1 EV / 64 frames", "1 EV / 128 frames", "1 EV / 256 frames", "1 EV / 512 frames"),
+                .help = "How fast the exposure transitions should be.",
+            },
+            MENU_EOL
         },
     },
     #endif

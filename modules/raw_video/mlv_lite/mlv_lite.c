@@ -234,8 +234,9 @@ static CONFIG_INT("raw.small.hacks", small_hacks, 1);
  * them: 6D2 - H.264 proxy on (the in-camera review copy, ~3.6 MB/s on top of
  * the raw stream) and sync beep off (the scratch WAV is the sync track, and
  * the beep lands in it and in the proxy's audio); every other body - the
- * upstream defaults, proxy off and beep on.  The cost: these are always
- * written to the settings file. */
+ * upstream defaults, proxy off and beep on.  raw_rec_init() also makes that
+ * value the default: the menu always shows an advanced entry whose value differs
+ * from its default, so one left at -1 could never hide. */
 static CONFIG_INT("raw.h264.proxy", h264_proxy_menu, -1);
 static CONFIG_INT("raw.sync_beep", sync_beep, -1);
 
@@ -5263,17 +5264,6 @@ static struct menu_entry raw_video_menu[] =
                 .max = COUNT(aspect_ratio_presets_num) - 1,
                 .update = aspect_ratio_update,
                 .choices = aspect_ratio_choices,
-                .children =  (struct menu_entry[]) {
-                    {
-                        .name = "If too tall",
-                        .priv = &aspect_fit_width,
-                        .max = 1,
-                        .choices = CHOICES("Clamp height", "Shrink width"),
-                        .help  = "Shrink width: the ratio is honoured, the frame gets narrower.",
-                        .help2 = "Clamp height: keep the width, silently record a wider ratio.",
-                    },
-                    MENU_EOL
-                },
             },
             {
                 .name       = "Data format",
@@ -5306,6 +5296,14 @@ static struct menu_entry raw_video_menu[] =
                 .help2 = "Held while RAW video is on (magnify still gives 10x). Enables dual ISO.",
             },
             {
+                .name   = "H.264 proxy",
+                .priv   = &h264_proxy_menu,
+                .max    = 1,
+                .update = h264_proxy_update,
+                .help   = "Record a H.264 video at the same time.",
+                .help2  = "For best performance, record H.264 on SD and RAW on CF.",
+            },
+            {
                 .name = "Gyro log (experimental)",
                 .priv = &gyro_log_on,
                 .max = 2,
@@ -5313,6 +5311,22 @@ static struct menu_entry raw_video_menu[] =
                 .update = gyro_log_update,
                 .help  = "Experimental: records the body's gyro in each clip, to stabilise in post.",
                 .help2 = "About 24 KB/s. Turn lens IS off for shots you will stabilise.",
+            },
+            {
+                .name = "Card Spanning",
+                .priv = &card_spanning,
+                .max = 1,
+                .help  = "Span video file over SD + CF cards.",
+                .help2 = "Can increase write speed.",
+            },
+            {
+                .name = "If aspect too tall",
+                .priv = &aspect_fit_width,
+                .max = 1,
+                .choices = CHOICES("Clamp height", "Shrink width"),
+                .help  = "Shrink width: the ratio is honoured, the frame gets narrower.",
+                .help2 = "Clamp height: keep the width, silently record a wider ratio.",
+                .advanced = 1,
             },
             {
                 .name = "Preview",
@@ -5325,13 +5339,7 @@ static struct menu_entry raw_video_menu[] =
                          "Slow (not real-time) and low-resolution, but has correct framing.\n"
                          "Freeze LiveView for more speed; uses 'Framing' preview if Global Draw ON.\n",
                 .depends_on = DEP_GLOBAL_DRAW,
-            },
-            {
-                .name = "Card Spanning",
-                .priv = &card_spanning,
-                .max = 1,
-                .help  = "Span video file over SD + CF cards.",
-                .help2 = "Can increase write speed.",
+                .advanced = 1,
             },
             {
                 .name = "Digital dolly",
@@ -5339,15 +5347,6 @@ static struct menu_entry raw_video_menu[] =
                 .max = 1,
                 .help = "Smooth panning of the recording window (software dolly).",
                 .help2 = "Use arrow keys (joystick) to move the window.",
-                .advanced = 1,
-            },
-            {
-                .name   = "H.264 proxy",
-                .priv   = &h264_proxy_menu,
-                .max    = 1,
-                .update = h264_proxy_update,
-                .help   = "Record a H.264 video at the same time.",
-                .help2  = "For best performance, record H.264 on SD and RAW on CF.",
                 .advanced = 1,
             },
             {
@@ -5896,6 +5895,9 @@ static unsigned int raw_rec_init()
     if (h264_proxy_menu < 0)  h264_proxy_menu  = cam_6d2 ? 1 : 0;
     if (sync_beep < 0)        sync_beep        = cam_6d2 ? 0 : 1;
     if (aspect_fit_width < 0) aspect_fit_width = cam_6d2 ? 1 : 0;
+    __config_h264_proxy_menu.default_value = cam_6d2 ? 1 : 0;
+    __config_sync_beep.default_value = cam_6d2 ? 0 : 1;
+    __config_aspect_fit_width.default_value = cam_6d2 ? 1 : 0;
 
     if (!cam_6d2)
     {
