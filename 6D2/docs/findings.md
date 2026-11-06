@@ -1,8 +1,8 @@
 # DIGIC 7 findings from the EOS 6D Mark II port
 
 A summary for Magic Lantern developers of what the 6D Mark II port (firmware 1.1.1) found, fixed and
-added that is not in upstream `magiclantern_simplified` (`dev` at `142472e95`, checked 21 October
-2026). It covers fixes that matter to every camera, rules for DIGIC 6/7/8 work, capabilities new on
+added that is not in upstream `magiclantern_simplified` (`dev` at `142472e95`, merged into this port's
+`main` on 6 November 2026). It covers fixes that matter to every camera, rules for DIGIC 6/7/8 work, capabilities new on
 this processor, hardware facts, and negative results that should save someone the time.
 
 Everything here was tested on one camera over ten weeks unless it says otherwise. The full history
@@ -50,6 +50,11 @@ Also: the lua module did not link with current arm-none-eabi newlib.
 
 - **Q inside a submenu closes it** (`menu_toggle_submenu`), on every body. A `.children` inside a child can't be
   reached, though it builds and draws normally. Check that a nested setting really opens.
+- **Redraws skip a running take**, so an overlay turned off during one stays on screen until something clears its own pixels
+  (`clrscr_mirror`).
+- **Format card, keep ML** keeps `ML/FONTS`, `ML/MODULES`, `ML/SETTINGS` and files directly in `ML/`, not `ML/CROPMKS` or the
+  rest. Don't let anything essential depend on those folders: `find_cropmarks` returned before marking cropmarks ready, which
+  stopped every recorded-area guide too.
 - **`.advanced` does not always hide an entry.** One whose value differs from its config default stays visible
   (`config_var_was_changed`), so an entry with a "not set" default resolved at init needs its `default_value` updated.
 Learned on the 6D2's RGBA compositor; probably true of every `FEATURE_VRAM_RGBA` body.
@@ -133,6 +138,10 @@ x5/x10 zoom.)
 - **Gain is partial:** ISO 100 / recovery 800 differ by **3.3× (1.7 EV)**, not 8×, on unclipped
   pixels; base 1600 / recovery 800 gives the full 1 EV. The per-line field covers only part of
   Canon's ISO gain, so ML's "DR gained" estimate is optimistic on this body.
+
+**On lossless crop takes** (v130 and v131), the line pairs hold on every frame: bright rows over dark 3.18 to 3.32, or 1.7 EV, at ISO 100
+with recovery as set, and the gain is flat with brightness (3.25 to 3.34 from 16 DN to about 1000 DN over black, per colour). Which rows are bright depends on
+where the recording window starts, so measure the phase per clip. The `DISO` block's `isoValue` read 3 on these and did not give the gap.
 
 ### Crop mode from Canon's own zoom
 
@@ -415,6 +424,11 @@ at 72% to 81%. Noise matters as much: 1920x804 at ISO 6400 needs about 66 MB/s, 
 encodes missing the callback. `M05-1726` (2048x1152) reset at the first frame with no crash log. `M05-1732` (2048x1024) took 1233 ms over its
 first write, with 8 gyro overruns, then asserted at `EvfState.c:660` and `:584` (`TryPostEvent` failing, so Evf's queue is likely full; not disassembled).
 
+**A tighter ratio is what makes full width work at 59.94p.** Aspect ratio only chooses which rows are stored: the sensor still reads its
+whole window on every frame, so readout and frame timing do not change. Fewer rows do lower the data, the encode time and the skew. `M06-1254`,
+2048x856 at 59.94p (1.75 MP), recorded 2563 frames. 1920x960 (1.84 MP) has worked and 2048x1024 (2.10 MP) has not. In crop mode rows are the limit,
+so a tighter ratio allows more width: 2136x894 at 2.39:1, 3072x614 at 5:1 (encode 11.1 ms of a 33.4 ms frame).
+
 **Why the audio isn't inside the clip:** MLV has blocks for it (`WAVI`, `AUDF`), but `mlv_snd` needs ASIF,
 which DIGIC 7 doesn't expose, so the 6D2's scratch audio comes from Canon's own WAV recorder.
 
@@ -538,8 +552,11 @@ From a blind code review of the port and from testing:
 - `CONFIG_MMU_EXTRA_PAGES` allocates with interrupts off (above).
 - A REC press during the bit-depth zoom bounce can start a take mid-bounce.
 - Peaking needs one ML menu open/close after power-on and after a depth change.
-- Upstream's `PROP_LV_ACTION` whitelist entry for issue 307 and this port's mlv_lite fix have not
-  been tested together on the camera.
+- Upstream's `PROP_LV_ACTION` whitelist entry for issue 307 and this port's mlv_lite fix are both in `main` since the merge
+  (v132). They have not run together on the camera.
+- **Crashes after crop-mode takes.** Five on v130, each 10 to 35 s after the take ended, all `LvJob.c:203` then
+  `EvfState.c:660/584`. Changing many settings on v131 did not bring them back. Cause unknown.
+- **Exposure steps in two Dual ISO takes** (`M06-1305`, `M06-1358`): about a third of a stop within one frame. Cause unknown.
 - Firmware 1.2.0: 1.1.1 plus insertions (stubs move by a constant per ROM region); boots in QEMU,
   never run on a camera, and has no `ML-SETUP.FIR`.
 - **Lossless:**

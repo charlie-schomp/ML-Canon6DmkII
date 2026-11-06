@@ -1,6 +1,6 @@
 # Magic Lantern for the Canon EOS 6D Mark II — development log
 
-**Build v131 · 6 November 2026 · firmware 1.1.1 · base `magiclantern_simplified` @ `40c0a133b`**
+**Build v132 · 6 November 2026 · firmware 1.1.1 · base `magiclantern_simplified` `dev` @ `142472e95` (merged in v132; the port began at `40c0a133b`)**
 
 The 6D Mark II is a DIGIC 7 body. The official ML build for it boots and shows the menu, and not
 much else. This port adds raw video at 10/12/14-bit, lossless raw video at 14 and 12-bit, an in-camera H.264
@@ -14,7 +14,7 @@ hard way are collected in the appendices.
 
 ---
 
-## Status at v131
+## Status at v132
 
 | | |
 |---|---|
@@ -617,8 +617,31 @@ their bar.
 - **False colour left on screen when turned off during a take.** Redraws stay away from a running recording, so
   nothing cleared it. It now clears itself.
 - **Field round on v130.** 2048×856 at 59.94p recorded 2,563 frames. Dual ISO in crop mode at 3072×614 recorded
-  1.7 EV line pairs with every frame intact. Thirteen crash logs, all `LvJob.c:203` then `EvfState.c:660/584`, each 10 to 35 s
-  after a crop-mode take ended, so none lost a take. Cause not found; it needs the recording trace around menu changes.
+  1.7 EV line pairs with every frame intact. Thirteen crash logs from five crashes, all `LvJob.c:203` then
+  `EvfState.c:660/584`, each 10 to 35 s after a crop-mode take ended, so none lost a take.
+
+**On the camera, v131:**
+
+- False colour clears when turned off mid-take: confirmed.
+- Changing many settings, in and out of crop mode, gave no crash and no new crash log. The cause of the five crashes was not
+  found and nothing in this build targets it, so they are open, not fixed.
+- Frame guides were still missing, with `crop.mode = 0` and Preview on Framing both saved, either of which hides them.
+  A guide with both set correctly has not been seen yet.
+- Dual ISO, five more takes: 2136×894 and 3072×614, bright rows over dark 3.18 to 3.32 (1.7 EV) on every frame, none missing.
+  `M06-1305` and `M06-1358` hold abrupt steps of about a third of a stop within one frame, on a moving camera. Cause not known:
+  clips record exposure once, in the header. `M06-1306`, `M06-1359` and `M06-1360` are steady.
+- Clips from this round have no black edge rows or columns, at 2136×894, 3072×768, 3072×614 and 2048×856.
+
+### v132 · 6 November
+
+Upstream `dev` merged, 12 commits, to `142472e95`. One conflict, `modules/Makefile`: upstream renamed `sd_uhs` to `sd_clock`.
+Most of it is other bodies. What reaches this camera:
+
+- **`PROP_LV_ACTION` may now be written on the 6D2** (upstream's fix for two takes in a row, issue 307). This port had already
+  fixed that hang inside mlv_lite. The two have not run together on the camera.
+- Modules are no longer shut down on a panic (`tasks.c`), and the clock functions gained `void` prototypes.
+
+It builds and boots in QEMU. **Not yet run on the camera.**
 
 ---
 
