@@ -502,6 +502,13 @@ each, and a 2048×856 take ran without stopping. The hold must count *usable* sl
 carries as many reserved slots, which only become usable as compressed frames shrink, so a test
 against the total held nothing at 23.976 (v116 wrote single frames there; fixed in v117).
 
+**Highlights and exposure.** The white level is right: clips show a hard pile-up at the top of the
+range at every ISO checked, from 100 to 1600. Green clips first; in `M06-1605`, where green has
+clipped, red is at about 72% of its range and blue about 48%. The raw histogram and waveform span
+12 stops on a log scale, so 50% is 6 stops under clipping and 75% is 3 under. The yellow marker is at
+3.25 stops under. The clip chosen as the best-looking exposure has its median 3.6 stops under clipping,
+at about 70% on that scale, with p90 at 2.0 and p99 at 0.2. Exposure tests on the camera found the marker accurate.
+
 **Cards.** The SDR104 path reads ~100 MB/s and Canon already runs its fastest divider; the limit is
 the card's write speed. A SanDisk Extreme PRO 64 GB writes ~83 MB/s new, **~62–65 MB/s after one full
 fill** (a camera format does not restore it). Sustained recording needs the card's *slowest*
