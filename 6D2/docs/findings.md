@@ -55,6 +55,8 @@ Also: the lua module did not link with current arm-none-eabi newlib.
 - **Format card, keep ML** keeps `ML/FONTS`, `ML/MODULES`, `ML/SETTINGS` and files directly in `ML/`, not `ML/CROPMKS` or the
   rest. Don't let anything essential depend on those folders: `find_cropmarks` returned before marking cropmarks ready, which
   stopped every recorded-area guide too.
+- **ML's raw waveform is logarithmic** (12 EV). A level 5.7 stops under clipping reads 52%. Judge linear exposure in stops under
+  clipping, not as a share of the graph.
 - **`.advanced` does not always hide an entry.** One whose value differs from its config default stays visible
   (`config_var_was_changed`), so an entry with a "not set" default resolved at init needs its `default_value` updated.
 Learned on the 6D2's RGBA compositor; probably true of every `FEATURE_VRAM_RGBA` body.
@@ -552,11 +554,10 @@ From a blind code review of the port and from testing:
 - `CONFIG_MMU_EXTRA_PAGES` allocates with interrupts off (above).
 - A REC press during the bit-depth zoom bounce can start a take mid-bounce.
 - Peaking needs one ML menu open/close after power-on and after a depth change.
-- Upstream's `PROP_LV_ACTION` whitelist entry for issue 307 and this port's mlv_lite fix are both in `main` since the merge
-  (v132). They have not run together on the camera.
+- Upstream's `PROP_LV_ACTION` whitelist entry for issue 307 is removed on the 6D2 (v133). Writing it would make `PauseLiveView()` at the end of a
+  take without the proxy really stop LiveView, a path this body has not run. This port's reallocation fix handles the second take.
 - **Crashes after crop-mode takes.** Five on v130, each 10 to 35 s after the take ended, all `LvJob.c:203` then
   `EvfState.c:660/584`. Changing many settings on v131 did not bring them back. Cause unknown.
-- **Exposure steps in two Dual ISO takes** (`M06-1305`, `M06-1358`): about a third of a stop within one frame. Cause unknown.
 - Firmware 1.2.0: 1.1.1 plus insertions (stubs move by a constant per ROM region); boots in QEMU,
   never run on a camera, and has no `ML-SETUP.FIR`.
 - **Lossless:**

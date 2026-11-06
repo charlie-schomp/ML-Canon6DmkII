@@ -1,6 +1,6 @@
 # Magic Lantern for the Canon EOS 6D Mark II — development log
 
-**Build v132 · 6 November 2026 · firmware 1.1.1 · base `magiclantern_simplified` `dev` @ `142472e95` (merged in v132; the port began at `40c0a133b`)**
+**Build v133 · 6 November 2026 · firmware 1.1.1 · base `magiclantern_simplified` `dev` @ `142472e95` (merged in v132; the port began at `40c0a133b`)**
 
 The 6D Mark II is a DIGIC 7 body. The official ML build for it boots and shows the menu, and not
 much else. This port adds raw video at 10/12/14-bit, lossless raw video at 14 and 12-bit, an in-camera H.264
@@ -14,7 +14,7 @@ hard way are collected in the appendices.
 
 ---
 
-## Status at v132
+## Status at v133
 
 | | |
 |---|---|
@@ -628,8 +628,8 @@ their bar.
 - Frame guides were still missing, with `crop.mode = 0` and Preview on Framing both saved, either of which hides them.
   A guide with both set correctly has not been seen yet.
 - Dual ISO, five more takes: 2136×894 and 3072×614, bright rows over dark 3.18 to 3.32 (1.7 EV) on every frame, none missing.
-  `M06-1305` and `M06-1358` hold abrupt steps of about a third of a stop within one frame. Cause not known, and the picture also moves in those takes:
-  clips record exposure once, in the header. `M06-1306`, `M06-1359` and `M06-1360` are steady.
+  `M06-1305` and `M06-1358` hold steps of about a third of a stop, from the exposure being changed during those takes. The
+  others are steady.
 - Clips from this round have no black edge rows or columns, at 2136×894, 3072×768, 3072×614 and 2048×856.
 
 ### v132 · 6 November
@@ -642,6 +642,17 @@ Most of it is other bodies. What reaches this camera:
 - Modules are no longer shut down on a panic (`tasks.c`), and the clock functions gained `void` prototypes.
 
 It builds and boots in QEMU. **Not yet run on the camera.**
+
+### v133 · 6 November
+
+**One second-take fix, not two.** `PROP_LV_ACTION` is out of the 6D2's write list again. This port's fix is at the cause (the
+buffer reallocation) and has recorded many takes in a row. Upstream's entry is not a neutral addition here: `mlv_lite` calls
+`PauseLiveView()` at the end of a take without the proxy, and until now that write was refused, so LiveView kept running.
+Allowing it would stop LiveView at the end of every such take, which this body has never done. 200D and 7D2 keep upstream's entry.
+
+**Why footage looked fine on the waveform and dark in post.** The raw waveform is logarithmic and the footage is not. It plots 12 stops, so a level 5.7
+stops under clipping (the median of `M06-1435` and `-1438`, ISO 100, 1/62, f/4.9) sits at 52% of the graph. In a linear decode, those frames are dark. MLV Drive
+passes the levels through unchanged.
 
 ---
 
