@@ -137,7 +137,7 @@ x5/x10 zoom.)
 ### Crop mode from Canon's own zoom
 
 There are no readout-window registers ML can drive here, but Canon's 5×/10× LiveView magnification
-**is** a 1:1 sensor window (3264×942 raw, **3164×926 active**). Holding `PROP_LV_DISPSIZE` = 5 while
+**is** a 1:1 sensor window (3264×942 raw, **3164×896 active**: rows 44 to 939). Holding `PROP_LV_DISPSIZE` = 5 while
 RAW video is on gives a stable crop mode up to 3072 wide. It needs `PROP_LV_DISPSIZE` in the write
 whitelist, and it is **always 29.97 fps**, whatever the movie mode. Lens AF (any AF method) makes
 Canon refuse the zoom.
@@ -433,7 +433,7 @@ The 1:1 readout is paced on the sensor side.
 **2047 / 512 / 128** for 14 / 12 / 10-bit.
 
 **Readouts.** 1080p: 2128 wide with **2080 active columns** (2048-wide recording is clean to all four
-edges). Zoom: 3264×942, 3164×926 active. Judge the readout from the DMAC width, not
+edges). 1080p's picture starts at row 28 and runs to the last row, so 1180 rows. Zoom: 3264×942, 3164×896 active. Judge the readout from the DMAC width, not
 `PROP_LV_DISPSIZE`, which flips before Canon rebuilds.
 
 **ISO in video** (lens-cap dark frames, 14-bit):

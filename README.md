@@ -3,6 +3,8 @@
 Raw video, focus peaking and the full set of monitoring tools for the **Canon EOS 6D Mark II**,
 built on [Magic Lantern](https://www.magiclantern.fm/).
 
+Development happens in [our fork of magiclantern_simplified](https://github.com/charlie-schomp/magiclantern_simplified), branch `main`. Its full history is there, so GitHub can compare it with upstream.
+
 > [!WARNING]
 > This is experimental, unofficial software that runs on your camera. It has been used on a real
 > 6D Mark II for weeks without harm, but it can crash, freeze or misbehave, and it comes with no

@@ -1,6 +1,6 @@
 # Magic Lantern for the Canon EOS 6D Mark II — development log
 
-**Build v129 · 6 November 2026 · firmware 1.1.1 · base `magiclantern_simplified` @ `40c0a133b`**
+**Build v131 · 6 November 2026 · firmware 1.1.1 · base `magiclantern_simplified` @ `40c0a133b`**
 
 The 6D Mark II is a DIGIC 7 body. The official ML build for it boots and shows the menu, and not
 much else. This port adds raw video at 10/12/14-bit, lossless raw video at 14 and 12-bit, an in-camera H.264
@@ -14,7 +14,7 @@ hard way are collected in the appendices.
 
 ---
 
-## Status at v129
+## Status at v131
 
 | | |
 |---|---|
@@ -132,7 +132,7 @@ into a working list every frame, so a patched row is live on the next frame.
 - **3× binned 1080p:** the patched row reaches the sensor and nothing changes. A sensor behaviour,
   so `dual_iso` stays inactive there.
 
-**Crop mode**: mlv_lite holds Canon's 5× zoom, a real 1:1 window (3164×926 active), always
+**Crop mode**: mlv_lite holds Canon's 5× zoom, a real 1:1 window (3164×926 active, corrected to 3164×896 in v130), always
 **29.97 fps** whatever the movie mode. Needed `PROP_LV_DISPSIZE` write access. The RAW submenu was
 patched *by index*, so inserting an entry silently capped the aspect list; lookups now use `.priv`.
 
@@ -599,6 +599,26 @@ The menu layout is confirmed on the camera. Clip info's slate and SLATE.CSV are 
 New defaults: Data format is **12-bit lossless**, because 14-bit lossless at 59.94p needs more than the card sustains,
 and every **Top Button C-FN** entry is OFF. Settings files store only values that differ from the default, so a
 camera left on the old defaults (14-bit lossless, AF as focus peaking, DRIVE as false colour) takes the new ones.
+
+### v130 · 6 November
+
+**The black bar at the top of crop clips.** The code took the picture to start at row 16 in both readouts. Measured,
+it starts at **row 44 of 942 in the 1:1 window** (every crop clip, whatever its size) and **row 28 of 1208 in
+1080p** (a full grabbed frame). Crop clips carried 26 to 28 black rows; 1080p frames were tall enough to show it only
+above about 1160 rows. Usable height is now 896 in crop mode (rows 44 to 939, the last rows seen with picture) and
+1180 in 1080p. Peaking and the frame guides stay on the reference they were aligned on. Clips recorded earlier keep
+their bar.
+
+### v131 · 6 November
+
+- **Frame guides and "ML/CROPMKS dir missing".** Format card, keep ML keeps `FONTS`, `MODULES` and `SETTINGS`, not
+  `CROPMKS`. The search for cropmark files then gave up before marking cropmarks ready, so guides never drew. This
+  build has no bitmap cropmarks, so it no longer looks for them. Guides stay off in crop mode and in ML's framing preview, by design.
+- **False colour left on screen when turned off during a take.** Redraws stay away from a running recording, so
+  nothing cleared it. It now clears itself.
+- **Field round on v130.** 2048×856 at 59.94p recorded 2,563 frames. Dual ISO in crop mode at 3072×614 recorded
+  1.7 EV line pairs with every frame intact. Thirteen crash logs, all `LvJob.c:203` then `EvfState.c:660/584`, each 10 to 35 s
+  after a crop-mode take ended, so none lost a take. Cause not found; it needs the recording trace around menu changes.
 
 ---
 
