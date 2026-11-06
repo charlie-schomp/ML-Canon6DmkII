@@ -99,11 +99,12 @@ def read_clip(path):
 
 
 def readout_ms(info):
-    """Recorded rows x line time, the line time from timer B (lines per frame).
-    None if the clip has no usable timing."""
+    """Recorded rows x line time. In the binned 1080p readout two rows take one timer B tick
+    (mains flicker: 10.59 us per row at 23.976 and 59.94p, against a 21.17 us tick); the crop
+    readout is unmeasured. None if the clip has no usable timing."""
     if not info["timer_b"] or not info["fps_x1000"] or not info["res_y"]:
         return None
-    line_ms = (1e6 / info["fps_x1000"]) / info["timer_b"]
+    line_ms = (1e6 / info["fps_x1000"]) / info["timer_b"] / 2
     return info["res_y"] * line_ms
 
 
