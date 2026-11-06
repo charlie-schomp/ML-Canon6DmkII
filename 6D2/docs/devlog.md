@@ -1,6 +1,6 @@
 # Magic Lantern for the Canon EOS 6D Mark II — development log
 
-**Build v133 · 6 November 2026 · firmware 1.1.1 · base `magiclantern_simplified` `dev` @ `142472e95` (merged in v132; the port began at `40c0a133b`)**
+**Build v134 · 6 November 2026 · firmware 1.1.1 · base `magiclantern_simplified` `dev` @ `142472e95` (merged in v132; the port began at `40c0a133b`)**
 
 The 6D Mark II is a DIGIC 7 body. The official ML build for it boots and shows the menu, and not
 much else. This port adds raw video at 10/12/14-bit, lossless raw video at 14 and 12-bit, an in-camera H.264
@@ -14,7 +14,7 @@ hard way are collected in the appendices.
 
 ---
 
-## Status at v133
+## Status at v134
 
 | | |
 |---|---|
@@ -652,8 +652,19 @@ Allowing it would stop LiveView at the end of every such take, which this body h
 
 **Why footage looked fine on the waveform and dark in post.** The footage really is dark: the median of `M06-1435` and `-1438` (ISO 100, 1/62, f/4.9) is 5.7 stops
 under clipping, and MLV Drive passes the levels through unchanged. The tools were not reading raw. `can_use_raw_overlays()` is true only at 14-bit, so at 12-bit
-the waveform, histogram and false colour set to RAW silently use the preview picture, which has been through a tone curve. How far that reads from the
+the waveform, histogram and false colour set to RAW silently used the preview picture, which has been through a tone curve. How far that read from the
 raw levels has not been measured.
+
+### v134 · 6 November
+
+**Raw exposure tools at 12 and 10-bit.** Waveform, histogram, false colour, zebras and spotmeter now read raw at any depth while the camera is idle. The pixel readers return every
+depth on the 14-bit scale `raw_info` already uses, so the overlays did not change. During a take below 14-bit they still fall back to the preview, as before, to keep the recording's time.
+Checked off the camera: the readers give the same values at 12-bit as at 14-bit on a real grabbed frame. On the camera: RAW and Preview now differ, RAW looks the same at 14 and
+12-bit lossless, and the overlays are not sluggish.
+
+**The dark footage, measured again.** With most of the raw histogram at its middle to 65%, `M06-1529` to `-1531` (ISO 100, f/4.9, 1/48 and 1/62) have a green median 5.2 to 7.0 stops under clipping, which a
+plain Rec.709 display shows at 3 to 12%. The tools were right: the raw histogram and waveform are logarithmic, so their middle is 6 stops under clipping, where middle grey belongs at about 3 to 3.5.
+`-1530` and `-1531` had room for 3 more stops, with about 1% of green or less clipping.
 
 ---
 

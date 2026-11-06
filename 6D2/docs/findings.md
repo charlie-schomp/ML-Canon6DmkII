@@ -55,8 +55,9 @@ Also: the lua module did not link with current arm-none-eabi newlib.
 - **Format card, keep ML** keeps `ML/FONTS`, `ML/MODULES`, `ML/SETTINGS` and files directly in `ML/`, not `ML/CROPMKS` or the
   rest. Don't let anything essential depend on those folders: `find_cropmarks` returned before marking cropmarks ready, which
   stopped every recorded-area guide too.
-- **Raw overlays work only at 14-bit** (`can_use_raw_overlays`). Below that, a waveform, histogram or false colour set to RAW silently uses the preview
-  picture, so at 12-bit it says nothing about raw clipping or levels. At 14-bit the waveform and histogram are logarithmic: 12 EV over the full height.
+- **Upstream's raw overlays work only at 14-bit** (`can_use_raw_overlays`). Below that, a waveform, histogram or false colour set to RAW silently uses the preview
+  picture, with no warning. Here they read any depth at idle since v134, and keep that fallback during a take below 14-bit. The waveform and histogram are logarithmic: 12 EV
+  over the full height.
 - **`.advanced` does not always hide an entry.** One whose value differs from its config default stays visible
   (`config_var_was_changed`), so an entry with a "not set" default resolved at init needs its `default_value` updated.
 Learned on the 6D2's RGBA compositor; probably true of every `FEATURE_VRAM_RGBA` body.

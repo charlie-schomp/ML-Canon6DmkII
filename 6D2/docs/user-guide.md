@@ -96,9 +96,19 @@ slate or clap at the start of a take and sync on that rather than lining up the 
 
 ## Worth knowing before you shoot
 
-**Below 14-bit, the exposure tools don't read raw.** At 12-bit or 10-bit, including 12-bit lossless, the waveform, histogram and false colour show the preview
-picture even when set to RAW, so footage can look fine on them and come out dark in post. Check with a test clip until this is fixed. At 14-bit they do read raw, and the
-waveform spreads 12 stops evenly: the top is clipping, 75% is 3 stops under, 50% is 6 under.
+**Set exposure before you roll, and read the raw waveform in stops.** Set to RAW, the waveform, histogram and false colour read the sensor at any bit depth. Below 14-bit, they switch to
+the preview picture during a take, so check them before you press record. The histogram and waveform spread 12 stops evenly, so **their middle is not a mid-tone**: it is 6 stops under clipping. Put the bulk of the picture well to the right of it.
+
+| Raw histogram or waveform | Stops under clipping | Raw false colour | Plain Rec.709 in post | |
+|---|---|---|---|---|
+| 100% | 0 | magenta | 100% | clipped |
+| 92% | 1 | orange to yellow | 71% | bright highlights |
+| 83% | 2 | yellow to green | 49% | skin, bright subjects |
+| 71–75% | 3–3.5 | green | 27–33% | middle grey |
+| 58% | 5 | cyan | 13% | deep tones |
+| 50% | 6 | cyan to light blue | 7% | near the bottom in post |
+
+Grey is not a raw false colour. If you see it, false colour is on Preview (YUV), so set its Source to RAW.
 
 **Set the ISO you need — don't underexpose at 100 and lift in the grade.** This sensor is strongly
 ISO-variant: raising ISO costs only 0.14 EV of dynamic range per stop up to 3200, while shadow noise
