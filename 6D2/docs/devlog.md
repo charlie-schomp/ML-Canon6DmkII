@@ -1,6 +1,6 @@
 # Magic Lantern for the Canon EOS 6D Mark II — development log
 
-**Build v128 · 6 November 2026 · firmware 1.1.1 · base `magiclantern_simplified` @ `40c0a133b`**
+**Build v129 · 6 November 2026 · firmware 1.1.1 · base `magiclantern_simplified` @ `40c0a133b`**
 
 The 6D Mark II is a DIGIC 7 body. The official ML build for it boots and shows the menu, and not
 much else. This port adds raw video at 10/12/14-bit, lossless raw video at 14 and 12-bit, an in-camera H.264
@@ -14,7 +14,7 @@ hard way are collected in the appendices.
 
 ---
 
-## Status at v128
+## Status at v129
 
 | | |
 |---|---|
@@ -593,6 +593,12 @@ The menu layout is confirmed on the camera. Clip info's slate and SLATE.CSV are 
   default. If aspect too tall, the proxy and the sync beep are stored with a default of -1, meaning "not set", and
   are then given the body's real value, so they always counted as changed. The module now records that real value
   as the default.
+
+### v129 · 6 November
+
+New defaults: Data format is **12-bit lossless**, because 14-bit lossless at 59.94p needs more than the card sustains,
+and every **Top Button C-FN** entry is OFF. Settings files store only values that differ from the default, so a
+camera left on the old defaults (14-bit lossless, AF as focus peaking, DRIVE as false colour) takes the new ones.
 
 ---
 

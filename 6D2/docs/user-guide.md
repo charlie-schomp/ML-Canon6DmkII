@@ -32,7 +32,7 @@ changes.
 
 | | |
 |---|---|
-| RAW video | Movie → RAW video, the first entry (enable the `mlv_lite` module first). **Data format** 14 / 12 / 10-bit — 12-bit is lossless in practice and the default to use |
+| RAW video | Movie → RAW video, the first entry (enable the `mlv_lite` module first). **Data format** defaults to **12-bit lossless**. It also offers 14-bit lossless and uncompressed 14 / 12 / 10-bit |
 | Changing bit depth | Pick it, then **close the ML menu**: the view zooms in and out once and the entry reads `live`. The setting is saved and applies itself the same way at power-on and on switching to movie mode. Needs the lens on **MF** (Canon refuses the zoom with the lens on AF); with AF, Canon's MENU and back applies it instead |
 | Crop mode | Movie → RAW video → **Crop mode**, below Data format — holds Canon's 5x zoom: a 1:1 sensor window, 3160×926, always 29.97 fps. Lens on **MF**; switching the lens to MF (or closing the ML menu) brings it in |
 | Video dual ISO | enable `dual_iso`, turn on Expo → Dual ISO, and use RAW video → **Crop mode**: only the 1:1 readout alternates the line pairs (the binned 1080p readout applies one gain), and crop mode is also where the higher resolutions are, up to 3072 wide. The **Recovery ISO** is the second ISO: for the most range, Canon ISO 100 and Recovery 800–1600. On this body the line pairs differ by less than the ISO gap — measured 1.7 EV at 100 / 800 — so the gain is real but smaller than the menu's estimate. MLV App: Dual ISO **On**, pattern low-low-HIGH-HIGH |
@@ -43,7 +43,7 @@ changes.
 | Resolution / aspect | Movie → RAW video. 1080p goes up to **2048** wide (2080 active columns), crop mode up to 3072; each keeps its own pick. Aspect **1.90:1 (DCI)** gives 2048×1080. **If aspect too tall** (RAW video's Advanced section) = Shrink width (default) keeps the ratio; Clamp height keeps the width |
 | Flip screen | automatic — overlays follow Canon's image in all three screen positions |
 | H.264 proxy | Movie → RAW video → **H.264 proxy**, under Crop mode (on by default). Records Canon's H.264 next to every raw clip on the same card, for smooth review in Canon's player: `IMG_1234.MLV` pairs with `MVI_1234.MP4`. Canon movie size **1080 IPB 23.98**. Costs ~3.6 MB/s |
-| Top buttons | Movie → **Top Button C-FN** — in movie LiveView, **AF**, **ISO** and **DRIVE / metering / AF-point** (one setting: the camera reports the three identically) each toggle an overlay of your choice. Canon's own screen still flashes up; ISO stays adjustable with the dial until its screen closes. **AF works at standby only** - during a take Canon reports it exactly like the rear dial - so put the overlay you need while rolling (peaking) on **DRIVE**. The light button can't be used: the rear dial sends the same signal |
+| Top buttons | Movie → **Top Button C-FN**, all OFF by default — in movie LiveView, **AF**, **ISO** and **DRIVE / metering / AF-point** (one setting: the camera reports the three identically) each toggle an overlay of your choice. Canon's own screen still flashes up; ISO stays adjustable with the dial until its screen closes. **AF works at standby only** - during a take Canon reports it exactly like the rear dial - so put the overlay you need while rolling (peaking) on **DRIVE**. The light button can't be used: the rear dial sends the same signal |
 | Audio level meter | Movie → Scratch audio → **Level meter** — two bars in dBFS at the top left of LiveView while the WAV records: **top = level, bottom = peak** (what the camera's audio hardware reports — it has no separate left/right reading), with a 1.5 s hold tick, the values (`lvl … pk …`), the mic in use (int / ext) and **CLIP** in red. Keep peaks below about −6 dBFS. Hidden whenever a Canon or ML menu is open |
 | Shutter angle lock | Movie → **Shutter angle lock** OFF / 90 / 120 / 144 / **180** / 270 / 360° — keeps the shutter at that angle when the frame rate changes (1080p 23.976 ↔ crop mode 29.97, or a Canon movie size change): 180° is 1/50 at 23.976 (172.6°) and 1/60 at 29.97 (179.8°), the nearest speeds Canon offers. Needs Canon's movie exposure on **Manual**; never changes anything during a take; turning the shutter dial while it's on is undone |
 | Clip info | Movie → **Clip info**, ON, then press **Q** for **Camera**, **Reel**, **Scene**, **Shot** and **Take**. Take counts up after each clip and goes back to 1 when the scene or shot changes. RAW takes carry the slate in the MLV, which MLV Drive and MLV App read. MP4-only takes add a line to `SLATE.CSV` beside the clips, ready for Resolve's Import Metadata |
@@ -145,7 +145,7 @@ at ISO 100-400 (it shows as blotchy shadows when you lift them) and is hard to t
 
 ## Not possible on this body (yet)
 
-FPS override, 24p in crop mode (four rounds of experiments, always 29.97), lossless compression,
+FPS override, 24p in crop mode (four rounds of experiments, always 29.97),
 expo override, auto-ETTR, video dual ISO in 1080p, 4K / custom crop windows, `mlv_snd`, H.264
 bitrate control, a different audio source per channel, crop mode or a bit-depth switch with the
 lens on AF, a recorded-area guide in crop mode, separate DRIVE / metering / AF-point buttons.
