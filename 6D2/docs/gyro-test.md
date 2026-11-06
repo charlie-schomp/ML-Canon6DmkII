@@ -1,6 +1,6 @@
 # Gyro log: the camera tests
 
-What `Movie > RAW video > Gyro log` still has to prove. Everything runs from ordinary takes; no
+What `Movie > RAW video > Gyro log (experimental)` still has to prove. Everything runs from ordinary takes; no
 prompts to follow and no timing to hit. Mount the card afterwards and the analysis comes from the
 clips.
 

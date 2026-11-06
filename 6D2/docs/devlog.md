@@ -1,11 +1,11 @@
 # Magic Lantern for the Canon EOS 6D Mark II — development log
 
-**Build v91 · 26 October 2026 · firmware 1.1.1 · base `magiclantern_simplified` @ `40c0a133b`**
+**Build v126 · 6 November 2026 · firmware 1.1.1 · base `magiclantern_simplified` @ `40c0a133b`**
 
 The 6D Mark II is a DIGIC 7 body. The official ML build for it boots and shows the menu, and not
-much else. This port adds raw video at 10/12/14-bit with an in-camera H.264 proxy, the full
-LiveView overlay set, scratch audio with a level meter, video dual ISO in the 1:1 readout, top-button overlay toggles
-and *Format card, keep ML*. Everything below was tested on one camera over seven weeks unless it
+much else. This port adds raw video at 10/12/14-bit, lossless raw video at 14 and 12-bit, an in-camera H.264
+proxy, a gyro log for stabilising in post, the full LiveView overlay set, scratch audio with a level meter, video dual ISO in the 1:1 readout, top-button overlay toggles
+and *Format card, keep ML*. Everything below was tested on one camera over ten weeks unless it
 says otherwise.
 
 This log is in strict build order. Findings that a later build overturned are marked
@@ -14,12 +14,13 @@ hard way are collected in the appendices.
 
 ---
 
-## Status at v91
+## Status at v126
 
 | | |
 |---|---|
-| **Working** | Raw video (MLV) 14/12/10-bit · 1080p up to 2048 wide · 1:1 crop mode up to 3072×926 · **RAW + H.264 proxy on one card** · scratch WAV with clip-named files and a level meter · video dual ISO (crop readout) · focus peaking, zebras, false colour, waveform, histogram, vectorscope, spotmeter, magic zoom (YUV and raw sources) · recorded-area frame guides · flip-screen overlays in all three positions · top buttons (AF, ISO, DRIVE/metering/AF-point) as overlay toggles · shutter angle lock · **Format card, keep ML** · clean HDMI · shutter angle · photo dual ISO · `mlv_play` (10/12/14-bit, slow) |
-| **Not possible so far** | FPS override · 24p in the crop readout · lossless compression · 4K / custom crop windows · expo override · video dual ISO in 1080p · ML audio capture (`mlv_snd`) · H.264 bitrate control · telling DRIVE, metering and the AF-point button apart (the MPU sends identical messages) |
+| **Working** | Raw video (MLV) 14/12/10-bit · **14 and 12-bit lossless at 23.976 and 59.94p, and in crop mode** · gyro log inside the clip (experimental) · clip slate · card time left and temperature warning in the recording status · 1080p up to 2048 wide · 1:1 crop mode up to 3072×926 · **RAW + H.264 proxy on one card** · scratch WAV with clip-named files and a level meter · video dual ISO (crop readout) · focus peaking, zebras, false colour, waveform, histogram, vectorscope, spotmeter, magic zoom (YUV and raw sources) · recorded-area frame guides · flip-screen overlays in all three positions · top buttons (AF, ISO, DRIVE/metering/AF-point) as overlay toggles · shutter angle lock · **Format card, keep ML** · clean HDMI · shutter angle · photo dual ISO · `mlv_play` (10/12/14-bit, slow) |
+| **Not possible so far** | FPS override · 24p in the crop readout · 4K / custom crop windows · expo override · video dual ISO in 1080p · ML audio capture (`mlv_snd`) · H.264 bitrate control · telling DRIVE, metering and the AF-point button apart (the MPU sends identical messages) |
+| **Known limit** | 59.94p above 1920×960 fails: the encoder needs more than a frame's time |
 | **Firmware 1.2.0** | Source kept in step; last booted in QEMU at v83; not shipped |
 
 ---
@@ -471,6 +472,113 @@ camera left off in a 21 °C (70 °F) room read 22–23 °C at power-on, so raw �
 
 ---
 
+## Part 9 — Saved settings and the top buttons (28–29 October)
+
+The first v91 field round: hand claps put the scratch audio within −12 to +10 ms of the picture with
+latency 0, so that constant stays 0 for now.
+
+- **v92** — a 14-bit take after a power cycle. Upstream's `raw_rec_init` set `output_format = 0` on
+  every non-DIGIC-5 body, after the config load, so a saved 12 or 10-bit was lost at each boot. Now
+  only a hidden lossless value falls back to 14-bit. Confirmed on the camera. The same reset affects
+  every DIGIC 4/6/7/8 body.
+- **v93** — the depth went live only after a menu close. The apply at power-on fired while Canon still
+  ignores zoom requests and used up its one try; it now waits 2 s after LiveView and raw come up, and
+  retries up to three times.
+- **v94** — top buttons missed presses. Canon's update arrives up to 90 ms after the press, past the
+  60 ms window, and unrelated updates used up the press. The window is now 250 ms, and only an update
+  that matches a button uses it. The AF button works only at standby.
+
+---
+
+## Part 10 — Lossless raw video (29 October – 2 November)
+
+Canon's movie path has no lossless encoder that ML can reach, but its CR2 path does. The
+[findings](findings.md) have the full recipe, with addresses.
+
+- **v95–v96** — probes of the CR2 encoder path: the configure request, JpCore setup, DMA calls.
+- **v97–v101** — ML drives the encoder on a grabbed LiveView frame: without the photo step, with
+  buffers from SRM and then the shoot pool at exact sizes, and with ML's Huffman tables shaped the way
+  Canon wants them. Trial and error on the DEGEEN block: a zero clip zeroes the frame, and the photo's
+  block shifts every pixel by one.
+- **v102** — **bit-exact**, with an identity DEGEEN block.
+- **v103–v106** — the same encode beside a running LiveView. Each encode turned the preview green, and
+  restoring every register it changed crashed the camera (`LvJob.c:203`).
+- **v107 on (1 November)** — a 6D2 backend in `modules/silent/lossless.c` behind the existing
+  lossless API, so mlv_lite's DIGIC 5 pipeline runs on top of it unchanged. It records 14 and 12-bit LJ92
+  that MLV Drive decodes.
+- **To v111 (2 November)** — speed and the preview:
+  - Polling with `msleep(1)` made a 9.5 ms encode cost 29 ms, and no 59.94p take lasted past 69 frames.
+    An event-driven wait brought it to 9.3–11 ms.
+  - The green turned out to be the encoder's share-memory routing. **The encoder does not need it:**
+    opened with an element count of 0, it leaves LiveView alone and stays bit-exact.
+  - A strict decoder passed all 5,520 frames of nine test clips at 14 and 12-bit. Noise matches
+    uncompressed footage of the same scene (ratio 0.996 and 1.002).
+- **v112–v118** — lossless frames written one by one stopped takes that uncompressed could hold.
+  Batching writes to about 20 MB gives 67 MB/s for 31 s at 2048×1152. Crop-mode lossless recorded for
+  the first time: 1640×922 at 29.97, 931 frames, encode 9.3 ms, writes 69 MB/s. The recording status
+  also gained the card time left.
+- **v119** — clip info (a slate in each MLV), and a temperature warning in the recording status.
+
+---
+
+## Part 11 — The gyro (4–5 November)
+
+Canon's specifications list no gyro, but its electronic IS driver keeps one in plain RAM. The
+[findings](findings.md) have the addresses and every measurement.
+
+- **Before v122** — d7probe's read-only Gyro test: pitch, yaw and roll at 4 kHz, and they keep working
+  during a lossless take.
+- **v122** — the log: 1 kHz samples inside the clip, in `GYRI` and `GYRO` blocks, about 24 KB/s.
+  `gyro_export.py` writes Gyroflow logs from them. The first attempts never recorded: it was never
+  turned on, then it reset the camera at the first frame.
+- **v123** — `SetHPTimerNextTick` calls the overrun callback from inside the call, so a timer that is its
+  own overrun callback nests on the interrupt stack. Fixed, with a timer-only test mode. Timer only ran
+  572 frames clean, but with the log on, takes hung at about 150 frames.
+- **v124** — padding to 512 bytes was a wrong guess at that hang. This build did cut a second problem:
+  a boot's first 59.94p take had reset the camera 9 of 9 times (`LvJob.c:203`, in Evf). With the encoder's
+  buffer allocated before the take and its poll timer no longer nesting, 6 of 6 boots have passed on
+  v124 and v125. Which change did it is still open.
+- **v125** — the hang was a loop: the writer kept going until the ring was empty while the timer kept
+  filling it, so frames stopped (`M04-1409`: 23 frames, 11,007 GYRO blocks). It now writes what was there
+  when called. **Passed:** 59.94p, 4,146 frames with none dropped, 69,748 samples with none lost.
+
+**Measured on v125 (5 November):**
+
+- **Readout:** 10.59 µs per row in binned 1080p at 23.976 and 59.94p, half the timer B tick, from mains
+  flicker on a plain wall. That makes 7.63 ms for 720 rows, 8.52 for 804, 12.2 for 1152. An earlier 15 ms
+  was wrong by a factor of two, and `gyro_export.py` now uses the measured figure.
+- **Scale:** pitch 83–89 LSB per deg/s, yaw a looser 62–86, roll unresolved. The takes were dark.
+- **Canon's digital IS:** no measurable effect on the gyro words or the raw picture.
+- **Write speed:** about 74 MB/s on an empty card, falling 0.16 MB/s per 1% of the card used.
+- **Limit:** 59.94p above 1920×960 fails. Encodes reach 18.4 ms of a 16.68 ms frame.
+
+Still to do: three-axis spins for the scale, one bright take for roll, and a first Gyroflow trial.
+
+---
+
+## Part 12 — A menu pass (6 November)
+
+### v126 · 6 November
+
+Nothing about recording changed except where the slate is kept. Not yet run on the camera; it builds and
+boots in QEMU.
+
+- **Clip info could never be set.** Its Camera, Reel, Scene, Shot and Take were children of a child: Q inside a
+  submenu closes it, so they were unreachable and every slate read camera A, reel 1, scene 1, take 1. It is now on
+  the main Movie menu and moved from mlv_lite into the core, so it works with RAW off.
+- **Slates for every take.** A RAW take keeps its slate in the MLV. Canon's MP4 has no room for one, so an
+  MP4-only take adds a line to `SLATE.CSV` beside the clips, with Resolve's column names. Take counts up either way.
+- **Movie tab:** RAW video, Clip info, Shutter angle lock (from Expo), Top Button C-FN (from Prefs,
+  renamed), then the rest, with MOV/MP4 time limit last.
+- **RAW video:** Crop mode below Data format, Pre-record and Rec trigger above Playback, Gyro log marked
+  experimental.
+- **Sync beep** moved to Scratch audio: it lands on that track, and that is what it is for.
+- **Temperature warning** moved to Prefs.
+- **Flip-screen overlays** removed from the menu: Canon mirrors in position 1 only, as confirmed at v32
+  and v79, so ML now just does that. A setting saved as off no longer applies.
+
+---
+
 ## Appendix A — Measurements
 
 ### ISO response in video mode
@@ -546,6 +654,7 @@ Narrower widths are centre crops of the readout, not downscales.
 
 ## Appendix B — DIGIC 7 rules learned the hard way
 
+- **Q inside a submenu closes it.** Children of a child are unreachable unless something opens them.
 1. **Canon never clears ML's layer.** Every transition that leaves ML content on screen needs an
    explicit `redraw()` / `clrscr()` — but never a full clear while recording (Canon ERRs).
 2. **Anything that draws in LiveView is gated on `liveview_display_idle()`**, not `lv`.
@@ -581,12 +690,18 @@ Narrower widths are centre crops of the readout, not downscales.
 | Board temperature / Canon temperature status | `0x80030035` (MPU `03 38`) / `0x8004000F` |
 | MPU receive ring / index | `0x80d84` (80 pointers, message at +4) / `0x7c00` |
 | Card device for the boot flag | `sd_device` `0x20054` |
+| Gyro: clamped / filter-input words | `0xd9008664` / `0xd9008610` (pitch, yaw, roll at +0, +4, +8) |
+| Lossless encoder | see [findings](findings.md) |
 
 ---
 
 ## Appendix D — Known issues
 
 - Peaking needs one ML menu open/close after power-on and after a bit-depth change.
+- 59.94p above 1920×960 fails (resets or `EvfState.c` asserts). Nothing in the menu stops you choosing it.
+- **If too tall**, under Aspect ratio, cannot be reached: same cause as Clip info before v126. Its default, Shrink
+  width, applies.
+- Gyro scale is rough on yaw and unknown on roll; the exporter assumes 80 LSB per deg/s on all three.
 - Video dual ISO gains less than the ISO gap suggests (1.7 EV at 100 / 800).
 - The level meter shows level and peak, not left and right (the register has no per-channel
   reading).
