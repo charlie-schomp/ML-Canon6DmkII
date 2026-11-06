@@ -108,6 +108,12 @@ static void sort_cropmarks()
 
 static void find_cropmarks()
 {
+#ifdef FEATURE_CROPMARKS_RECORDED_AREA
+    /* no bitmaps to find, so no reason to need ML/CROPMKS: Format card, keep ML
+     * does not bring it back, and returning early below stopped every guide */
+    cropmarks_initialized = 1;
+    return;
+#endif
     struct fio_file file;
     struct fio_dirent * dirent = FIO_FindFirstEx( "ML/CROPMKS/", &file );
     if( IS_ERROR(dirent) )
