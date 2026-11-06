@@ -96,9 +96,9 @@ slate or clap at the start of a take and sync on that rather than lining up the 
 
 ## Worth knowing before you shoot
 
-**Read the raw waveform in stops, not percent.** Its 12 stops are spread evenly, so each stop is about 8% of its height: the top is clipping, 75%
-is 3 stops under, 50% is 6 under. Footage that fills the graph to 50–75% looks fine on the camera and dark in post. Middle grey belongs about 3 to 3.5 stops under clipping, so keep what
-matters near 70–75% and highlights near the top.
+**Below 14-bit, the exposure tools don't read raw.** At 12-bit or 10-bit, including 12-bit lossless, the waveform, histogram and false colour show the preview
+picture even when set to RAW, so footage can look fine on them and come out dark in post. Check with a test clip until this is fixed. At 14-bit they do read raw, and the
+waveform spreads 12 stops evenly: the top is clipping, 75% is 3 stops under, 50% is 6 under.
 
 **Set the ISO you need — don't underexpose at 100 and lift in the grade.** This sensor is strongly
 ISO-variant: raising ISO costs only 0.14 EV of dynamic range per stop up to 3200, while shadow noise

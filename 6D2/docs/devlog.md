@@ -650,9 +650,10 @@ buffer reallocation) and has recorded many takes in a row. Upstream's entry is n
 `PauseLiveView()` at the end of a take without the proxy, and until now that write was refused, so LiveView kept running.
 Allowing it would stop LiveView at the end of every such take, which this body has never done. 200D and 7D2 keep upstream's entry.
 
-**Why footage looked fine on the waveform and dark in post.** The raw waveform is logarithmic and the footage is not. It plots 12 stops, so a level 5.7
-stops under clipping (the median of `M06-1435` and `-1438`, ISO 100, 1/62, f/4.9) sits at 52% of the graph. In a linear decode, those frames are dark. MLV Drive
-passes the levels through unchanged.
+**Why footage looked fine on the waveform and dark in post.** The footage really is dark: the median of `M06-1435` and `-1438` (ISO 100, 1/62, f/4.9) is 5.7 stops
+under clipping, and MLV Drive passes the levels through unchanged. The tools were not reading raw. `can_use_raw_overlays()` is true only at 14-bit, so at 12-bit
+the waveform, histogram and false colour set to RAW silently use the preview picture, which has been through a tone curve. How far that reads from the
+raw levels has not been measured.
 
 ---
 
