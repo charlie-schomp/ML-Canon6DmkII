@@ -4617,6 +4617,16 @@ livev_hipriority_task( void* unused )
             display_filter_step(k);
             #endif
             
+            #ifdef FEATURE_FALSE_COLOR
+            {
+                /* nothing else clears it during a take: redraw() stays away
+                 * from a running recording */
+                static int false_color_was_on = 0;
+                if (false_color_was_on && !falsecolor_draw) BMP_LOCK( if (lv) clrscr_mirror(); )
+                false_color_was_on = falsecolor_draw;
+            }
+            #endif
+
             #ifdef FEATURE_RAW_FALSE_COLOR
             if (falsecolor_draw && falsecolor_raw && can_use_raw_overlays())
             {
