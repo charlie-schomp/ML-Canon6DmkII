@@ -50,6 +50,8 @@ Also: the lua module did not link with current arm-none-eabi newlib.
 
 - **Q inside a submenu closes it** (`menu_toggle_submenu`), on every body. A `.children` inside a child can't be
   reached, though it builds and draws normally. Check that a nested setting really opens.
+- **`.advanced` does not always hide an entry.** One whose value differs from its config default stays visible
+  (`config_var_was_changed`), so an entry with a "not set" default resolved at init needs its `default_value` updated.
 Learned on the 6D2's RGBA compositor; probably true of every `FEATURE_VRAM_RGBA` body.
 
 1. **Canon never clears ML's layer.** On DIGIC 4/5 Canon repaints its bitmap and wipes ML's graphics;

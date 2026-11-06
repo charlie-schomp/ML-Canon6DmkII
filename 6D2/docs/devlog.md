@@ -1,6 +1,6 @@
 # Magic Lantern for the Canon EOS 6D Mark II — development log
 
-**Build v126 · 6 November 2026 · firmware 1.1.1 · base `magiclantern_simplified` @ `40c0a133b`**
+**Build v128 · 6 November 2026 · firmware 1.1.1 · base `magiclantern_simplified` @ `40c0a133b`**
 
 The 6D Mark II is a DIGIC 7 body. The official ML build for it boots and shows the menu, and not
 much else. This port adds raw video at 10/12/14-bit, lossless raw video at 14 and 12-bit, an in-camera H.264
@@ -14,7 +14,7 @@ hard way are collected in the appendices.
 
 ---
 
-## Status at v126
+## Status at v128
 
 | | |
 |---|---|
@@ -577,6 +577,23 @@ boots in QEMU.
 - **Flip-screen overlays** removed from the menu: Canon mirrors in position 1 only, as confirmed at v32
   and v79, so ML now just does that. A setting saved as off no longer applies.
 
+### v127 · 6 November
+
+**If too tall** had the same fault as Clip info: nested under Aspect ratio, where Q closes the submenu, so it could
+never be changed. Its default, Shrink width, is the right one, so it is now **If aspect too tall** in RAW video's
+Advanced section.
+
+### v128 · 6 November
+
+The menu layout is confirmed on the camera. Clip info's slate and SLATE.CSV are not yet tested there.
+
+- **Movie tab:** RAW video, Scratch audio, Shutter angle lock, Clip info, Top Button C-FN, MOV/MP4 time limit.
+- **RAW video:** H.264 proxy directly under Crop mode, then Gyro log. Preview joins the Advanced section.
+- **Advanced entries that would not hide.** The menu always shows an advanced entry whose value differs from its
+  default. If aspect too tall, the proxy and the sync beep are stored with a default of -1, meaning "not set", and
+  are then given the body's real value, so they always counted as changed. The module now records that real value
+  as the default.
+
 ---
 
 ## Appendix A — Measurements
@@ -699,8 +716,6 @@ Narrower widths are centre crops of the readout, not downscales.
 
 - Peaking needs one ML menu open/close after power-on and after a bit-depth change.
 - 59.94p above 1920×960 fails (resets or `EvfState.c` asserts). Nothing in the menu stops you choosing it.
-- **If too tall**, under Aspect ratio, cannot be reached: same cause as Clip info before v126. Its default, Shrink
-  width, applies.
 - Gyro scale is rough on yaw and unknown on roll; the exporter assumes 80 LSB per deg/s on all three.
 - Video dual ISO gains less than the ISO gap suggests (1.7 EV at 100 / 800).
 - The level meter shows level and peak, not left and right (the register has no per-channel
