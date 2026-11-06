@@ -23,6 +23,7 @@ ML_BOOT_OBJ = boot-d678.o
 ML_SRC_EXTRA_OBJS += $(BUILD_DIR)/function_overrides.o
 ML_SRC_EXTRA_OBJS += $(BUILD_DIR)/topbuttons.o
 ML_SRC_EXTRA_OBJS += $(BUILD_DIR)/shutterangle.o
+ML_SRC_EXTRA_OBJS += $(BUILD_DIR)/clipinfo.o
 
 include ../Makefile
 .DEFAULT_GOAL := $(BUILD_DIR)/cam_complete

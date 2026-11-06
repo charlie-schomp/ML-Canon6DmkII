@@ -98,6 +98,10 @@ extern WEAK_FUNC(ret_0) int  wav_scratch_rename(const char * mlv_path);
 extern WEAK_FUNC(ret_0) int  wav_scratch_discard(void);
 static uint64_t ret_0_long() { return 0; }     /* as in silent.c: a 64-bit weak default */
 extern WEAK_FUNC(ret_0_long) uint64_t wav_scratch_start_us(void);
+/* src/clipinfo.c (FEATURE_CLIP_INFO) - weak: elsewhere there is no slate */
+extern WEAK_FUNC(ret_0) int  clip_info_text(char * text, int size);
+extern WEAK_FUNC(ret_0) void clip_info_raw_take_start(void);
+extern WEAK_FUNC(ret_0) void clip_info_raw_take_end(int recorded);
 /* src/zebra.c - weak so the module still loads on bodies without it */
 extern WEAK_FUNC(ret_0) int clean_hdmi_active(void);
 extern WEAK_FUNC(ret_0) int dual_iso_is_enabled(void);
@@ -236,16 +240,6 @@ static CONFIG_INT("raw.h264.proxy", h264_proxy_menu, -1);
 static CONFIG_INT("raw.sync_beep", sync_beep, -1);
 
 static CONFIG_INT("raw.output_format", output_format, 3);
-
-/* Clip info: slate metadata written into each clip (an INFO block, read by
- * MLV App and MLV Drive). Take counts up after every recorded clip and goes
- * back to 1 when the scene or shot changes. */
-static CONFIG_INT("raw.clip.info", clip_info_on, 0);
-static CONFIG_INT("raw.clip.camera", clip_camera, 0);      /* A..H */
-static CONFIG_INT("raw.clip.reel", clip_reel, 1);
-static CONFIG_INT("raw.clip.scene", clip_scene, 1);
-static CONFIG_INT("raw.clip.shot", clip_shot, 0);          /* 0 = none, 1..26 = A..Z */
-static CONFIG_INT("raw.clip.take", clip_take, 1);
 
 /* 6D2: warn in the recording status above this board temperature (deg C, 0 = off) */
 static CONFIG_INT("raw.temp.warn", temp_warn_index, 3);
@@ -1791,26 +1785,6 @@ static MENU_UPDATE_FUNC(output_format_bpp_update)
     }
 }
 
-static MENU_UPDATE_FUNC(clip_info_update)
-{
-    if (!clip_info_on) return;
-    char cam[2] = { 'A' + COERCE(clip_camera, 0, 7), 0 };
-    char shot[2] = { clip_shot > 0 ? 'A' + COERCE(clip_shot, 1, 26) - 1 : 0, 0 };
-    MENU_SET_VALUE("%s%03d  %d%s-%d", cam, clip_reel, clip_scene, shot, clip_take);
-}
-
-/* a new scene or shot starts again at take 1 */
-static MENU_SELECT_FUNC(clip_scene_select)
-{
-    menu_numeric_toggle(&clip_scene, delta, 1, 999);
-    clip_take = 1;
-}
-static MENU_SELECT_FUNC(clip_shot_select)
-{
-    menu_numeric_toggle(&clip_shot, delta, 0, 26);
-    clip_take = 1;
-}
-
 static MENU_UPDATE_FUNC(gyro_log_update)
 {
     if (!gyro_6d2)
@@ -1821,11 +1795,6 @@ static MENU_UPDATE_FUNC(gyro_log_update)
 
 static MENU_UPDATE_FUNC(temp_warn_update)
 {
-    if (!temp_6d2)
-    {
-        MENU_SET_WARNING(MENU_WARN_NOT_WORKING, "No temperature reading on this camera.");
-        return;
-    }
     int c = board_celsius();
     if (c > -1000) MENU_SET_RINFO("now %d C", c);
 }
@@ -4082,19 +4051,13 @@ void init_mlv_chunk_headers(struct raw_info *raw_info)
     
     /* slate: "camera=A reel=001 scene=12 shot=B take=3" (key=value, space separated) */
     clip_info_ready = 0;
-    if (clip_info_on)
+    memset(&clip_info_blk, 0, sizeof(clip_info_blk));
+    if (clip_info_text(clip_info_blk.text, sizeof(clip_info_blk.text)) > 0)
     {
-        memset(&clip_info_blk, 0, sizeof(clip_info_blk));
         mlv_set_type((mlv_hdr_t *)&clip_info_blk, "INFO");
         mlv_set_timestamp((mlv_hdr_t *)&clip_info_blk, mlv_start_timestamp);
         clip_info_blk.hdr.blockSize = sizeof(clip_info_blk);
         /* no %c: Canon's vsnprintf does not implement it */
-        char cam[2] = { 'A' + COERCE(clip_camera, 0, 7), 0 };
-        char shot[2] = { clip_shot > 0 ? 'A' + COERCE(clip_shot, 1, 26) - 1 : 0, 0 };
-        int n = snprintf(clip_info_blk.text, sizeof(clip_info_blk.text), "camera=%s reel=%03d scene=%d",
-                         cam, clip_reel, clip_scene);
-        if (shot[0]) n += snprintf(clip_info_blk.text + n, sizeof(clip_info_blk.text) - n, " shot=%s", shot);
-        snprintf(clip_info_blk.text + n, sizeof(clip_info_blk.text) - n, " take=%d", clip_take);
         clip_info_ready = 1;
     }
 
@@ -4344,6 +4307,7 @@ void raw_video_rec_task(uint32_t card_index)
         give_semaphore(settings_sem);
         buffer_full_reason = 0;
 
+        clip_info_raw_take_start();
         rec_trace = get_config_var("d7probe.rectrace");   /* 0 unless the dev module is loaded */
         rec_log("========== TAKE START, card=%d, srm_enabled=%d",
                 card_index, (int)use_srm_memory);
@@ -5194,10 +5158,7 @@ cleanup:
         wav_filing = file_wav;
 
         raw_recording_state = RAW_IDLE;
-        if (clip_info_on && frame_count > 1)
-        {
-            clip_take = MIN(clip_take + 1, 999);
-        }
+        clip_info_raw_take_end(frame_count > 1);
         if (temp_6d2) rec_log("take end: board %d C", board_celsius());
         rec_log("========== TAKE END (state back to IDLE)");
         rec_trace = 0;      /* the next take reads the switch again */
@@ -5297,15 +5258,6 @@ static struct menu_entry raw_video_menu[] =
                 .choices = RESOLUTION_CHOICES_X,
             },
             {
-                .name = "Crop mode",
-                .priv = &crop_zoom,
-                .max = 1,
-                .choices = CHOICES("OFF", "1:1 (5x zoom)"),
-                .update = crop_zoom_update,
-                .help  = "1:1 window via Canon's 5x zoom: 3164x926 max, no binning, ALWAYS 30p.",
-                .help2 = "Held while RAW video is on (magnify still gives 10x). Enables dual ISO.",
-            },
-            {
                 .name = "Aspect ratio",
                 .priv = &aspect_ratio_index,
                 .max = COUNT(aspect_ratio_presets_num) - 1,
@@ -5345,67 +5297,22 @@ static struct menu_entry raw_video_menu[] =
                               "Signal divided by 8/16/32/64 before compression, depending on ISO.\n"
             },
             {
-                .name = "Clip info",
-                .priv = &clip_info_on,
+                .name = "Crop mode",
+                .priv = &crop_zoom,
                 .max = 1,
-                .update = clip_info_update,
-                .help  = "Slate metadata in each clip: camera, reel, scene, shot, take.",
-                .help2 = "Take counts up after each clip, back to 1 when scene or shot changes.",
-                .children = (struct menu_entry[]) {
-                    {
-                        .name = "Camera",
-                        .priv = &clip_camera,
-                        .max = 7,
-                        .choices = CHOICES("A", "B", "C", "D", "E", "F", "G", "H"),
-                    },
-                    {
-                        .name = "Reel",
-                        .priv = &clip_reel,
-                        .min = 1, .max = 999,
-                        .unit = UNIT_DEC,
-                    },
-                    {
-                        .name = "Scene",
-                        .priv = &clip_scene,
-                        .min = 1, .max = 999,
-                        .unit = UNIT_DEC,
-                        .select = clip_scene_select,
-                    },
-                    {
-                        .name = "Shot",
-                        .priv = &clip_shot,
-                        .max = 26,
-                        .choices = CHOICES("-", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M",
-                                           "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"),
-                        .select = clip_shot_select,
-                    },
-                    {
-                        .name = "Take",
-                        .priv = &clip_take,
-                        .min = 1, .max = 999,
-                        .unit = UNIT_DEC,
-                        .help = "The next clip's take. Counts up by itself after each clip.",
-                    },
-                    MENU_EOL
-                },
+                .choices = CHOICES("OFF", "1:1 (5x zoom)"),
+                .update = crop_zoom_update,
+                .help  = "1:1 window via Canon's 5x zoom: 3164x926 max, no binning, ALWAYS 30p.",
+                .help2 = "Held while RAW video is on (magnify still gives 10x). Enables dual ISO.",
             },
             {
-                .name = "Gyro log",
+                .name = "Gyro log (experimental)",
                 .priv = &gyro_log_on,
                 .max = 2,
                 .choices = CHOICES("OFF", "ON", "Timer only (test)"),
                 .update = gyro_log_update,
-                .help  = "Records the body's gyro inside each clip, for stabilising in post.",
+                .help  = "Experimental: records the body's gyro in each clip, to stabilise in post.",
                 .help2 = "About 24 KB/s. Turn lens IS off for shots you will stabilise.",
-            },
-            {
-                .name = "Temperature warning",
-                .priv = &temp_warn_index,
-                .max = COUNT(temp_warn_c) - 1,
-                .choices = CHOICES("OFF", "45 C", "50 C", "55 C", "60 C"),
-                .update = temp_warn_update,
-                .help  = "Shows HOT and the temperature in the recording status above this.",
-                .help2 = "Board temperature (the MPU's), not the sensor's. Visual only.",
             },
             {
                 .name = "Preview",
@@ -5418,25 +5325,6 @@ static struct menu_entry raw_video_menu[] =
                          "Slow (not real-time) and low-resolution, but has correct framing.\n"
                          "Freeze LiveView for more speed; uses 'Framing' preview if Global Draw ON.\n",
                 .depends_on = DEP_GLOBAL_DRAW,
-            },
-            {
-                .name    = "Pre-record",
-                .priv    = &pre_record,
-                .max     = 10,
-                .update  = pre_recording_update,
-                .help    = "Pre-records a few seconds of video into memory, discarding old frames.",
-                .help2   = "Press REC twice: 1 - to start pre-recording, 2 - for normal recording.",
-            },
-            {
-                .name    = "Rec trigger",
-                .priv    = &rec_trigger,
-                .max     = 3,
-                .choices = CHOICES("OFF", "Half-shutter: start/pause", "Half-shutter: hold", "Half-shutter: pre only"),
-                .help    = "Use external trigger to start/pause recording within a video clip.",
-                .help2   = "Disabled (press REC as usual).\n"
-                           "Press half-shutter to start/pause recording within the current clip.\n"
-                           "Press and hold the shutter halfway to record (e.g. for short events).\n"
-                           "Half-shutter to save only the pre-recorded frames (at least 1 frame).\n",
             },
             {
                 .name = "Card Spanning",
@@ -5495,19 +5383,31 @@ static struct menu_entry raw_video_menu[] =
                 .advanced = 1,
             },
             {
-                .name = "Sync beep",
-                .priv = &sync_beep,
-                .max    = 1,
-                .help = "Beeps on recording start for better sync.",
-                .advanced = 1,
-            },
-            {
                 .name   = "Show EDMAC",
                 .priv   = &show_edmac,
                 .max    = 1,
                 .help   = "Plots the EDMAC read/write pointers within the source raw buffer.",
                 .help2  = "If green (RD) is always above red (WR), it's safe to use single-buffering.",
                 .advanced = 1,
+            },
+            {
+                .name    = "Pre-record",
+                .priv    = &pre_record,
+                .max     = 10,
+                .update  = pre_recording_update,
+                .help    = "Pre-records a few seconds of video into memory, discarding old frames.",
+                .help2   = "Press REC twice: 1 - to start pre-recording, 2 - for normal recording.",
+            },
+            {
+                .name    = "Rec trigger",
+                .priv    = &rec_trigger,
+                .max     = 3,
+                .choices = CHOICES("OFF", "Half-shutter: start/pause", "Half-shutter: hold", "Half-shutter: pre only"),
+                .help    = "Use external trigger to start/pause recording within a video clip.",
+                .help2   = "Disabled (press REC as usual).\n"
+                           "Press half-shutter to start/pause recording within the current clip.\n"
+                           "Press and hold the shutter halfway to record (e.g. for short events).\n"
+                           "Half-shutter to save only the pre-recorded frames (at least 1 frame).\n",
             },
             {
                 .name = "Playback",
@@ -5522,6 +5422,32 @@ static struct menu_entry raw_video_menu[] =
     }
 };
 
+
+/* 6D2: Prefs */
+static struct menu_entry temp_warn_menu[] =
+{
+    {
+        .name = "Temperature warning",
+        .priv = &temp_warn_index,
+        .max = COUNT(temp_warn_c) - 1,
+        .choices = CHOICES("OFF", "45 C", "50 C", "55 C", "60 C"),
+        .update = temp_warn_update,
+        .help  = "Shows HOT and the temperature in the recording status above this.",
+        .help2 = "Board temperature (the MPU's), not the sensor's. Visual only.",
+    },
+};
+
+/* 6D2: in Scratch audio, beside the track the beep lands on. Elsewhere: RAW video. */
+static struct menu_entry sync_beep_menu[] =
+{
+    {
+        .name = "Sync beep",
+        .priv = &sync_beep,
+        .max    = 1,
+        .help = "Beeps when a RAW take starts, to sync sound recorded on another device.",
+        .help2 = "It lands in the scratch WAV and the proxy's audio. Those need no beep.",
+    },
+};
 
 static REQUIRES(GuiMainTask)
 unsigned int raw_rec_keypress_cbr(unsigned int key)
@@ -6012,6 +5938,8 @@ static unsigned int raw_rec_init()
         if (output_format > (lossless_6d2 ? OUTPUT_12BIT_LOSSLESS : OUTPUT_10BIT_UNCOMPRESSED)) output_format = OUTPUT_14BIT_NATIVE;
     }
     menu_add("Movie", raw_video_menu, COUNT(raw_video_menu));
+    menu_add(cam_6d2 ? "Scratch audio" : "RAW video", sync_beep_menu, COUNT(sync_beep_menu));
+    if (cam_6d2) menu_add("Prefs", temp_warn_menu, COUNT(temp_warn_menu));
 
     /* hack: force proper alignment in menu */
     raw_video_menu->children->parent_menu->split_pos = 15;
@@ -6086,12 +6014,6 @@ MODULE_CONFIGS_START()
     MODULE_CONFIG(warm_up)
     MODULE_CONFIG(sync_beep)
     MODULE_CONFIG(output_format)
-    MODULE_CONFIG(clip_info_on)
-    MODULE_CONFIG(clip_camera)
-    MODULE_CONFIG(clip_reel)
-    MODULE_CONFIG(clip_scene)
-    MODULE_CONFIG(clip_shot)
-    MODULE_CONFIG(clip_take)
     MODULE_CONFIG(temp_warn_index)
     MODULE_CONFIG(gyro_log_on)
     MODULE_CONFIG(h264_proxy_menu)

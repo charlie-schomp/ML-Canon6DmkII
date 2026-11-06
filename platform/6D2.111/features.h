@@ -98,7 +98,8 @@
 
 // AF, ISO and DRIVE/metering toggle overlays in movie LiveView (src/topbuttons.c)
 #define FEATURE_TOP_BUTTON_SHORTCUTS
-#define FEATURE_SHUTTER_ANGLE_LOCK      // src/shutterangle.c: Expo > Shutter angle lock
+#define FEATURE_SHUTTER_ANGLE_LOCK      // src/shutterangle.c: Movie > Shutter angle lock
+#define FEATURE_CLIP_INFO               // src/clipinfo.c: Movie > Clip info
 
 #define CONFIG_PROP_REQUEST_CHANGE
 #define CONFIG_STATE_OBJECT_HOOKS
